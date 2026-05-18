@@ -11,6 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   dynamic_reconfigure
   mower_msgs
         sensor_msgs
+        std_msgs
         roscpp
         serial
         xesc_driver

@@ -29,6 +29,9 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
 
 #include "COBS.h"
 #include "boost/crc.hpp"
@@ -44,6 +47,8 @@
 #include "sensor_msgs/MagneticField.h"
 #include "std_msgs/Bool.h"
 #include "std_msgs/Empty.h"
+#include "std_msgs/Float64.h"
+#include "std_msgs/String.h"
 
 ros::Publisher status_pub;
 ros::Publisher power_pub;
@@ -52,6 +57,7 @@ ros::Publisher actual_twist_pub;
 ros::Publisher status_left_esc_pub;
 ros::Publisher status_right_esc_pub;
 ros::Publisher sensor_imu_pub;
+ros::Publisher ll_power_status_json_pub;
 
 COBS cobs;
 
@@ -684,6 +690,63 @@ void checkAndSendConfig() {
   if (dirty) configTracker.setDirty();
 }
 
+void publishLlPowerStatusJson() {
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(6)
+      << "{"
+      << "\"battery_critical_voltage\":" << power_config.battery_critical_voltage << ","
+      << "\"battery_empty_voltage\":" << power_config.battery_empty_voltage << ","
+      << "\"battery_full_voltage\":" << power_config.battery_full_voltage << ","
+      << "\"battery_critical_high_voltage\":" << power_config.battery_critical_high_voltage << ","
+      << "\"charge_critical_high_voltage\":" << power_config.charge_critical_high_voltage << ","
+      << "\"charge_critical_high_current\":" << power_config.charge_critical_high_current
+      << "}";
+
+  std_msgs::String msg;
+  msg.data = out.str();
+  ll_power_status_json_pub.publish(msg);
+}
+
+template <typename Setter>
+void updateLlPowerValue(const std_msgs::Float64::ConstPtr& msg, const std::string& param_name, Setter setter) {
+  if (!std::isfinite(msg->data)) {
+    ROS_WARN_STREAM("Ignoring non-finite low-level power value for " << param_name);
+    return;
+  }
+  setter(msg->data);
+  ros::param::set("/ll/services/power/" + param_name, msg->data);
+  checkAndSendConfig();
+  publishLlPowerStatusJson();
+}
+
+void llPowerBatteryCriticalVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "battery_critical_voltage", [](double value) { power_config.battery_critical_voltage = value; });
+}
+
+void llPowerBatteryEmptyVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "battery_empty_voltage", [](double value) { power_config.battery_empty_voltage = value; });
+}
+
+void llPowerBatteryFullVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "battery_full_voltage", [](double value) { power_config.battery_full_voltage = value; });
+}
+
+void llPowerBatteryCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "battery_critical_high_voltage", [](double value) { power_config.battery_critical_high_voltage = value; });
+}
+
+void llPowerChargeCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "charge_critical_high_voltage", [](double value) { power_config.charge_critical_high_voltage = value; });
+}
+
+void llPowerChargeCriticalHighCurrentCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "charge_critical_high_current", [](double value) { power_config.charge_critical_high_current = value; });
+}
+
+void llPowerRenewCb(const std_msgs::Empty::ConstPtr&) {
+  publishLlPowerStatusJson();
+}
+
 void reconfigCB(const mower_logic::MowerLogicConfig& config) {
   ROS_INFO_STREAM("mower_comms received new mower_logic config");
 
@@ -698,6 +761,7 @@ void powerReconfigCB(const ll::PowerConfig& config) {
   power_config = config;
 
   checkAndSendConfig();
+  publishLlPowerStatusJson();
 }
 
 int main(int argc, char** argv) {
@@ -767,12 +831,21 @@ int main(int argc, char** argv) {
   status_pub = n.advertise<mower_msgs::Status>("ll/mower_status", 1);
   sensor_imu_pub = n.advertise<sensor_msgs::Imu>("ll/imu/data_raw", 1);
   power_pub = n.advertise<mower_msgs::Power>("ll/power", 1);
+  ll_power_status_json_pub = n.advertise<std_msgs::String>("/ll/services/power/status_json", 1, true);
 
   ros::ServiceServer mow_service = n.advertiseService("ll/_service/mow_enabled", setMowEnabled);
   ros::ServiceServer emergency_service = n.advertiseService("ll/_service/emergency", setEmergencyStop);
   ros::Subscriber cmd_vel_sub = n.subscribe("ll/cmd_vel", 0, velReceived, ros::TransportHints().tcpNoDelay(true));
   ros::Subscriber high_level_status_sub = n.subscribe("/mower_logic/current_state", 0, highLevelStatusReceived);
+  ros::Subscriber ll_power_set_battery_critical_voltage_sub = n.subscribe("/ll/services/power/set/battery_critical_voltage", 10, llPowerBatteryCriticalVoltageCb);
+  ros::Subscriber ll_power_set_battery_empty_voltage_sub = n.subscribe("/ll/services/power/set/battery_empty_voltage", 10, llPowerBatteryEmptyVoltageCb);
+  ros::Subscriber ll_power_set_battery_full_voltage_sub = n.subscribe("/ll/services/power/set/battery_full_voltage", 10, llPowerBatteryFullVoltageCb);
+  ros::Subscriber ll_power_set_battery_critical_high_voltage_sub = n.subscribe("/ll/services/power/set/battery_critical_high_voltage", 10, llPowerBatteryCriticalHighVoltageCb);
+  ros::Subscriber ll_power_set_charge_critical_high_voltage_sub = n.subscribe("/ll/services/power/set/charge_critical_high_voltage", 10, llPowerChargeCriticalHighVoltageCb);
+  ros::Subscriber ll_power_set_charge_critical_high_current_sub = n.subscribe("/ll/services/power/set/charge_critical_high_current", 10, llPowerChargeCriticalHighCurrentCb);
+  ros::Subscriber ll_power_renew_sub = n.subscribe("/ll/services/power/renew", 10, llPowerRenewCb);
   ros::Timer publish_timer = n.createTimer(ros::Duration(0.02), publishActuatorsTimerTask);
+  publishLlPowerStatusJson();
 
   size_t buflen = 1000;
   uint8_t buffer[buflen];

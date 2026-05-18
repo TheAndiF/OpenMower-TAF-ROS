@@ -27,6 +27,7 @@
 #include "std_msgs/Bool.h"
 #include "std_msgs/Empty.h"
 #include "std_msgs/Float32.h"
+#include "std_msgs/Float64.h"
 #include "xbot_msgs/RegisterActionsSrv.h"
 #include "xbot_msgs/ActionInfo.h"
 #include "xbot_msgs/MapOverlay.h"
@@ -53,6 +54,7 @@ void publish_statustransition_log(std::size_t requested_limit = 0);
 void publish_actions();
 void publish_version();
 void publish_params();
+void publish_ll_power_status_request();
 void rpc_request_callback(const std::string &payload);
 
 // Stores registered actions (prefix to vector<action>)
@@ -82,6 +84,13 @@ ros::Publisher mow_load_factor_set_min_factor_pub;
 ros::Publisher mow_load_factor_set_current_start_pub;
 ros::Publisher mow_load_factor_set_current_end_pub;
 ros::Publisher mow_load_factor_renew_pub;
+ros::Publisher ll_power_set_battery_critical_voltage_pub;
+ros::Publisher ll_power_set_battery_empty_voltage_pub;
+ros::Publisher ll_power_set_battery_full_voltage_pub;
+ros::Publisher ll_power_set_battery_critical_high_voltage_pub;
+ros::Publisher ll_power_set_charge_critical_high_voltage_pub;
+ros::Publisher ll_power_set_charge_critical_high_current_pub;
+ros::Publisher ll_power_renew_pub;
 
 // properties for external mqtt
 bool external_mqtt_enable = false;
@@ -128,6 +137,8 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "mow_load_factor/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "mow_load_factor/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "ll_power/set/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "ll_power/set/renew/json", 0);
     }
 
 public:
@@ -295,6 +306,36 @@ public:
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "mow_load_factor/set/renew/json") {
             std_msgs::Empty msg;
             mow_load_factor_renew_pub.publish(msg);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "ll_power/set/json") {
+            try {
+                json payload = json::parse(ptr->get_payload_str());
+                if (!payload.is_object()) {
+                    ROS_WARN_STREAM("Ignoring ll_power/set/json payload because it is not a JSON object.");
+                } else {
+                    bool handled = false;
+                    auto publish_number = [&payload, &handled](const char* key, ros::Publisher& publisher) {
+                        if (payload.contains(key) && payload[key].is_number()) {
+                            std_msgs::Float64 msg;
+                            msg.data = payload[key].get<double>();
+                            publisher.publish(msg);
+                            handled = true;
+                        }
+                    };
+                    publish_number("battery_critical_voltage", ll_power_set_battery_critical_voltage_pub);
+                    publish_number("battery_empty_voltage", ll_power_set_battery_empty_voltage_pub);
+                    publish_number("battery_full_voltage", ll_power_set_battery_full_voltage_pub);
+                    publish_number("battery_critical_high_voltage", ll_power_set_battery_critical_high_voltage_pub);
+                    publish_number("charge_critical_high_voltage", ll_power_set_charge_critical_high_voltage_pub);
+                    publish_number("charge_critical_high_current", ll_power_set_charge_critical_high_current_pub);
+                    if (!handled) {
+                        ROS_WARN_STREAM("Ignoring ll_power/set/json payload without numeric low-level power fields.");
+                    }
+                }
+            } catch (const json::exception &e) {
+                ROS_WARN_STREAM("Error decoding ll_power set JSON: " << e.what());
+            }
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "ll_power/set/renew/json") {
+            publish_ll_power_status_request();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "timetable/set/renew/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "timetable/set/renew/bson") {
             // App opened the timetable page and requests the current retained timetable again.
@@ -466,6 +507,15 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
 
 void mow_load_factor_status_json_callback(const std_msgs::String::ConstPtr &msg) {
     try_publish("mow_load_factor/json", msg->data, true);
+}
+
+void ll_power_status_json_callback(const std_msgs::String::ConstPtr &msg) {
+    try_publish("ll_power/json", msg->data, true);
+}
+
+void publish_ll_power_status_request() {
+    std_msgs::Empty msg;
+    ll_power_renew_pub.publish(msg);
 }
 
 void publish_version() {
@@ -1438,6 +1488,7 @@ int main(int argc, char **argv) {
     ros::Subscriber timetableSubscriber = n->subscribe("timetable/status", 10, timetable_status_callback);
     ros::Subscriber mapOverlaySubscriber = n->subscribe("xbot_monitoring/map_overlay", 10, map_overlay_callback);
     ros::Subscriber mowLoadFactorStatusSubscriber = n->subscribe("/mower_logic/mow_load_factor/status_json", 10, mow_load_factor_status_json_callback);
+    ros::Subscriber llPowerStatusSubscriber = n->subscribe("/ll/services/power/status_json", 10, ll_power_status_json_callback);
 
     cmd_vel_pub = n->advertise<geometry_msgs::Twist>("xbot_monitoring/remote_cmd_vel", 1);
     action_pub = n->advertise<std_msgs::String>("xbot/action", 1);
@@ -1446,6 +1497,13 @@ int main(int argc, char **argv) {
     mow_load_factor_set_current_start_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_current_start", 10);
     mow_load_factor_set_current_end_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_current_end", 10);
     mow_load_factor_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/mow_load_factor/renew", 10);
+    ll_power_set_battery_critical_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_critical_voltage", 10);
+    ll_power_set_battery_empty_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_empty_voltage", 10);
+    ll_power_set_battery_full_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_full_voltage", 10);
+    ll_power_set_battery_critical_high_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_critical_high_voltage", 10);
+    ll_power_set_charge_critical_high_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/charge_critical_high_voltage", 10);
+    ll_power_set_charge_critical_high_current_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/charge_critical_high_current", 10);
+    ll_power_renew_pub = n->advertise<std_msgs::Empty>("/ll/services/power/renew", 10);
 
     rpc_request_pub = n->advertise<xbot_rpc::RpcRequest>(xbot_rpc::TOPIC_REQUEST, 100);
     ros::Subscriber rpc_response_sub = n->subscribe(xbot_rpc::TOPIC_RESPONSE, 100, rpc_response_callback);
