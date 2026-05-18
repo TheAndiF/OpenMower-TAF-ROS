@@ -30,6 +30,10 @@ class MowLoadFactorNode {
                                      &MowLoadFactorNode::setEnabledCallback, this);
     set_min_factor_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/set_min_factor", 10,
                                         &MowLoadFactorNode::setMinFactorCallback, this);
+    set_current_start_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/set_current_start", 10,
+                                           &MowLoadFactorNode::setCurrentStartCallback, this);
+    set_current_end_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/set_current_end", 10,
+                                         &MowLoadFactorNode::setCurrentEndCallback, this);
     renew_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/renew", 10,
                                &MowLoadFactorNode::renewCallback, this);
 
@@ -124,6 +128,38 @@ class MowLoadFactorNode {
     ROS_INFO_STREAM("Mow load factor runtime min_factor set to " << min_factor_);
   }
 
+  void setCurrentStartCallback(const std_msgs::Float32::ConstPtr& msg) {
+    const double requested = static_cast<double>(msg->data);
+    if (!std::isfinite(requested) || requested < 0.0 || requested >= current_end_) {
+      ROS_WARN_STREAM("Rejected mowing load current_start=" << requested
+                      << ". It must be finite, >= 0.0, and lower than current_end=" << current_end_ << ".");
+      publishStatusJson();
+      return;
+    }
+
+    current_start_ = requested;
+    ros::param::set("/mower_logic/mow_load_current_start", current_start_);
+    // Current-based factor is recalculated on the next mower status message.
+    publishStatusJson();
+    ROS_INFO_STREAM("Mow load factor runtime current_start set to " << current_start_ << " A");
+  }
+
+  void setCurrentEndCallback(const std_msgs::Float32::ConstPtr& msg) {
+    const double requested = static_cast<double>(msg->data);
+    if (!std::isfinite(requested) || requested <= current_start_) {
+      ROS_WARN_STREAM("Rejected mowing load current_end=" << requested
+                      << ". It must be finite and higher than current_start=" << current_start_ << ".");
+      publishStatusJson();
+      return;
+    }
+
+    current_end_ = requested;
+    ros::param::set("/mower_logic/mow_load_current_end", current_end_);
+    // Current-based factor is recalculated on the next mower status message.
+    publishStatusJson();
+    ROS_INFO_STREAM("Mow load factor runtime current_end set to " << current_end_ << " A");
+  }
+
   void renewCallback(const std_msgs::Empty::ConstPtr&) {
     loadParameters();
     last_effective_factor_ = enabled_ ? last_computed_factor_ : 1.0;
@@ -148,6 +184,8 @@ class MowLoadFactorNode {
          << "{"
          << "\"enabled\":" << (enabled_ ? "true" : "false")
          << ",\"min_factor\":" << min_factor_
+         << ",\"current_start\":" << current_start_
+         << ",\"current_end\":" << current_end_
          << ",\"factor_current\":" << last_factor_current_
          << ",\"factor_motor_temp\":" << last_factor_motor_temp_
          << ",\"factor_esc_temp\":" << last_factor_esc_temp_
@@ -165,6 +203,8 @@ class MowLoadFactorNode {
   ros::Subscriber status_sub_;
   ros::Subscriber set_enabled_sub_;
   ros::Subscriber set_min_factor_sub_;
+  ros::Subscriber set_current_start_sub_;
+  ros::Subscriber set_current_end_sub_;
   ros::Subscriber renew_sub_;
 
   mutable ros::Publisher computed_pub_;

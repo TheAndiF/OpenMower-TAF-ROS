@@ -79,6 +79,8 @@ ros::Publisher action_pub;
 ros::Publisher rpc_request_pub;
 ros::Publisher mow_load_factor_set_enabled_pub;
 ros::Publisher mow_load_factor_set_min_factor_pub;
+ros::Publisher mow_load_factor_set_current_start_pub;
+ros::Publisher mow_load_factor_set_current_end_pub;
 ros::Publisher mow_load_factor_renew_pub;
 
 // properties for external mqtt
@@ -271,8 +273,20 @@ public:
                         mow_load_factor_set_min_factor_pub.publish(msg);
                         handled = true;
                     }
+                    if (payload.contains("current_start") && payload["current_start"].is_number()) {
+                        std_msgs::Float32 msg;
+                        msg.data = payload["current_start"].get<float>();
+                        mow_load_factor_set_current_start_pub.publish(msg);
+                        handled = true;
+                    }
+                    if (payload.contains("current_end") && payload["current_end"].is_number()) {
+                        std_msgs::Float32 msg;
+                        msg.data = payload["current_end"].get<float>();
+                        mow_load_factor_set_current_end_pub.publish(msg);
+                        handled = true;
+                    }
                     if (!handled) {
-                        ROS_WARN_STREAM("Ignoring mow_load_factor/set/json payload without boolean 'enabled' or numeric 'min_factor'.");
+                        ROS_WARN_STREAM("Ignoring mow_load_factor/set/json payload without boolean 'enabled' or numeric 'min_factor', 'current_start', or 'current_end'.");
                     }
                 }
             } catch (const json::exception &e) {
@@ -1429,6 +1443,8 @@ int main(int argc, char **argv) {
     action_pub = n->advertise<std_msgs::String>("xbot/action", 1);
     mow_load_factor_set_enabled_pub = n->advertise<std_msgs::Bool>("/mower_logic/mow_load_factor/set_enabled", 10);
     mow_load_factor_set_min_factor_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_min_factor", 10);
+    mow_load_factor_set_current_start_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_current_start", 10);
+    mow_load_factor_set_current_end_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_current_end", 10);
     mow_load_factor_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/mow_load_factor/renew", 10);
 
     rpc_request_pub = n->advertise<xbot_rpc::RpcRequest>(xbot_rpc::TOPIC_REQUEST, 100);
