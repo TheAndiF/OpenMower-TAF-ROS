@@ -17,7 +17,8 @@
 
 class MowLoadFactorNode {
  public:
-  MowLoadFactorNode() : nh_(), last_factor_current_(1.0), last_factor_motor_temp_(1.0), last_factor_esc_temp_(1.0),
+  MowLoadFactorNode() : nh_(), last_status_json_publish_wall_time_(),
+                        last_factor_current_(1.0), last_factor_motor_temp_(1.0), last_factor_esc_temp_(1.0),
                         last_computed_factor_(1.0), last_effective_factor_(1.0) {
     loadParameters();
 
@@ -59,12 +60,19 @@ class MowLoadFactorNode {
     nh_.param("/mower_logic/mow_load_motor_temp_end", motor_temp_end_, 68.0);
     nh_.param("/mower_logic/mow_load_esc_temp_start", esc_temp_start_, 60.0);
     nh_.param("/mower_logic/mow_load_esc_temp_end", esc_temp_end_, 78.0);
+    nh_.param("/mower_logic/mow_load_status_publish_period", status_publish_period_, 0.50);
 
     if (!std::isfinite(min_factor_) || min_factor_ < minAllowedFactor() || min_factor_ > maxAllowedFactor()) {
       ROS_WARN_STREAM("Invalid /mower_logic/mow_load_factor_min=" << min_factor_
                       << ". Falling back to 0.40.");
       min_factor_ = 0.40;
       ros::param::set("/mower_logic/mow_load_factor_min", min_factor_);
+    }
+    if (!std::isfinite(status_publish_period_) || status_publish_period_ < 0.05) {
+      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_status_publish_period=" << status_publish_period_
+                      << ". Falling back to 0.50 s.");
+      status_publish_period_ = 0.50;
+      ros::param::set("/mower_logic/mow_load_status_publish_period", status_publish_period_);
     }
   }
 
@@ -87,10 +95,9 @@ class MowLoadFactorNode {
   }
 
   void statusCallback(const mower_msgs::Status::ConstPtr& msg) {
-    // Re-read parameter-server values so YAML loading, dynamic reconfigure defaults,
-    // and MQTT-set runtime values are all reflected without recompilation.
-    loadParameters();
-
+    // Keep this callback lightweight: parameters are loaded once at startup,
+    // updated locally by MQTT set callbacks, or reloaded explicitly via renew.
+    // Avoiding ROS parameter-server reads here prevents unnecessary rosmaster load.
     last_factor_current_ = derateFactor(msg->mower_esc_current, current_start_, current_end_);
     last_factor_motor_temp_ = derateFactor(msg->mower_motor_temperature, motor_temp_start_, motor_temp_end_);
     last_factor_esc_temp_ = derateFactor(msg->mower_esc_temperature, esc_temp_start_, esc_temp_end_);
@@ -99,7 +106,7 @@ class MowLoadFactorNode {
     last_effective_factor_ = enabled_ ? last_computed_factor_ : 1.0;
 
     publishFactorTopics();
-    publishStatusJson();
+    publishStatusJsonIfDue();
   }
 
   void setEnabledCallback(const std_msgs::Bool::ConstPtr& msg) {
@@ -177,7 +184,16 @@ class MowLoadFactorNode {
     effective_pub_.publish(effective);
   }
 
-  void publishStatusJson() const {
+  void publishStatusJsonIfDue() {
+    const ros::WallTime now = ros::WallTime::now();
+    if (last_status_json_publish_wall_time_.isZero() ||
+        (now - last_status_json_publish_wall_time_).toSec() >= status_publish_period_) {
+      publishStatusJson();
+      last_status_json_publish_wall_time_ = now;
+    }
+  }
+
+  void publishStatusJson() {
     std::ostringstream json;
     json.setf(std::ios::fixed);
     json << std::setprecision(6)
@@ -196,6 +212,7 @@ class MowLoadFactorNode {
     std_msgs::String msg;
     msg.data = json.str();
     status_json_pub_.publish(msg);
+    last_status_json_publish_wall_time_ = ros::WallTime::now();
   }
 
   ros::NodeHandle nh_;
@@ -219,6 +236,9 @@ class MowLoadFactorNode {
   double motor_temp_end_;
   double esc_temp_start_;
   double esc_temp_end_;
+  double status_publish_period_;
+
+  ros::WallTime last_status_json_publish_wall_time_;
 
   double last_factor_current_;
   double last_factor_motor_temp_;

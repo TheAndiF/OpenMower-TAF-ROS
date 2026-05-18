@@ -20,6 +20,7 @@ Die Startwerte sind in MowerLogic.cfg und openmower_defaults_v2.yaml hinterlegt:
 - mow_load_motor_temp_end: 68.0 °C
 - mow_load_esc_temp_start: 60.0 °C
 - mow_load_esc_temp_end: 78.0 °C
+- mow_load_status_publish_period: 0.50 s (Status-JSON maximal ca. 2 Hz)
 
 Dauerhafte roboterspezifische Überschreibung
 --------------------------------------------
@@ -30,11 +31,21 @@ mower_logic:
   mow_load_factor_min: 0.40
   mow_load_current_start: 0.75
   mow_load_current_end: 1.25
+  mow_load_status_publish_period: 0.50
 
 MQTT
 ----
 Status, retained:
   mow_load_factor/json
+
+  Das JSON wird im normalen Statusbetrieb durch
+  mow_load_status_publish_period gedrosselt. Standard: 0.50 s, also maximal ca. 2 Hz.
+  Direkte MQTT-Aenderungen und renew publizieren weiterhin sofort.
+- Performance-Hinweis:
+  Die Lastfaktor-Berechnung laeuft weiterhin bei neuen mower_status-Meldungen,
+  liest dabei aber KEINE Parameter mehr vom ROS-Parameter-Server.
+  Parameter werden beim Start geladen, durch MQTT-Set-Kommandos lokal aktualisiert
+  und bei renew gezielt einmal neu eingelesen. Das reduziert die rosmaster-Last deutlich.
 
 Beispiel:
   {"enabled":false,"min_factor":0.400000,"current_start":0.750000,"current_end":1.250000,"factor_current":0.820000,"factor_motor_temp":1.000000,"factor_esc_temp":1.000000,"computed_factor":0.820000,"effective_factor":1.000000}
