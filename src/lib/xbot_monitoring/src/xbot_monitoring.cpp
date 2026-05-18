@@ -24,6 +24,9 @@
 #include <set>
 #include "geometry_msgs/Twist.h"
 #include "std_msgs/String.h"
+#include "std_msgs/Bool.h"
+#include "std_msgs/Empty.h"
+#include "std_msgs/Float32.h"
 #include "xbot_msgs/RegisterActionsSrv.h"
 #include "xbot_msgs/ActionInfo.h"
 #include "xbot_msgs/MapOverlay.h"
@@ -74,6 +77,9 @@ std::shared_ptr<mqtt::async_client> client_external_;
 ros::Publisher cmd_vel_pub;
 ros::Publisher action_pub;
 ros::Publisher rpc_request_pub;
+ros::Publisher mow_load_factor_set_enabled_pub;
+ros::Publisher mow_load_factor_set_min_factor_pub;
+ros::Publisher mow_load_factor_renew_pub;
 
 // properties for external mqtt
 bool external_mqtt_enable = false;
@@ -118,6 +124,8 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "map/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "mow_load_factor/set/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "mow_load_factor/set/renew/json", 0);
     }
 
 public:
@@ -244,6 +252,35 @@ public:
                 }
             }
             publish_statustransition_log(requested_limit);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "mow_load_factor/set/json") {
+            try {
+                json payload = json::parse(ptr->get_payload_str());
+                if (!payload.is_object()) {
+                    ROS_WARN_STREAM("Ignoring mow_load_factor/set/json payload because it is not a JSON object.");
+                } else {
+                    bool handled = false;
+                    if (payload.contains("enabled") && payload["enabled"].is_boolean()) {
+                        std_msgs::Bool msg;
+                        msg.data = payload["enabled"].get<bool>();
+                        mow_load_factor_set_enabled_pub.publish(msg);
+                        handled = true;
+                    }
+                    if (payload.contains("min_factor") && payload["min_factor"].is_number()) {
+                        std_msgs::Float32 msg;
+                        msg.data = payload["min_factor"].get<float>();
+                        mow_load_factor_set_min_factor_pub.publish(msg);
+                        handled = true;
+                    }
+                    if (!handled) {
+                        ROS_WARN_STREAM("Ignoring mow_load_factor/set/json payload without boolean 'enabled' or numeric 'min_factor'.");
+                    }
+                }
+            } catch (const json::exception &e) {
+                ROS_WARN_STREAM("Error decoding mow_load_factor set JSON: " << e.what());
+            }
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "mow_load_factor/set/renew/json") {
+            std_msgs::Empty msg;
+            mow_load_factor_renew_pub.publish(msg);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "timetable/set/renew/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "timetable/set/renew/bson") {
             // App opened the timetable page and requests the current retained timetable again.
@@ -411,6 +448,10 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
     } catch (const mqtt::exception &e) {
         // client disconnected or something, we drop it.
     }
+}
+
+void mow_load_factor_status_json_callback(const std_msgs::String::ConstPtr &msg) {
+    try_publish("mow_load_factor/json", msg->data, true);
 }
 
 void publish_version() {
@@ -1382,9 +1423,13 @@ int main(int argc, char **argv) {
     ros::Subscriber mapSubscriber = n->subscribe("mower_map_service/json_map", 10, map_callback);
     ros::Subscriber timetableSubscriber = n->subscribe("timetable/status", 10, timetable_status_callback);
     ros::Subscriber mapOverlaySubscriber = n->subscribe("xbot_monitoring/map_overlay", 10, map_overlay_callback);
+    ros::Subscriber mowLoadFactorStatusSubscriber = n->subscribe("/mower_logic/mow_load_factor/status_json", 10, mow_load_factor_status_json_callback);
 
     cmd_vel_pub = n->advertise<geometry_msgs::Twist>("xbot_monitoring/remote_cmd_vel", 1);
     action_pub = n->advertise<std_msgs::String>("xbot/action", 1);
+    mow_load_factor_set_enabled_pub = n->advertise<std_msgs::Bool>("/mower_logic/mow_load_factor/set_enabled", 10);
+    mow_load_factor_set_min_factor_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_min_factor", 10);
+    mow_load_factor_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/mow_load_factor/renew", 10);
 
     rpc_request_pub = n->advertise<xbot_rpc::RpcRequest>(xbot_rpc::TOPIC_REQUEST, 100);
     ros::Subscriber rpc_response_sub = n->subscribe(xbot_rpc::TOPIC_RESPONSE, 100, rpc_response_callback);

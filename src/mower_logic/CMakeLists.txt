@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
         nav_msgs
         rosbag
         roscpp
+        std_msgs
         slic3r_coverage_planner
         tf2
         tf2_geometry_msgs
@@ -189,6 +190,10 @@ target_link_libraries(mower_logic ${catkin_LIBRARIES} ${CRYPTOPP_LIBRARIES})
 add_executable(monitoring src/monitoring/monitoring.cpp)
 add_dependencies(monitoring ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
 target_link_libraries(monitoring ${catkin_LIBRARIES})
+
+add_executable(mow_load_factor src/mow_load_factor.cpp)
+add_dependencies(mow_load_factor ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
+target_link_libraries(mow_load_factor ${catkin_LIBRARIES})
 
 
 #############

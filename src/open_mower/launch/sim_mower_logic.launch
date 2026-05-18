@@ -17,6 +17,7 @@
     <node pkg="rqt_reconfigure" type="rqt_reconfigure" name="rqt_reconfigure" if="$(optenv OM_START_RVIZ True)"/>
     <node pkg="mower_map" type="mower_map_service" name="mower_map" required="true"/>
     <node pkg="mower_logic" type="mower_logic" name="mower_logic" output="screen" respawn="true" respawn_delay="10"/>
+    <node pkg="mower_logic" type="mow_load_factor" name="mow_load_factor" output="screen" respawn="true" respawn_delay="10"/>
     <node pkg="slic3r_coverage_planner" type="slic3r_coverage_planner" name="slic3r_coverage_planner" output="screen"
           required="true"/>
 

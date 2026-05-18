@@ -48,6 +48,16 @@ mower_logic:
   emergency_lift_period: -1
   emergency_tilt_period: -1
   ignore_charging_current: false
+  # Calculated mowing-load factor. This currently only computes and publishes the factor;
+  # it does not yet influence the driving speed.
+  mow_load_factor_enabled: false
+  mow_load_factor_min: 0.40
+  mow_load_current_start: 0.75
+  mow_load_current_end: 1.25
+  mow_load_motor_temp_start: 55.0
+  mow_load_motor_temp_end: 68.0
+  mow_load_esc_temp_start: 60.0
+  mow_load_esc_temp_end: 78.0
 
 xbot_monitoring:
   external_mqtt_enable: false
