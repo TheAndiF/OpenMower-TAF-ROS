@@ -10,6 +10,16 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <cstdlib>
+#include <optional>
+#include <regex>
+#include <unordered_map>
+
+#include <dynamic_reconfigure/Reconfigure.h>
+#include <dynamic_reconfigure/BoolParameter.h>
+#include <dynamic_reconfigure/IntParameter.h>
+#include <dynamic_reconfigure/DoubleParameter.h>
+#include <dynamic_reconfigure/StrParameter.h>
 
 #include "ros/ros.h"
 #include <memory>
@@ -53,6 +63,10 @@ void publish_statustransition_log(std::size_t requested_limit = 0);
 void publish_actions();
 void publish_version();
 void publish_params();
+void publish_mower_logic_settings();
+void publish_mower_logic_settings_validation(const json &validation);
+json handle_mower_logic_session_settings(const json &payload);
+json handle_mower_logic_persistent_settings(const json &payload);
 void rpc_request_callback(const std::string &payload);
 
 // Stores registered actions (prefix to vector<action>)
@@ -82,6 +96,7 @@ ros::Publisher mow_load_factor_set_min_factor_pub;
 ros::Publisher mow_load_factor_set_current_start_pub;
 ros::Publisher mow_load_factor_set_current_end_pub;
 ros::Publisher mow_load_factor_renew_pub;
+ros::ServiceClient mower_logic_reconfigure_client;
 
 // properties for external mqtt
 bool external_mqtt_enable = false;
@@ -102,6 +117,7 @@ class MqttCallback : public mqtt::callback {
         publish_map_overlay();
         publish_timetable();
         publish_statustransition_log();
+        publish_mower_logic_settings();
         publish_actions();
         publish_version();
         publish_params();
@@ -126,6 +142,9 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "map/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/session/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "mow_load_factor/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "mow_load_factor/set/renew/json", 0);
     }
@@ -254,6 +273,27 @@ public:
                 }
             }
             publish_statustransition_log(requested_limit);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json") {
+            // App requests the current retained settings again.
+            publish_mower_logic_settings();
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/session/json") {
+            try {
+                json payload = json::parse(ptr->get_payload_str());
+                json validation = handle_mower_logic_session_settings(payload);
+                publish_mower_logic_settings_validation(validation);
+                publish_mower_logic_settings();
+            } catch (const json::exception &e) {
+                publish_mower_logic_settings_validation({{"valid", false}, {"scope", "session"}, {"remarks", {std::string("Error decoding mower_logic session JSON: ") + e.what()}}});
+            }
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/persistent/json") {
+            try {
+                json payload = json::parse(ptr->get_payload_str());
+                json validation = handle_mower_logic_persistent_settings(payload);
+                publish_mower_logic_settings_validation(validation);
+                publish_mower_logic_settings();
+            } catch (const json::exception &e) {
+                publish_mower_logic_settings_validation({{"valid", false}, {"scope", "persistent"}, {"remarks", {std::string("Error decoding mower_logic persistent JSON: ") + e.what()}}});
+            }
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "mow_load_factor/set/json") {
             try {
                 json payload = json::parse(ptr->get_payload_str());
@@ -463,6 +503,552 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
         // client disconnected or something, we drop it.
     }
 }
+
+// BEGIN: mower_logic settings MQTT bridge
+namespace mower_logic_settings {
+
+enum class SettingType { Bool, Int, Double, String };
+
+struct SettingDefinition {
+    const char *key;
+    SettingType type;
+    double min_value;
+    double max_value;
+    bool has_numeric_range;
+    const char *group;
+    const char *label;
+    const char *unit;
+    const char *description;
+    int order;
+    bool session_apply_supported;
+};
+
+// Registry is intentionally complete for the currently editable mower_logic dynamic_reconfigure parameters.
+// The WebApp may hide or group entries, but the backend exposes one stable canonical source.
+const std::vector<SettingDefinition> &registry() {
+    static const std::vector<SettingDefinition> definitions = {
+        {"automatic_mode", SettingType::Int, 0, 2, true, "general", "Automatikmodus", "", "0 = manuell, 1 = halbautomatisch, 2 = automatisch", 10, true},
+        {"enable_mower", SettingType::Bool, 0, 0, false, "general", "Mähmotor freigeben", "", "Aktiviert die automatische Freigabe des Mähmotors.", 20, true},
+        {"manual_pause_mowing", SettingType::Bool, 0, 0, false, "general", "Mähen manuell pausieren", "", "Unterbindet das Mähen trotz aktiver Navigation.", 30, true},
+
+        {"undock_distance", SettingType::Double, 0, 100, true, "undocking", "Rückfahrstrecke Ausdocken", "m", "Erste gerade Rückfahrstrecke beim Ausdocken.", 100, true},
+        {"undock_angled_distance", SettingType::Double, 0, 100, true, "undocking", "Schrägstrecke Ausdocken", "m", "Zweite Ausdockstrecke im Winkel.", 110, true},
+        {"undock_angle", SettingType::Double, -90, 90, true, "undocking", "Ausklinkwinkel", "°", "Winkel der zweiten Ausdockphase.", 120, true},
+        {"undock_fixed_angle", SettingType::Bool, 0, 0, false, "undocking", "Fester Ausdockwinkel", "", "Verwendet einen festen statt variierenden Ausdockwinkel.", 130, true},
+        {"undock_use_curve", SettingType::Bool, 0, 0, false, "undocking", "Kurvenausdockung", "", "Fährt die zweite Ausdockphase als Kurve.", 140, true},
+        {"undocking_waiting_time", SettingType::Double, 0, 60, true, "undocking", "Wartezeit vor Ausdocken", "s", "Wartezeit vor Start des Ausdockens.", 150, true},
+
+        {"docking_distance", SettingType::Double, 0, 100, true, "docking", "Docking-Fahrstrecke", "m", "Vorwärtsstrecke während des Dockings.", 200, true},
+        {"docking_approach_distance", SettingType::Double, 0, 5, true, "docking", "Docking-Anfahrdistanz", "m", "Distanz zur Annäherung an den Docking-Punkt.", 210, true},
+        {"docking_retry_count", SettingType::Int, 0, 50, true, "docking", "Docking-Wiederholungen", "", "Maximale Anzahl Docking-Wiederholungen.", 220, true},
+        {"docking_extra_time", SettingType::Double, 0, 1, true, "docking", "Docking-Nachlaufzeit", "s", "Zusätzliche Kontaktzeit zur sicheren Ladekontakterkennung.", 230, true},
+        {"docking_redock", SettingType::Bool, 0, 0, false, "docking", "Erneut andocken", "", "Versucht ein erneutes Andocken, wenn die Ladeerkennung wegfällt.", 240, true},
+        {"docking_waiting_time", SettingType::Double, 0, 60, true, "docking", "Wartezeit vor Docking", "s", "Wartezeit vor Start des Dockings.", 250, true},
+        {"perimeter_signal", SettingType::Int, -2, 2, true, "docking", "Perimetersignal", "", "0 = aus, Vorzeichen bestimmt die Docking-Richtung.", 260, true},
+
+        {"outline_count", SettingType::Int, 0, 255, true, "mowing_strategy", "Anzahl Außenbahnen", "", "Anzahl Außenbahnen vor dem Füllen der Fläche.", 300, true},
+        {"outline_overlap_count", SettingType::Int, 0, 255, true, "mowing_strategy", "Überlappende Außenbahnen", "", "Anzahl Außenbahnen, die mit dem Füllmuster überlappen.", 310, true},
+        {"outline_offset", SettingType::Double, -1, 1, true, "mowing_strategy", "Außenbahn-Offset", "m", "Zusätzlicher Außenbahn-Offset; positiv ist konservativer.", 320, true},
+        {"mow_angle_offset", SettingType::Double, -180, 180, true, "mowing_strategy", "Mähwinkel-Offset", "°", "Zusätzlicher Winkel für das Flächenmuster.", 330, true},
+        {"mow_angle_offset_is_absolute", SettingType::Bool, 0, 0, false, "mowing_strategy", "Absoluter Mähwinkel", "", "Interpretiert den Offset absolut statt relativ zur automatisch ermittelten Richtung.", 340, true},
+        {"mow_angle_increment", SettingType::Double, 0, 180, true, "mowing_strategy", "Mähwinkel-Inkrement", "°", "Winkeländerung nach einem vollständig abgearbeiteten Kartenzyklus.", 350, true},
+        {"tool_width", SettingType::Double, 0.1, 2, true, "mowing_strategy", "Arbeitsbreite", "m", "Effektive Arbeitsbreite des Mähers.", 360, true},
+        {"max_first_point_attempts", SettingType::Int, 1, 10, true, "mowing_strategy", "Versuche erster Pfadpunkt", "", "Versuche zum Erreichen des ersten Mähpfadpunkts.", 370, true},
+        {"max_first_point_trim_attempts", SettingType::Int, 1, 10, true, "mowing_strategy", "Trim-Versuche Pfadbeginn", "", "Anzahl Kürzungen des Pfadbeginns nach fehlgeschlagenen Erstpunktversuchen.", 380, true},
+        {"add_fake_obstacle", SettingType::Bool, 0, 0, false, "mowing_strategy", "Hilfshindernis ergänzen", "", "Fügt ein künstliches Hindernis zur Unterstützung der Pfadannäherung hinzu.", 390, true},
+
+        {"motor_hot_temperature", SettingType::Double, 20, 150, true, "temperature_protection", "Mähmotor heiß", "°C", "Temperatur, ab der das Mähen pausiert.", 400, true},
+        {"motor_cold_temperature", SettingType::Double, 20, 150, true, "temperature_protection", "Mähmotor wieder kalt", "°C", "Temperatur, ab der das Mähen wieder freigegeben wird.", 410, true},
+        {"mow_load_motor_temp_start", SettingType::Double, 0, 150, true, "mowing_load_control", "Temperatur-Derating Start Motor", "°C", "Mähmotortemperatur, ab der der Lastfaktor reduziert wird.", 420, true},
+        {"mow_load_motor_temp_end", SettingType::Double, 0, 150, true, "mowing_load_control", "Temperatur-Derating Ende Motor", "°C", "Mähmotortemperatur für den minimalen Lastfaktor.", 430, true},
+        {"mow_load_esc_temp_start", SettingType::Double, 0, 150, true, "mowing_load_control", "Temperatur-Derating Start ESC", "°C", "Mäh-ESC-Temperatur, ab der der Lastfaktor reduziert wird.", 440, true},
+        {"mow_load_esc_temp_end", SettingType::Double, 0, 150, true, "mowing_load_control", "Temperatur-Derating Ende ESC", "°C", "Mäh-ESC-Temperatur für den minimalen Lastfaktor.", 450, true},
+
+        {"mow_load_factor_enabled", SettingType::Bool, 0, 0, false, "mowing_load_control", "Lastfaktor aktiv", "", "Aktiviert die berechnete Mäh-Lastfaktor-Regelung.", 500, true},
+        {"mow_load_factor_min", SettingType::Double, 0.10, 1.00, true, "mowing_load_control", "Minimaler Lastfaktor", "", "Untergrenze des berechneten Mäh-Lastfaktors.", 510, true},
+        {"mow_load_current_start", SettingType::Double, 0, 100, true, "mowing_load_control", "Strom-Derating Start", "A", "Mähmotorstrom, ab dem der Lastfaktor reduziert wird.", 520, true},
+        {"mow_load_current_end", SettingType::Double, 0, 100, true, "mowing_load_control", "Strom-Derating Ende", "A", "Mähmotorstrom für den minimalen Lastfaktor.", 530, true},
+
+        {"max_position_accuracy", SettingType::Double, 0.01, 1.0, true, "gps", "Maximale Positionsungenauigkeit", "m", "Fahrt ist nur erlaubt, solange die Positionsungenauigkeit darunter liegt.", 600, true},
+        {"gps_wait_time", SettingType::Double, 0, 60, true, "gps", "GPS-Wartezeit", "s", "Wartezeit nach gutem GPS-Fix.", 610, true},
+        {"gps_timeout", SettingType::Double, 0, 60, true, "gps", "GPS-Timeout", "s", "Erlaubte Fahrzeit ohne gültiges GPS.", 620, true},
+        {"ignore_gps_errors", SettingType::Bool, 0, 0, false, "gps", "GPS-Fehler ignorieren", "", "Ignoriert GPS-Fehler. Nur für Simulation verwenden.", 630, true},
+
+        {"rain_mode", SettingType::Int, 0, 3, true, "rain", "Regenmodus", "", "0 = ignorieren, 1 = andocken, 2 = bis trocken andocken, 3 = Automatik pausieren.", 700, true},
+        {"rain_delay_minutes", SettingType::Int, 30, 1440, true, "rain", "Regen-Nachlaufzeit", "min", "Wartezeit nach Regen, bevor das Mähen wieder erlaubt ist.", 710, true},
+        {"rain_check_seconds", SettingType::Int, 20, 300, true, "rain", "Regen-Erkennungszeit", "s", "Regen muss so lange kontinuierlich erkannt werden.", 720, true},
+        {"cu_rain_threshold", SettingType::Int, -1, 2147483647, true, "rain", "CoverUI Regen-Schwellwert", "", "Schwellwert für den stock CoverUI-Regenwert; -1 nutzt die vorhandene Voreinstellung.", 730, true},
+
+        {"emergency_lift_period", SettingType::Int, -1, 2147483647, true, "safety", "Notfallzeit Mehrfach-Lift", "ms", "Zeitfenster für mehrere Lift-/Hall-Signale, damit ein Notfall zählt.", 800, true},
+        {"emergency_tilt_period", SettingType::Int, -1, 2147483647, true, "safety", "Notfallzeit Einzel-Tilt", "ms", "Zeitfenster für einzelnes Lift-/Hall-Signal, damit ein Notfall zählt.", 810, true},
+        {"emergency_input_config", SettingType::String, 0, 0, false, "safety", "Notfall-Eingangskonfiguration", "", "Kommagetrennte Notfall-Eingangskonfiguration für Hall-/Stop-Sensoren.", 820, true},
+        {"shutdown_esc_max_pitch", SettingType::Int, 0, 180, true, "safety", "Maximaler Pitch für ESC-Shutdown", "°", "ESC-Abschaltung ist nur bis zu diesem Pitch-Winkel erlaubt; 0 deaktiviert die Logik.", 830, true},
+    };
+    return definitions;
+}
+
+const SettingDefinition *find_definition(const std::string &key) {
+    const auto &definitions = registry();
+    const auto it = std::find_if(definitions.begin(), definitions.end(), [&](const SettingDefinition &entry) {
+        return key == entry.key;
+    });
+    return it == definitions.end() ? nullptr : &(*it);
+}
+
+std::string trim_copy(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+std::string unquote_yaml_scalar(const std::string &value) {
+    if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
+        return value.substr(1, value.size() - 2);
+    }
+    return value;
+}
+
+json parse_yaml_scalar(const std::string &raw_value) {
+    std::string value = trim_copy(raw_value);
+    const auto comment_pos = value.find(" #");
+    if (comment_pos != std::string::npos) value = trim_copy(value.substr(0, comment_pos));
+    value = unquote_yaml_scalar(value);
+    if (value == "true" || value == "True") return true;
+    if (value == "false" || value == "False") return false;
+    static const std::regex integer_re(R"(^[-+]?[0-9]+$)");
+    static const std::regex double_re(R"(^[-+]?(?:[0-9]+\.[0-9]*|[0-9]*\.[0-9]+)(?:[eE][-+]?[0-9]+)?$|^[-+]?[0-9]+(?:[eE][-+]?[0-9]+)$)");
+    try {
+        if (std::regex_match(value, integer_re)) return std::stoll(value);
+        if (std::regex_match(value, double_re)) return std::stod(value);
+    } catch (const std::exception &) {
+        // Keep as string if numeric parsing fails.
+    }
+    return value;
+}
+
+std::string format_yaml_scalar(const json &value, SettingType type) {
+    std::ostringstream oss;
+    switch (type) {
+        case SettingType::Bool:
+            return value.get<bool>() ? "true" : "false";
+        case SettingType::Int:
+            return std::to_string(value.get<long long>());
+        case SettingType::Double:
+            oss << std::setprecision(12) << value.get<double>();
+            return oss.str();
+        case SettingType::String: {
+            const std::string text = value.get<std::string>();
+            std::string escaped;
+            escaped.reserve(text.size());
+            for (const char ch : text) {
+                if (ch == '"' || ch == '\\') escaped.push_back('\\');
+                escaped.push_back(ch);
+            }
+            return "\"" + escaped + "\"";
+        }
+    }
+    return "";
+}
+
+std::string mower_logic_settings_yaml_path;
+std::mutex mower_logic_settings_yaml_mutex;
+std::map<std::string, json> startup_effective_persistent_values;
+
+std::map<std::string, json> load_persistent_mower_logic_settings_locked() {
+    std::map<std::string, json> values;
+    if (mower_logic_settings_yaml_path.empty()) return values;
+    std::ifstream in(mower_logic_settings_yaml_path);
+    if (!in.good()) return values;
+
+    bool in_mower_logic = false;
+    std::string line;
+    const std::regex top_level_re(R"(^[^\s#][^:]*:\s*(?:#.*)?$)");
+    const std::regex setting_re(R"(^\s{2}([A-Za-z0-9_]+):\s*(.*?)\s*$)");
+    while (std::getline(in, line)) {
+        if (std::regex_match(line, top_level_re)) {
+            in_mower_logic = trim_copy(line).rfind("mower_logic:", 0) == 0;
+            continue;
+        }
+        if (!in_mower_logic) continue;
+        std::smatch match;
+        if (std::regex_match(line, match, setting_re)) {
+            const std::string key = match[1].str();
+            if (find_definition(key) != nullptr) {
+                values[key] = parse_yaml_scalar(match[2].str());
+            }
+        }
+    }
+    return values;
+}
+
+std::map<std::string, json> load_persistent_mower_logic_settings() {
+    std::lock_guard<std::mutex> lk(mower_logic_settings_yaml_mutex);
+    return load_persistent_mower_logic_settings_locked();
+}
+
+bool write_persistent_mower_logic_settings(const json &accepted, std::string &error_message) {
+    std::lock_guard<std::mutex> lk(mower_logic_settings_yaml_mutex);
+    if (mower_logic_settings_yaml_path.empty()) {
+        error_message = "Persistent YAML path is empty.";
+        return false;
+    }
+
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(mower_logic_settings_yaml_path);
+        std::string line;
+        while (std::getline(in, line)) lines.push_back(line);
+    }
+
+    bool found_section = false;
+    bool in_section = false;
+    std::size_t section_insert_index = lines.size();
+    std::set<std::string> remaining;
+    for (auto it = accepted.begin(); it != accepted.end(); ++it) remaining.insert(it.key());
+
+    const std::regex top_level_re(R"(^[^\s#][^:]*:\s*(?:#.*)?$)");
+    const std::regex setting_re(R"(^(\s{2})([A-Za-z0-9_]+):(.*)$)");
+
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        std::string &line = lines[i];
+        if (std::regex_match(line, top_level_re)) {
+            if (in_section) {
+                section_insert_index = i;
+                in_section = false;
+            }
+            if (trim_copy(line).rfind("mower_logic:", 0) == 0) {
+                found_section = true;
+                in_section = true;
+                section_insert_index = i + 1;
+            }
+            continue;
+        }
+        if (!in_section) continue;
+        section_insert_index = i + 1;
+        std::smatch match;
+        if (std::regex_match(line, match, setting_re)) {
+            const std::string key = match[2].str();
+            if (accepted.contains(key)) {
+                const SettingDefinition *definition = find_definition(key);
+                if (definition != nullptr) {
+                    const std::string tail = match[3].str();
+                    const auto comment_pos = tail.find('#');
+                    const std::string comment = comment_pos == std::string::npos ? "" : " " + trim_copy(tail.substr(comment_pos));
+                    line = match[1].str() + key + ": " + format_yaml_scalar(accepted[key], definition->type) + comment;
+                    remaining.erase(key);
+                }
+            }
+        }
+    }
+
+    if (!found_section) {
+        if (!lines.empty() && !lines.back().empty()) lines.push_back("");
+        lines.push_back("mower_logic:");
+        section_insert_index = lines.size();
+    }
+
+    std::vector<std::string> additions;
+    for (const auto &key : remaining) {
+        const SettingDefinition *definition = find_definition(key);
+        if (definition != nullptr) {
+            additions.push_back("  " + key + ": " + format_yaml_scalar(accepted[key], definition->type));
+        }
+    }
+    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(section_insert_index), additions.begin(), additions.end());
+
+    const std::filesystem::path target_path(mower_logic_settings_yaml_path);
+    const std::filesystem::path parent_path = target_path.parent_path();
+    try {
+        if (!parent_path.empty()) std::filesystem::create_directories(parent_path);
+        const std::filesystem::path backup_path = target_path.string() + ".bak";
+        if (std::filesystem::exists(target_path)) {
+            std::error_code ec;
+            std::filesystem::copy_file(target_path, backup_path, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec) ROS_WARN_STREAM("Unable to create settings YAML backup '" << backup_path << "': " << ec.message());
+        }
+        const std::filesystem::path temp_path = target_path.string() + ".tmp";
+        {
+            std::ofstream out(temp_path, std::ios::trunc);
+            if (!out.good()) {
+                error_message = "Unable to open temporary YAML file for writing.";
+                return false;
+            }
+            for (const auto &line : lines) out << line << '\n';
+            out.flush();
+            if (!out.good()) {
+                error_message = "Unable to write temporary YAML file.";
+                return false;
+            }
+        }
+        std::filesystem::rename(temp_path, target_path);
+    } catch (const std::exception &e) {
+        error_message = std::string("Unable to persist mower_logic settings YAML: ") + e.what();
+        return false;
+    }
+    return true;
+}
+
+json active_value_for(const SettingDefinition &definition) {
+    const std::string path = std::string("/mower_logic/") + definition.key;
+    switch (definition.type) {
+        case SettingType::Bool: {
+            bool value = false;
+            return ros::param::get(path, value) ? json(value) : json(nullptr);
+        }
+        case SettingType::Int: {
+            int value = 0;
+            return ros::param::get(path, value) ? json(value) : json(nullptr);
+        }
+        case SettingType::Double: {
+            double value = 0.0;
+            return ros::param::get(path, value) ? json(value) : json(nullptr);
+        }
+        case SettingType::String: {
+            std::string value;
+            return ros::param::get(path, value) ? json(value) : json(nullptr);
+        }
+    }
+    return nullptr;
+}
+
+bool numeric_json_value(const json &value, double &number) {
+    if (!value.is_number()) return false;
+    number = value.get<double>();
+    return true;
+}
+
+json make_validation_base(const std::string &scope) {
+    return {{"valid", true}, {"scope", scope}, {"remarks", json::array()}, {"applied", json::object()}, {"rejected", json::object()}};
+}
+
+json validate_mower_logic_payload(const json &payload, const std::string &scope, json &accepted) {
+    json validation = make_validation_base(scope);
+    accepted = json::object();
+    if (!payload.is_object()) {
+        validation["valid"] = false;
+        validation["remarks"].push_back("Payload must be a JSON object.");
+        return validation;
+    }
+
+    for (auto it = payload.begin(); it != payload.end(); ++it) {
+        const std::string key = it.key();
+        const json &value = it.value();
+        const SettingDefinition *definition = find_definition(key);
+        if (definition == nullptr) {
+            validation["valid"] = false;
+            validation["remarks"].push_back("Unknown mower_logic setting: " + key);
+            validation["rejected"][key] = value;
+            continue;
+        }
+        bool type_valid = false;
+        switch (definition->type) {
+            case SettingType::Bool:
+                type_valid = value.is_boolean();
+                break;
+            case SettingType::Int:
+                type_valid = value.is_number_integer();
+                break;
+            case SettingType::Double:
+                type_valid = value.is_number();
+                break;
+            case SettingType::String:
+                type_valid = value.is_string();
+                break;
+        }
+        if (!type_valid) {
+            validation["valid"] = false;
+            validation["remarks"].push_back("Invalid type for mower_logic setting: " + key);
+            validation["rejected"][key] = value;
+            continue;
+        }
+        if (definition->has_numeric_range) {
+            double numeric_value = 0.0;
+            if (!numeric_json_value(value, numeric_value) || numeric_value < definition->min_value || numeric_value > definition->max_value) {
+                validation["valid"] = false;
+                std::ostringstream oss;
+                oss << key << " must be within [" << definition->min_value << ", " << definition->max_value << "].";
+                validation["remarks"].push_back(oss.str());
+                validation["rejected"][key] = value;
+                continue;
+            }
+        }
+        accepted[key] = value;
+    }
+
+    if (accepted.empty() && validation["valid"].get<bool>()) {
+        validation["valid"] = false;
+        validation["remarks"].push_back("Payload does not contain any editable mower_logic settings.");
+    }
+    return validation;
+}
+
+json value_from_base_or_updates(const std::string &key, const json &updates, const std::map<std::string, json> &base_values) {
+    if (updates.contains(key)) return updates[key];
+    const auto it = base_values.find(key);
+    return it == base_values.end() ? json(nullptr) : it->second;
+}
+
+std::map<std::string, json> active_values_as_map() {
+    std::map<std::string, json> values;
+    for (const auto &definition : registry()) {
+        const json value = active_value_for(definition);
+        if (!value.is_null()) values[definition.key] = value;
+    }
+    return values;
+}
+
+std::map<std::string, json> effective_persistent_values_as_map() {
+    std::map<std::string, json> values = startup_effective_persistent_values;
+    const auto explicitly_persistent = load_persistent_mower_logic_settings();
+    for (const auto &[key, value] : explicitly_persistent) values[key] = value;
+    return values;
+}
+
+void validate_cross_constraints(json &validation, const json &accepted, const std::map<std::string, json> &base_values) {
+    auto fail = [&](const std::string &message, const std::vector<std::string> &keys) {
+        validation["valid"] = false;
+        validation["remarks"].push_back(message);
+        for (const auto &key : keys) {
+            if (accepted.contains(key)) validation["rejected"][key] = accepted[key];
+        }
+    };
+
+    auto compare_greater = [&](const std::string &upper_key, const std::string &lower_key, const std::string &message) {
+        const json upper = value_from_base_or_updates(upper_key, accepted, base_values);
+        const json lower = value_from_base_or_updates(lower_key, accepted, base_values);
+        if (upper.is_number() && lower.is_number() && upper.get<double>() < lower.get<double>()) {
+            fail(message, {upper_key, lower_key});
+        }
+    };
+
+    compare_greater("motor_hot_temperature", "motor_cold_temperature", "motor_hot_temperature must be greater than or equal to motor_cold_temperature.");
+    compare_greater("mow_load_current_end", "mow_load_current_start", "mow_load_current_end must be greater than or equal to mow_load_current_start.");
+    compare_greater("mow_load_motor_temp_end", "mow_load_motor_temp_start", "mow_load_motor_temp_end must be greater than or equal to mow_load_motor_temp_start.");
+    compare_greater("mow_load_esc_temp_end", "mow_load_esc_temp_start", "mow_load_esc_temp_end must be greater than or equal to mow_load_esc_temp_start.");
+}
+
+}  // namespace mower_logic_settings
+
+void publish_mower_logic_settings_validation(const json &validation) {
+    try_publish("settings/mower_logic/validation/json", validation.dump(2), true);
+}
+
+void publish_mower_logic_settings() {
+    const auto persistent_values = mower_logic_settings::load_persistent_mower_logic_settings();
+    json payload = json::object();
+    payload["schema"] = "openmower.settings.mower_logic.v1";
+    payload["persistent_storage"] = {
+        {"path", mower_logic_settings::mower_logic_settings_yaml_path},
+        {"mode", "yaml_only"}
+    };
+    payload["settings"] = json::object();
+
+    for (const auto &definition : mower_logic_settings::registry()) {
+        const json active = mower_logic_settings::active_value_for(definition);
+        const auto persistent_it = persistent_values.find(definition.key);
+        const auto startup_it = mower_logic_settings::startup_effective_persistent_values.find(definition.key);
+        const json persistent = persistent_it != persistent_values.end()
+            ? persistent_it->second
+            : (startup_it != mower_logic_settings::startup_effective_persistent_values.end() ? startup_it->second : json(nullptr));
+        const bool different = !active.is_null() && !persistent.is_null() && active != persistent;
+        payload["settings"][definition.key] = {
+            {"active", active},
+            {"persistent", persistent},
+            {"different", different},
+            {"session_apply_supported", definition.session_apply_supported},
+            {"restart_required", !definition.session_apply_supported},
+            {"group", definition.group},
+            {"label", definition.label},
+            {"unit", definition.unit},
+            {"description", definition.description},
+            {"order", definition.order},
+            {"type", definition.type == mower_logic_settings::SettingType::Bool ? "bool" :
+                       definition.type == mower_logic_settings::SettingType::Int ? "int" :
+                       definition.type == mower_logic_settings::SettingType::Double ? "float" : "string"}
+        };
+        if (definition.has_numeric_range) {
+            payload["settings"][definition.key]["min"] = definition.min_value;
+            payload["settings"][definition.key]["max"] = definition.max_value;
+        }
+    }
+    try_publish("settings/mower_logic/json", payload.dump(2), true);
+}
+
+json handle_mower_logic_session_settings(const json &payload) {
+    json accepted;
+    json validation = mower_logic_settings::validate_mower_logic_payload(payload, "session", accepted);
+    const auto active_values = mower_logic_settings::active_values_as_map();
+    mower_logic_settings::validate_cross_constraints(validation, accepted, active_values);
+    if (!validation.value("valid", false)) return validation;
+
+    dynamic_reconfigure::Reconfigure service;
+    for (auto it = accepted.begin(); it != accepted.end(); ++it) {
+        const mower_logic_settings::SettingDefinition *definition = mower_logic_settings::find_definition(it.key());
+        if (definition == nullptr) continue;
+        switch (definition->type) {
+            case mower_logic_settings::SettingType::Bool: {
+                dynamic_reconfigure::BoolParameter parameter;
+                parameter.name = it.key();
+                parameter.value = it.value().get<bool>();
+                service.request.config.bools.push_back(parameter);
+                break;
+            }
+            case mower_logic_settings::SettingType::Int: {
+                dynamic_reconfigure::IntParameter parameter;
+                parameter.name = it.key();
+                parameter.value = it.value().get<int>();
+                service.request.config.ints.push_back(parameter);
+                break;
+            }
+            case mower_logic_settings::SettingType::Double: {
+                dynamic_reconfigure::DoubleParameter parameter;
+                parameter.name = it.key();
+                parameter.value = it.value().get<double>();
+                service.request.config.doubles.push_back(parameter);
+                break;
+            }
+            case mower_logic_settings::SettingType::String: {
+                dynamic_reconfigure::StrParameter parameter;
+                parameter.name = it.key();
+                parameter.value = it.value().get<std::string>();
+                service.request.config.strs.push_back(parameter);
+                break;
+            }
+        }
+    }
+    if (!mower_logic_reconfigure_client.call(service)) {
+        validation["valid"] = false;
+        validation["remarks"].push_back("Failed to call /mower_logic/set_parameters.");
+        validation["rejected"] = accepted;
+        validation["applied"] = json::object();
+        return validation;
+    }
+    validation["applied"] = accepted;
+    validation["remarks"].push_back("Session settings applied via dynamic_reconfigure.");
+    return validation;
+}
+
+json handle_mower_logic_persistent_settings(const json &payload) {
+    json accepted;
+    json validation = mower_logic_settings::validate_mower_logic_payload(payload, "persistent", accepted);
+    const auto persistent_values = mower_logic_settings::effective_persistent_values_as_map();
+    mower_logic_settings::validate_cross_constraints(validation, accepted, persistent_values);
+    if (!validation.value("valid", false)) return validation;
+
+    std::string error_message;
+    if (!mower_logic_settings::write_persistent_mower_logic_settings(accepted, error_message)) {
+        validation["valid"] = false;
+        validation["remarks"].push_back(error_message);
+        validation["rejected"] = accepted;
+        validation["applied"] = json::object();
+        return validation;
+    }
+    validation["applied"] = accepted;
+    validation["remarks"].push_back("Persistent settings stored in YAML. Active session values were not changed.");
+    return validation;
+}
+// END: mower_logic settings MQTT bridge
 
 void mow_load_factor_status_json_callback(const std_msgs::String::ConstPtr &msg) {
     try_publish("mow_load_factor/json", msg->data, true);
@@ -1398,6 +1984,13 @@ int main(int argc, char **argv) {
     }
 
     statustransition_log_file = paramNh.param("statustransition_log_file", std::string("/data/ros/log_statustransition.json"));
+    const char *params_path_env = std::getenv("PARAMS_PATH");
+    const std::string default_mower_logic_settings_yaml_path = params_path_env != nullptr
+        ? std::string(params_path_env) + "/mower_params.yaml"
+        : std::string("/data/ros/mower_params.yaml");
+    mower_logic_settings::mower_logic_settings_yaml_path = paramNh.param(
+        "mower_logic_settings_yaml_path", default_mower_logic_settings_yaml_path);
+    mower_logic_settings::startup_effective_persistent_values = mower_logic_settings::active_values_as_map();
     const int configured_statustransition_log_mqtt_limit = paramNh.param("statustransition_log_mqtt_default_limit", 20);
     if (configured_statustransition_log_mqtt_limit <= 0) {
         mqtt_statustransition_log_default_limit = STATUSTRANSITION_LOG_MAX_ENTRIES;
@@ -1446,6 +2039,7 @@ int main(int argc, char **argv) {
     mow_load_factor_set_current_start_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_current_start", 10);
     mow_load_factor_set_current_end_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_current_end", 10);
     mow_load_factor_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/mow_load_factor/renew", 10);
+    mower_logic_reconfigure_client = n->serviceClient<dynamic_reconfigure::Reconfigure>("/mower_logic/set_parameters");
 
     rpc_request_pub = n->advertise<xbot_rpc::RpcRequest>(xbot_rpc::TOPIC_REQUEST, 100);
     ros::Subscriber rpc_response_sub = n->subscribe(xbot_rpc::TOPIC_RESPONSE, 100, rpc_response_callback);
