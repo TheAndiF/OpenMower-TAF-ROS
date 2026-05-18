@@ -12,6 +12,7 @@
 // You should have received a copy of the GNU General Public License along with OpenMower. If not, see
 // <https://www.gnu.org/licenses/>.
 //
+
 #include "grid_map_cv/GridMapCvConverter.hpp"
 #include "grid_map_ros/GridMapRosConverter.hpp"
 #include "grid_map_ros/PolygonRosConverter.hpp"
