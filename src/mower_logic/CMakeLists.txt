@@ -126,6 +126,12 @@ catkin_package(
         #  DEPENDS system_lib
 )
 
+# The persistence helper uses nlohmann::ordered_json, which is provided by
+# the vendored nlohmann_json target instead of Ubuntu Focal's older system header.
+if(NOT TARGET nlohmann_json::nlohmann_json)
+        add_subdirectory(../lib/json json EXCLUDE_FROM_ALL)
+endif()
+
 ###########
 ## Build ##
 ###########
@@ -194,7 +200,7 @@ target_link_libraries(monitoring ${catkin_LIBRARIES})
 
 add_executable(mow_load_factor src/mow_load_factor.cpp)
 add_dependencies(mow_load_factor ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
-target_link_libraries(mow_load_factor ${catkin_LIBRARIES})
+target_link_libraries(mow_load_factor ${catkin_LIBRARIES} nlohmann_json::nlohmann_json)
 
 
 #############
