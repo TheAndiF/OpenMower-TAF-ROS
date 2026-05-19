@@ -2,8 +2,13 @@
 FROM docker.io/ros:noetic-ros-base-focal AS base
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Select a reachable Ubuntu Ports mirror before the first APT update.
+COPY --link docker/select-ubuntu-ports-mirror.sh /usr/local/bin/select-ubuntu-ports-mirror.sh
+
 # Install required base packages only (no nginx/mosquitto here)
-RUN apt-get update && apt-get install --yes \
+RUN chmod +x /usr/local/bin/select-ubuntu-ports-mirror.sh && \
+    /usr/local/bin/select-ubuntu-ports-mirror.sh && \
+    apt-get -o Acquire::Retries=5 --error-on=any update && apt-get install --yes \
     git \
     python3.8-venv \
     sudo \
@@ -25,7 +30,7 @@ COPY --link src/lib/slic3r_coverage_planner /opt/slic3r_coverage_planner_workspa
 WORKDIR /opt/slic3r_coverage_planner_workspace
 RUN rosdep install --from-paths src --ignore-src --simulate | \
     sed --expression '1d' | sort | tr -d '\n' | sed --expression 's/  apt-get install//g' > apt-install_list && \
-    apt-get update && apt-get install --no-install-recommends --yes $(cat apt-install_list) libasio-dev && \
+    apt-get -o Acquire::Retries=5 --error-on=any update && apt-get install --no-install-recommends --yes $(cat apt-install_list) libasio-dev && \
     rm -rf /var/lib/apt/lists/* apt-install_list
 RUN bash -c "source /opt/ros/$ROS_DISTRO/setup.bash && catkin_make"
 RUN bash -c "source /opt/ros/$ROS_DISTRO/setup.bash && source /opt/slic3r_coverage_planner_workspace/devel/setup.bash && catkin_make -DCMAKE_INSTALL_PREFIX=/opt/prebuilt/slic3r_coverage_planner install"
@@ -40,7 +45,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /opt/open_mower_ros
 
 RUN --mount=type=bind,source=src,target=src \
-    apt-get update && \
+    apt-get -o Acquire::Retries=5 --error-on=any update && \
     rosdep install --from-paths src --ignore-src --simulate | \
     sed --expression '1d' | sort | tr -d '\n' | sed --expression 's/  apt-get install//g' > /apt-install_list \
     && rm -rf /var/lib/apt/lists/*
@@ -57,7 +62,7 @@ COPY --link --from=slic3r /opt/prebuilt/slic3r_coverage_planner /opt/prebuilt/sl
 
 # Fetch the list of packages
 COPY --link --from=dependencies /apt-install_list /apt-install_list
-RUN apt-get update && \
+RUN apt-get -o Acquire::Retries=5 --error-on=any update && \
     apt-get install --no-install-recommends --yes $(cat /apt-install_list) libasio-dev && \
     rm -rf /var/lib/apt/lists/*
 
