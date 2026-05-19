@@ -54,6 +54,7 @@
   <exec_depend>roscpp</exec_depend>
     <depend>xbot_msgs</depend>
     <depend>geometry_msgs</depend>
+    <depend>mower_map</depend>
 
 
   <!-- The export tag contains other, unspecified, tags -->
