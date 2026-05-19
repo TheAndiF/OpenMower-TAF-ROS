@@ -85,6 +85,7 @@ jobs:
       # Anmeldung bei GitHub Container Registry.
       # GHCR ist der Speicherort für dein fertiges Docker-Image.
       #
+      #
       # Ergebnis landet später z. B. hier:
       # ghcr.io/theandif/open_mower_ros:test
       - name: Login to GHCR
