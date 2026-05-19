@@ -92367,7 +92367,7 @@ r=s.x.z
 new A.d_(r,A.j(r).i("d_<1>")).fb(new A.agW(this))
 s.mJ(0,"actions/bson",B.cK)
 s.mJ(0,"map/bson",B.bN)
-s.mJ(0,"map_overlay/bson",B.af)
+s.mJ(0,"map/overlay/bson",B.af)
 s.mJ(0,"sensor_infos/bson",B.bN)
 s.mJ(0,q,B.af)
 s.mJ(0,q,B.af)
@@ -92483,7 +92483,7 @@ l=l.gl(l)
 if(J.pk(l.h(0,a),"areas"))r.ary(l)
 else r.arx(l)
 break
-case"map_overlay/bson":l=j.c
+case"map/overlay/bson":l=j.c
 l===$&&A.a()
 l=l.d
 i=l==null?c:l.d1(l,!1)

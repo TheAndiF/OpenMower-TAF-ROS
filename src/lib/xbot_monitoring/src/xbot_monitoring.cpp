@@ -45,6 +45,7 @@ void publish_capabilities();
 void publish_sensor_metadata();
 void publish_map();
 void publish_map_validation(const json &validation);
+void publish_settings_validation(const std::string &settings_namespace, const json &validation);
 json validate_map_payload_for_mqtt(const json &payload);
 void publish_map_overlay();
 void publish_timetable();
@@ -280,83 +281,117 @@ public:
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/session/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json") {
             const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json";
+            const std::string mode = persistent ? "persistent" : "session";
+            json validation = {
+                {"valid", false},
+                {"namespace", "mow_load_factor"},
+                {"mode", mode},
+                {"accepted", json::array()},
+                {"rejected", json::array()}
+            };
             try {
                 json payload = json::parse(ptr->get_payload_str());
                 if (!payload.is_object()) {
+                    validation["rejected"].push_back({{"key", "$"}, {"reason", "payload must be a JSON object"}});
                     ROS_WARN_STREAM("Ignoring settings/mow_load_factor set payload because it is not a JSON object.");
                 } else {
-                    bool handled = false;
-                    if (payload.contains("enabled") && payload["enabled"].is_boolean()) {
-                        std_msgs::Bool msg;
-                        msg.data = payload["enabled"].get<bool>();
-                        (persistent ? mow_load_factor_set_persistent_enabled_pub : mow_load_factor_set_enabled_pub).publish(msg);
-                        handled = true;
+                    for (auto it = payload.begin(); it != payload.end(); ++it) {
+                        const std::string key = it.key();
+                        const json &value = it.value();
+                        if (key == "enabled") {
+                            if (!value.is_boolean()) {
+                                validation["rejected"].push_back({{"key", key}, {"reason", "value must be boolean"}});
+                                continue;
+                            }
+                            std_msgs::Bool msg;
+                            msg.data = value.get<bool>();
+                            (persistent ? mow_load_factor_set_persistent_enabled_pub : mow_load_factor_set_enabled_pub).publish(msg);
+                            validation["accepted"].push_back(key);
+                        } else if (key == "min_factor" || key == "current_start" || key == "current_end") {
+                            if (!value.is_number()) {
+                                validation["rejected"].push_back({{"key", key}, {"reason", "value must be numeric"}});
+                                continue;
+                            }
+                            std_msgs::Float32 msg;
+                            msg.data = value.get<float>();
+                            if (key == "min_factor") {
+                                (persistent ? mow_load_factor_set_persistent_min_factor_pub : mow_load_factor_set_min_factor_pub).publish(msg);
+                            } else if (key == "current_start") {
+                                (persistent ? mow_load_factor_set_persistent_current_start_pub : mow_load_factor_set_current_start_pub).publish(msg);
+                            } else {
+                                (persistent ? mow_load_factor_set_persistent_current_end_pub : mow_load_factor_set_current_end_pub).publish(msg);
+                            }
+                            validation["accepted"].push_back(key);
+                        } else {
+                            validation["rejected"].push_back({{"key", key}, {"reason", "unknown setting"}});
+                        }
                     }
-                    if (payload.contains("min_factor") && payload["min_factor"].is_number()) {
-                        std_msgs::Float32 msg;
-                        msg.data = payload["min_factor"].get<float>();
-                        (persistent ? mow_load_factor_set_persistent_min_factor_pub : mow_load_factor_set_min_factor_pub).publish(msg);
-                        handled = true;
-                    }
-                    if (payload.contains("current_start") && payload["current_start"].is_number()) {
-                        std_msgs::Float32 msg;
-                        msg.data = payload["current_start"].get<float>();
-                        (persistent ? mow_load_factor_set_persistent_current_start_pub : mow_load_factor_set_current_start_pub).publish(msg);
-                        handled = true;
-                    }
-                    if (payload.contains("current_end") && payload["current_end"].is_number()) {
-                        std_msgs::Float32 msg;
-                        msg.data = payload["current_end"].get<float>();
-                        (persistent ? mow_load_factor_set_persistent_current_end_pub : mow_load_factor_set_current_end_pub).publish(msg);
-                        handled = true;
-                    }
-                    if (!handled) {
-                        ROS_WARN_STREAM("Ignoring settings/mow_load_factor set payload without boolean 'enabled' or numeric 'min_factor', 'current_start', or 'current_end'.");
+                    if (validation["accepted"].empty() && validation["rejected"].empty()) {
+                        validation["rejected"].push_back({{"key", "$"}, {"reason", "payload does not contain any settings"}});
                     }
                 }
             } catch (const json::exception &e) {
+                validation["rejected"].push_back({{"key", "$"}, {"reason", std::string("Error decoding JSON: ") + e.what()}});
                 ROS_WARN_STREAM("Error decoding settings/mow_load_factor set JSON: " << e.what());
             }
+            validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
+            publish_settings_validation("mow_load_factor", validation);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/renew/json") {
             std_msgs::Empty msg;
             mow_load_factor_renew_pub.publish(msg);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/session/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json") {
             const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json";
+            const std::string mode = persistent ? "persistent" : "session";
+            json validation = {
+                {"valid", false},
+                {"namespace", "ll_board"},
+                {"mode", mode},
+                {"accepted", json::array()},
+                {"rejected", json::array()}
+            };
             try {
                 json payload = json::parse(ptr->get_payload_str());
                 if (!payload.is_object()) {
+                    validation["rejected"].push_back({{"key", "$"}, {"reason", "payload must be a JSON object"}});
                     ROS_WARN_STREAM("Ignoring settings/ll_board set payload because it is not a JSON object.");
                 } else {
-                    bool handled = false;
-                    auto publish_number = [&payload, &handled, persistent](const char* key, ros::Publisher& session_publisher,
-                                                                             ros::Publisher& persistent_publisher) {
-                        if (payload.contains(key) && payload[key].is_number()) {
-                            std_msgs::Float64 msg;
-                            msg.data = payload[key].get<double>();
-                            (persistent ? persistent_publisher : session_publisher).publish(msg);
-                            handled = true;
-                        }
+                    const std::map<std::string, std::pair<ros::Publisher*, ros::Publisher*>> publishers = {
+                        {"battery_critical_voltage", {&ll_power_set_battery_critical_voltage_pub, &ll_power_set_persistent_battery_critical_voltage_pub}},
+                        {"battery_empty_voltage", {&ll_power_set_battery_empty_voltage_pub, &ll_power_set_persistent_battery_empty_voltage_pub}},
+                        {"battery_full_voltage", {&ll_power_set_battery_full_voltage_pub, &ll_power_set_persistent_battery_full_voltage_pub}},
+                        {"battery_critical_high_voltage", {&ll_power_set_battery_critical_high_voltage_pub, &ll_power_set_persistent_battery_critical_high_voltage_pub}},
+                        {"charge_critical_high_voltage", {&ll_power_set_charge_critical_high_voltage_pub, &ll_power_set_persistent_charge_critical_high_voltage_pub}},
+                        {"charge_critical_high_current", {&ll_power_set_charge_critical_high_current_pub, &ll_power_set_persistent_charge_critical_high_current_pub}}
                     };
-                    publish_number("battery_critical_voltage", ll_power_set_battery_critical_voltage_pub,
-                                   ll_power_set_persistent_battery_critical_voltage_pub);
-                    publish_number("battery_empty_voltage", ll_power_set_battery_empty_voltage_pub,
-                                   ll_power_set_persistent_battery_empty_voltage_pub);
-                    publish_number("battery_full_voltage", ll_power_set_battery_full_voltage_pub,
-                                   ll_power_set_persistent_battery_full_voltage_pub);
-                    publish_number("battery_critical_high_voltage", ll_power_set_battery_critical_high_voltage_pub,
-                                   ll_power_set_persistent_battery_critical_high_voltage_pub);
-                    publish_number("charge_critical_high_voltage", ll_power_set_charge_critical_high_voltage_pub,
-                                   ll_power_set_persistent_charge_critical_high_voltage_pub);
-                    publish_number("charge_critical_high_current", ll_power_set_charge_critical_high_current_pub,
-                                   ll_power_set_persistent_charge_critical_high_current_pub);
-                    if (!handled) {
-                        ROS_WARN_STREAM("Ignoring settings/ll_board set payload without numeric low-level board fields.");
+                    for (auto it = payload.begin(); it != payload.end(); ++it) {
+                        const std::string key = it.key();
+                        const json &value = it.value();
+                        const auto publisher_it = publishers.find(key);
+                        if (publisher_it == publishers.end()) {
+                            validation["rejected"].push_back({{"key", key}, {"reason", "unknown setting"}});
+                            continue;
+                        }
+                        if (!value.is_number()) {
+                            validation["rejected"].push_back({{"key", key}, {"reason", "value must be numeric"}});
+                            continue;
+                        }
+                        std_msgs::Float64 msg;
+                        msg.data = value.get<double>();
+                        ros::Publisher *publisher = persistent ? publisher_it->second.second : publisher_it->second.first;
+                        publisher->publish(msg);
+                        validation["accepted"].push_back(key);
+                    }
+                    if (validation["accepted"].empty() && validation["rejected"].empty()) {
+                        validation["rejected"].push_back({{"key", "$"}, {"reason", "payload does not contain any settings"}});
                     }
                 }
             } catch (const json::exception &e) {
+                validation["rejected"].push_back({{"key", "$"}, {"reason", std::string("Error decoding JSON: ") + e.what()}});
                 ROS_WARN_STREAM("Error decoding settings/ll_board set JSON: " << e.what());
             }
+            validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
+            publish_settings_validation("ll_board", validation);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/renew/json") {
             publish_ll_power_status_request();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "timetable/set/renew/json" ||
@@ -1104,6 +1139,10 @@ void publish_map_validation(const json &validation) {
     try_publish("map/validation/json", validation.dump(2), true);
 }
 
+void publish_settings_validation(const std::string &settings_namespace, const json &validation) {
+    try_publish("settings/" + settings_namespace + "/validation/json", validation.dump(2), true);
+}
+
 json validate_map_payload_for_mqtt(const json &payload) {
     json remarks = json::array();
 
@@ -1163,10 +1202,13 @@ void publish_map_overlay() {
             return;
         m = map_overlay;
     }
+    // Canonical map overlay topics. The legacy map_overlay/* aliases stay during the transition period.
+    try_publish("map/overlay/json", m.dump(), true);
     try_publish("map_overlay/json", m.dump(), true);
     json data;
     data["d"] = m;
     auto bson = json::to_bson(data);
+    try_publish_binary("map/overlay/bson", bson.data(), bson.size(), true);
     try_publish_binary("map_overlay/bson", bson.data(), bson.size(), true);
 }
 
