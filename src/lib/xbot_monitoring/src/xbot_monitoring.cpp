@@ -83,6 +83,10 @@ ros::Publisher mow_load_factor_set_enabled_pub;
 ros::Publisher mow_load_factor_set_min_factor_pub;
 ros::Publisher mow_load_factor_set_current_start_pub;
 ros::Publisher mow_load_factor_set_current_end_pub;
+ros::Publisher mow_load_factor_set_persistent_enabled_pub;
+ros::Publisher mow_load_factor_set_persistent_min_factor_pub;
+ros::Publisher mow_load_factor_set_persistent_current_start_pub;
+ros::Publisher mow_load_factor_set_persistent_current_end_pub;
 ros::Publisher mow_load_factor_renew_pub;
 ros::Publisher ll_power_set_battery_critical_voltage_pub;
 ros::Publisher ll_power_set_battery_empty_voltage_pub;
@@ -90,6 +94,12 @@ ros::Publisher ll_power_set_battery_full_voltage_pub;
 ros::Publisher ll_power_set_battery_critical_high_voltage_pub;
 ros::Publisher ll_power_set_charge_critical_high_voltage_pub;
 ros::Publisher ll_power_set_charge_critical_high_current_pub;
+ros::Publisher ll_power_set_persistent_battery_critical_voltage_pub;
+ros::Publisher ll_power_set_persistent_battery_empty_voltage_pub;
+ros::Publisher ll_power_set_persistent_battery_full_voltage_pub;
+ros::Publisher ll_power_set_persistent_battery_critical_high_voltage_pub;
+ros::Publisher ll_power_set_persistent_charge_critical_high_voltage_pub;
+ros::Publisher ll_power_set_persistent_charge_critical_high_current_pub;
 ros::Publisher ll_power_renew_pub;
 
 // properties for external mqtt
@@ -135,10 +145,12 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "map/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "mow_load_factor/set/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "mow_load_factor/set/renew/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "ll_power/set/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "ll_power/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/session/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/session/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/renew/json", 0);
     }
 
 public:
@@ -265,76 +277,87 @@ public:
                 }
             }
             publish_statustransition_log(requested_limit);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "mow_load_factor/set/json") {
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/session/json" ||
+                   ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json") {
+            const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json";
             try {
                 json payload = json::parse(ptr->get_payload_str());
                 if (!payload.is_object()) {
-                    ROS_WARN_STREAM("Ignoring mow_load_factor/set/json payload because it is not a JSON object.");
+                    ROS_WARN_STREAM("Ignoring settings/mow_load_factor set payload because it is not a JSON object.");
                 } else {
                     bool handled = false;
                     if (payload.contains("enabled") && payload["enabled"].is_boolean()) {
                         std_msgs::Bool msg;
                         msg.data = payload["enabled"].get<bool>();
-                        mow_load_factor_set_enabled_pub.publish(msg);
+                        (persistent ? mow_load_factor_set_persistent_enabled_pub : mow_load_factor_set_enabled_pub).publish(msg);
                         handled = true;
                     }
                     if (payload.contains("min_factor") && payload["min_factor"].is_number()) {
                         std_msgs::Float32 msg;
                         msg.data = payload["min_factor"].get<float>();
-                        mow_load_factor_set_min_factor_pub.publish(msg);
+                        (persistent ? mow_load_factor_set_persistent_min_factor_pub : mow_load_factor_set_min_factor_pub).publish(msg);
                         handled = true;
                     }
                     if (payload.contains("current_start") && payload["current_start"].is_number()) {
                         std_msgs::Float32 msg;
                         msg.data = payload["current_start"].get<float>();
-                        mow_load_factor_set_current_start_pub.publish(msg);
+                        (persistent ? mow_load_factor_set_persistent_current_start_pub : mow_load_factor_set_current_start_pub).publish(msg);
                         handled = true;
                     }
                     if (payload.contains("current_end") && payload["current_end"].is_number()) {
                         std_msgs::Float32 msg;
                         msg.data = payload["current_end"].get<float>();
-                        mow_load_factor_set_current_end_pub.publish(msg);
+                        (persistent ? mow_load_factor_set_persistent_current_end_pub : mow_load_factor_set_current_end_pub).publish(msg);
                         handled = true;
                     }
                     if (!handled) {
-                        ROS_WARN_STREAM("Ignoring mow_load_factor/set/json payload without boolean 'enabled' or numeric 'min_factor', 'current_start', or 'current_end'.");
+                        ROS_WARN_STREAM("Ignoring settings/mow_load_factor set payload without boolean 'enabled' or numeric 'min_factor', 'current_start', or 'current_end'.");
                     }
                 }
             } catch (const json::exception &e) {
-                ROS_WARN_STREAM("Error decoding mow_load_factor set JSON: " << e.what());
+                ROS_WARN_STREAM("Error decoding settings/mow_load_factor set JSON: " << e.what());
             }
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "mow_load_factor/set/renew/json") {
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/renew/json") {
             std_msgs::Empty msg;
             mow_load_factor_renew_pub.publish(msg);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "ll_power/set/json") {
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/session/json" ||
+                   ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json") {
+            const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json";
             try {
                 json payload = json::parse(ptr->get_payload_str());
                 if (!payload.is_object()) {
-                    ROS_WARN_STREAM("Ignoring ll_power/set/json payload because it is not a JSON object.");
+                    ROS_WARN_STREAM("Ignoring settings/ll_board set payload because it is not a JSON object.");
                 } else {
                     bool handled = false;
-                    auto publish_number = [&payload, &handled](const char* key, ros::Publisher& publisher) {
+                    auto publish_number = [&payload, &handled, persistent](const char* key, ros::Publisher& session_publisher,
+                                                                             ros::Publisher& persistent_publisher) {
                         if (payload.contains(key) && payload[key].is_number()) {
                             std_msgs::Float64 msg;
                             msg.data = payload[key].get<double>();
-                            publisher.publish(msg);
+                            (persistent ? persistent_publisher : session_publisher).publish(msg);
                             handled = true;
                         }
                     };
-                    publish_number("battery_critical_voltage", ll_power_set_battery_critical_voltage_pub);
-                    publish_number("battery_empty_voltage", ll_power_set_battery_empty_voltage_pub);
-                    publish_number("battery_full_voltage", ll_power_set_battery_full_voltage_pub);
-                    publish_number("battery_critical_high_voltage", ll_power_set_battery_critical_high_voltage_pub);
-                    publish_number("charge_critical_high_voltage", ll_power_set_charge_critical_high_voltage_pub);
-                    publish_number("charge_critical_high_current", ll_power_set_charge_critical_high_current_pub);
+                    publish_number("battery_critical_voltage", ll_power_set_battery_critical_voltage_pub,
+                                   ll_power_set_persistent_battery_critical_voltage_pub);
+                    publish_number("battery_empty_voltage", ll_power_set_battery_empty_voltage_pub,
+                                   ll_power_set_persistent_battery_empty_voltage_pub);
+                    publish_number("battery_full_voltage", ll_power_set_battery_full_voltage_pub,
+                                   ll_power_set_persistent_battery_full_voltage_pub);
+                    publish_number("battery_critical_high_voltage", ll_power_set_battery_critical_high_voltage_pub,
+                                   ll_power_set_persistent_battery_critical_high_voltage_pub);
+                    publish_number("charge_critical_high_voltage", ll_power_set_charge_critical_high_voltage_pub,
+                                   ll_power_set_persistent_charge_critical_high_voltage_pub);
+                    publish_number("charge_critical_high_current", ll_power_set_charge_critical_high_current_pub,
+                                   ll_power_set_persistent_charge_critical_high_current_pub);
                     if (!handled) {
-                        ROS_WARN_STREAM("Ignoring ll_power/set/json payload without numeric low-level power fields.");
+                        ROS_WARN_STREAM("Ignoring settings/ll_board set payload without numeric low-level board fields.");
                     }
                 }
             } catch (const json::exception &e) {
-                ROS_WARN_STREAM("Error decoding ll_power set JSON: " << e.what());
+                ROS_WARN_STREAM("Error decoding settings/ll_board set JSON: " << e.what());
             }
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "ll_power/set/renew/json") {
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/renew/json") {
             publish_ll_power_status_request();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "timetable/set/renew/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "timetable/set/renew/bson") {
@@ -506,11 +529,11 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
 }
 
 void mow_load_factor_status_json_callback(const std_msgs::String::ConstPtr &msg) {
-    try_publish("mow_load_factor/json", msg->data, true);
+    try_publish("settings/mow_load_factor/json", msg->data, true);
 }
 
 void ll_power_status_json_callback(const std_msgs::String::ConstPtr &msg) {
-    try_publish("ll_power/json", msg->data, true);
+    try_publish("settings/ll_board/json", msg->data, true);
 }
 
 void publish_ll_power_status_request() {
@@ -1496,6 +1519,10 @@ int main(int argc, char **argv) {
     mow_load_factor_set_min_factor_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_min_factor", 10);
     mow_load_factor_set_current_start_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_current_start", 10);
     mow_load_factor_set_current_end_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_current_end", 10);
+    mow_load_factor_set_persistent_enabled_pub = n->advertise<std_msgs::Bool>("/mower_logic/mow_load_factor/set_persistent_enabled", 10);
+    mow_load_factor_set_persistent_min_factor_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_persistent_min_factor", 10);
+    mow_load_factor_set_persistent_current_start_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_persistent_current_start", 10);
+    mow_load_factor_set_persistent_current_end_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_persistent_current_end", 10);
     mow_load_factor_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/mow_load_factor/renew", 10);
     ll_power_set_battery_critical_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_critical_voltage", 10);
     ll_power_set_battery_empty_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_empty_voltage", 10);
@@ -1503,6 +1530,12 @@ int main(int argc, char **argv) {
     ll_power_set_battery_critical_high_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_critical_high_voltage", 10);
     ll_power_set_charge_critical_high_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/charge_critical_high_voltage", 10);
     ll_power_set_charge_critical_high_current_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/charge_critical_high_current", 10);
+    ll_power_set_persistent_battery_critical_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/battery_critical_voltage", 10);
+    ll_power_set_persistent_battery_empty_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/battery_empty_voltage", 10);
+    ll_power_set_persistent_battery_full_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/battery_full_voltage", 10);
+    ll_power_set_persistent_battery_critical_high_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/battery_critical_high_voltage", 10);
+    ll_power_set_persistent_charge_critical_high_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/charge_critical_high_voltage", 10);
+    ll_power_set_persistent_charge_critical_high_current_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/charge_critical_high_current", 10);
     ll_power_renew_pub = n->advertise<std_msgs::Empty>("/ll/services/power/renew", 10);
 
     rpc_request_pub = n->advertise<xbot_rpc::RpcRequest>(xbot_rpc::TOPIC_REQUEST, 100);

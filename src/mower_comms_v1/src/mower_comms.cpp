@@ -32,6 +32,10 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <string>
+
+#include <nlohmann/json.hpp>
+#include <open_mower/settings_persistence.h>
 
 #include "COBS.h"
 #include "boost/crc.hpp"
@@ -88,6 +92,10 @@ dynamic_reconfigure::Client<mower_logic::MowerLogicConfig>* reconfigClient;
 dynamic_reconfigure::Client<ll::PowerConfig>* powerReconfigClient;
 mower_logic::MowerLogicConfig mower_logic_config;
 ll::PowerConfig power_config;
+ll::PowerConfig ll_power_persistent_config;
+ll::PowerConfig ll_power_default_config;
+std::string ll_power_settings_persistent_path;
+open_mower_settings::json ll_power_settings_entries;
 
 // Serial port and buffer for the low level connection
 serial::Serial serial_port;
@@ -690,60 +698,292 @@ void checkAndSendConfig() {
   if (dirty) configTracker.setDirty();
 }
 
+using LlSettingsJson = open_mower_settings::json;
+
+static constexpr const char* kLlBoardSettingsNamespace = "ll_board";
+
+bool llPowerDiffers(double active, double persistent) {
+  return std::fabs(active - persistent) > 1e-9;
+}
+
+LlSettingsJson makeLlPowerNumberEntry(const std::string& label, const std::string& description, int order,
+                                       double default_value, const std::string& unit) {
+  LlSettingsJson entry = LlSettingsJson::object();
+  entry["label"] = label;
+  entry["description"] = description;
+  entry["group"] = kLlBoardSettingsNamespace;
+  entry["order"] = order;
+  entry["session_apply_supported"] = true;
+  entry["restart_required"] = false;
+  entry["default"] = default_value;
+  entry["persistent"] = default_value;
+  entry["unit"] = unit;
+  entry["type"] = "number";
+  return entry;
+}
+
+LlSettingsJson seedLlPowerSettingsFromBootstrap() {
+  LlSettingsJson seed = LlSettingsJson::object();
+  seed["battery_critical_voltage"] = makeLlPowerNumberEntry(
+      "Akku kritisch", "Spannung zum unmittelbaren Rueckkehren zur Ladestation.", 10,
+      power_config.battery_critical_voltage, "V");
+  seed["battery_empty_voltage"] = makeLlPowerNumberEntry(
+      "Akku leer", "Spannung fuer Rueckkehr zur Ladestation nach Auswerteintervall.", 20,
+      power_config.battery_empty_voltage, "V");
+  seed["battery_full_voltage"] = makeLlPowerNumberEntry(
+      "Akku voll", "Spannung, ab der erneut gemaeht werden darf.", 30,
+      power_config.battery_full_voltage, "V");
+  seed["battery_critical_high_voltage"] = makeLlPowerNumberEntry(
+      "Akku Hochspannung kritisch", "Batteriespannung, bei der der Ladevorgang abgeschaltet wird.", 40,
+      power_config.battery_critical_high_voltage, "V");
+  seed["charge_critical_high_voltage"] = makeLlPowerNumberEntry(
+      "Ladespannung kritisch", "Maximale Ladespannung vor Abschaltung des Ladens.", 50,
+      power_config.charge_critical_high_voltage, "V");
+  seed["charge_critical_high_current"] = makeLlPowerNumberEntry(
+      "Ladestrom kritisch", "Maximaler Ladestrom vor Abschaltung des Ladens.", 60,
+      power_config.charge_critical_high_current, "A");
+  return seed;
+}
+
+double llPowerEntryNumber(const std::string& key, const std::string& field, double fallback) {
+  if (!ll_power_settings_entries.contains(key) || !ll_power_settings_entries[key].is_object()) {
+    return fallback;
+  }
+  return open_mower_settings::numberOr(ll_power_settings_entries[key], field, fallback);
+}
+
+void syncLlPowerDefaultParamTree() {
+  const std::string root = std::string("/settings/") + kLlBoardSettingsNamespace + "/default/";
+  ros::param::set(root + "battery_critical_voltage",
+                  llPowerEntryNumber("battery_critical_voltage", "default", power_config.battery_critical_voltage));
+  ros::param::set(root + "battery_empty_voltage",
+                  llPowerEntryNumber("battery_empty_voltage", "default", power_config.battery_empty_voltage));
+  ros::param::set(root + "battery_full_voltage",
+                  llPowerEntryNumber("battery_full_voltage", "default", power_config.battery_full_voltage));
+  ros::param::set(root + "battery_critical_high_voltage",
+                  llPowerEntryNumber("battery_critical_high_voltage", "default", power_config.battery_critical_high_voltage));
+  ros::param::set(root + "charge_critical_high_voltage",
+                  llPowerEntryNumber("charge_critical_high_voltage", "default", power_config.charge_critical_high_voltage));
+  ros::param::set(root + "charge_critical_high_current",
+                  llPowerEntryNumber("charge_critical_high_current", "default", power_config.charge_critical_high_current));
+}
+
+void syncLlPowerPersistentParamTree() {
+  syncLlPowerDefaultParamTree();
+  const std::string root = std::string("/settings/") + kLlBoardSettingsNamespace + "/persistent/";
+  ros::param::set(root + "battery_critical_voltage", ll_power_persistent_config.battery_critical_voltage);
+  ros::param::set(root + "battery_empty_voltage", ll_power_persistent_config.battery_empty_voltage);
+  ros::param::set(root + "battery_full_voltage", ll_power_persistent_config.battery_full_voltage);
+  ros::param::set(root + "battery_critical_high_voltage", ll_power_persistent_config.battery_critical_high_voltage);
+  ros::param::set(root + "charge_critical_high_voltage", ll_power_persistent_config.charge_critical_high_voltage);
+  ros::param::set(root + "charge_critical_high_current", ll_power_persistent_config.charge_critical_high_current);
+}
+
+void syncLlPowerActiveParamTree() {
+  const std::string root = std::string("/settings/") + kLlBoardSettingsNamespace + "/active/";
+  ros::param::set(root + "battery_critical_voltage", power_config.battery_critical_voltage);
+  ros::param::set(root + "battery_empty_voltage", power_config.battery_empty_voltage);
+  ros::param::set(root + "battery_full_voltage", power_config.battery_full_voltage);
+  ros::param::set(root + "battery_critical_high_voltage", power_config.battery_critical_high_voltage);
+  ros::param::set(root + "charge_critical_high_voltage", power_config.charge_critical_high_voltage);
+  ros::param::set(root + "charge_critical_high_current", power_config.charge_critical_high_current);
+}
+
+void syncLlPowerLegacyWorkingParams() {
+  ros::param::set("/ll/services/power/battery_critical_voltage", power_config.battery_critical_voltage);
+  ros::param::set("/ll/services/power/battery_empty_voltage", power_config.battery_empty_voltage);
+  ros::param::set("/ll/services/power/battery_full_voltage", power_config.battery_full_voltage);
+  ros::param::set("/ll/services/power/battery_critical_high_voltage", power_config.battery_critical_high_voltage);
+  ros::param::set("/ll/services/power/charge_critical_high_voltage", power_config.charge_critical_high_voltage);
+  ros::param::set("/ll/services/power/charge_critical_high_current", power_config.charge_critical_high_current);
+}
+
+void loadLlPowerPersistentValues(bool apply_to_active) {
+  ll_power_persistent_config.battery_critical_voltage =
+      llPowerEntryNumber("battery_critical_voltage", "persistent", power_config.battery_critical_voltage);
+  ll_power_persistent_config.battery_empty_voltage =
+      llPowerEntryNumber("battery_empty_voltage", "persistent", power_config.battery_empty_voltage);
+  ll_power_persistent_config.battery_full_voltage =
+      llPowerEntryNumber("battery_full_voltage", "persistent", power_config.battery_full_voltage);
+  ll_power_persistent_config.battery_critical_high_voltage =
+      llPowerEntryNumber("battery_critical_high_voltage", "persistent", power_config.battery_critical_high_voltage);
+  ll_power_persistent_config.charge_critical_high_voltage =
+      llPowerEntryNumber("charge_critical_high_voltage", "persistent", power_config.charge_critical_high_voltage);
+  ll_power_persistent_config.charge_critical_high_current =
+      llPowerEntryNumber("charge_critical_high_current", "persistent", power_config.charge_critical_high_current);
+
+  syncLlPowerPersistentParamTree();
+
+  if (apply_to_active) {
+    power_config.battery_critical_voltage = ll_power_persistent_config.battery_critical_voltage;
+    power_config.battery_empty_voltage = ll_power_persistent_config.battery_empty_voltage;
+    power_config.battery_full_voltage = ll_power_persistent_config.battery_full_voltage;
+    power_config.battery_critical_high_voltage = ll_power_persistent_config.battery_critical_high_voltage;
+    power_config.charge_critical_high_voltage = ll_power_persistent_config.charge_critical_high_voltage;
+    power_config.charge_critical_high_current = ll_power_persistent_config.charge_critical_high_current;
+    syncLlPowerActiveParamTree();
+    syncLlPowerLegacyWorkingParams();
+  }
+}
+
+void initializeLlPowerPersistentSettings() {
+  ll_power_settings_entries = open_mower_settings::mergeNamespaceWithSeed(
+      ll_power_settings_persistent_path, kLlBoardSettingsNamespace, seedLlPowerSettingsFromBootstrap());
+  loadLlPowerPersistentValues(true);
+}
+
+void reloadLlPowerPersistentSettingsMetadata() {
+  ll_power_settings_entries = open_mower_settings::mergeNamespaceWithSeed(
+      ll_power_settings_persistent_path, kLlBoardSettingsNamespace, seedLlPowerSettingsFromBootstrap());
+  loadLlPowerPersistentValues(false);
+}
+
+LlSettingsJson orderedLlPowerStatusBase(const LlSettingsJson& entry) {
+  LlSettingsJson out = LlSettingsJson::object();
+  out["label"] = open_mower_settings::stringOr(entry, "label", "");
+  out["description"] = open_mower_settings::stringOr(entry, "description", "");
+  out["group"] = open_mower_settings::stringOr(entry, "group", kLlBoardSettingsNamespace);
+  out["order"] = open_mower_settings::intOr(entry, "order", 0);
+  out["session_apply_supported"] = open_mower_settings::boolOr(entry, "session_apply_supported", true);
+  out["restart_required"] = open_mower_settings::boolOr(entry, "restart_required", false);
+  return out;
+}
+
+LlSettingsJson llPowerStatusNumber(const std::string& key, double active, double persistent) {
+  const LlSettingsJson& entry = ll_power_settings_entries.at(key);
+  LlSettingsJson out = orderedLlPowerStatusBase(entry);
+  out["default"] = open_mower_settings::numberOr(entry, "default", 0.0);
+  out["persistent"] = persistent;
+  out["active"] = active;
+  out["different"] = llPowerDiffers(active, persistent);
+  out["unit"] = open_mower_settings::stringOr(entry, "unit", "");
+  out["type"] = open_mower_settings::stringOr(entry, "type", "number");
+  if (entry.contains("min") && entry["min"].is_number()) {
+    out["min"] = entry["min"];
+  }
+  if (entry.contains("max") && entry["max"].is_number()) {
+    out["max"] = entry["max"];
+  }
+  return out;
+}
+
 void publishLlPowerStatusJson() {
-  std::ostringstream out;
-  out << std::fixed << std::setprecision(6)
-      << "{"
-      << "\"battery_critical_voltage\":" << power_config.battery_critical_voltage << ","
-      << "\"battery_empty_voltage\":" << power_config.battery_empty_voltage << ","
-      << "\"battery_full_voltage\":" << power_config.battery_full_voltage << ","
-      << "\"battery_critical_high_voltage\":" << power_config.battery_critical_high_voltage << ","
-      << "\"charge_critical_high_voltage\":" << power_config.charge_critical_high_voltage << ","
-      << "\"charge_critical_high_current\":" << power_config.charge_critical_high_current
-      << "}";
+  LlSettingsJson status = LlSettingsJson::object();
+  status["schema"] = "settings_v1";
+  status["namespace"] = kLlBoardSettingsNamespace;
+  status["settings"] = LlSettingsJson::object();
+  status["settings"]["battery_critical_voltage"] =
+      llPowerStatusNumber("battery_critical_voltage", power_config.battery_critical_voltage,
+                          ll_power_persistent_config.battery_critical_voltage);
+  status["settings"]["battery_empty_voltage"] =
+      llPowerStatusNumber("battery_empty_voltage", power_config.battery_empty_voltage,
+                          ll_power_persistent_config.battery_empty_voltage);
+  status["settings"]["battery_full_voltage"] =
+      llPowerStatusNumber("battery_full_voltage", power_config.battery_full_voltage,
+                          ll_power_persistent_config.battery_full_voltage);
+  status["settings"]["battery_critical_high_voltage"] =
+      llPowerStatusNumber("battery_critical_high_voltage", power_config.battery_critical_high_voltage,
+                          ll_power_persistent_config.battery_critical_high_voltage);
+  status["settings"]["charge_critical_high_voltage"] =
+      llPowerStatusNumber("charge_critical_high_voltage", power_config.charge_critical_high_voltage,
+                          ll_power_persistent_config.charge_critical_high_voltage);
+  status["settings"]["charge_critical_high_current"] =
+      llPowerStatusNumber("charge_critical_high_current", power_config.charge_critical_high_current,
+                          ll_power_persistent_config.charge_critical_high_current);
 
   std_msgs::String msg;
-  msg.data = out.str();
+  msg.data = status.dump();
   ll_power_status_json_pub.publish(msg);
 }
 
 template <typename Setter>
-void updateLlPowerValue(const std_msgs::Float64::ConstPtr& msg, const std::string& param_name, Setter setter) {
+void updateLlPowerValue(const std_msgs::Float64::ConstPtr& msg, const std::string& param_name, Setter setter,
+                        bool persist) {
   if (!std::isfinite(msg->data)) {
     ROS_WARN_STREAM("Ignoring non-finite low-level power value for " << param_name);
     return;
   }
   setter(msg->data);
-  ros::param::set("/ll/services/power/" + param_name, msg->data);
+  if (persist) {
+    if (param_name == "battery_critical_voltage") ll_power_persistent_config.battery_critical_voltage = msg->data;
+    if (param_name == "battery_empty_voltage") ll_power_persistent_config.battery_empty_voltage = msg->data;
+    if (param_name == "battery_full_voltage") ll_power_persistent_config.battery_full_voltage = msg->data;
+    if (param_name == "battery_critical_high_voltage") ll_power_persistent_config.battery_critical_high_voltage = msg->data;
+    if (param_name == "charge_critical_high_voltage") ll_power_persistent_config.charge_critical_high_voltage = msg->data;
+    if (param_name == "charge_critical_high_current") ll_power_persistent_config.charge_critical_high_current = msg->data;
+    ll_power_settings_entries[param_name]["persistent"] = msg->data;
+    open_mower_settings::updateEntryField(ll_power_settings_persistent_path, kLlBoardSettingsNamespace,
+                                          param_name, "persistent", msg->data);
+    syncLlPowerPersistentParamTree();
+  }
+  syncLlPowerActiveParamTree();
+  syncLlPowerLegacyWorkingParams();
   checkAndSendConfig();
   publishLlPowerStatusJson();
 }
 
 void llPowerBatteryCriticalVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_critical_voltage", [](double value) { power_config.battery_critical_voltage = value; });
+  updateLlPowerValue(msg, "battery_critical_voltage",
+                     [](double value) { power_config.battery_critical_voltage = value; }, false);
 }
 
 void llPowerBatteryEmptyVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_empty_voltage", [](double value) { power_config.battery_empty_voltage = value; });
+  updateLlPowerValue(msg, "battery_empty_voltage",
+                     [](double value) { power_config.battery_empty_voltage = value; }, false);
 }
 
 void llPowerBatteryFullVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_full_voltage", [](double value) { power_config.battery_full_voltage = value; });
+  updateLlPowerValue(msg, "battery_full_voltage",
+                     [](double value) { power_config.battery_full_voltage = value; }, false);
 }
 
 void llPowerBatteryCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_critical_high_voltage", [](double value) { power_config.battery_critical_high_voltage = value; });
+  updateLlPowerValue(msg, "battery_critical_high_voltage",
+                     [](double value) { power_config.battery_critical_high_voltage = value; }, false);
 }
 
 void llPowerChargeCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "charge_critical_high_voltage", [](double value) { power_config.charge_critical_high_voltage = value; });
+  updateLlPowerValue(msg, "charge_critical_high_voltage",
+                     [](double value) { power_config.charge_critical_high_voltage = value; }, false);
 }
 
 void llPowerChargeCriticalHighCurrentCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "charge_critical_high_current", [](double value) { power_config.charge_critical_high_current = value; });
+  updateLlPowerValue(msg, "charge_critical_high_current",
+                     [](double value) { power_config.charge_critical_high_current = value; }, false);
+}
+
+void llPowerPersistentBatteryCriticalVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "battery_critical_voltage",
+                     [](double value) { power_config.battery_critical_voltage = value; }, true);
+}
+
+void llPowerPersistentBatteryEmptyVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "battery_empty_voltage",
+                     [](double value) { power_config.battery_empty_voltage = value; }, true);
+}
+
+void llPowerPersistentBatteryFullVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "battery_full_voltage",
+                     [](double value) { power_config.battery_full_voltage = value; }, true);
+}
+
+void llPowerPersistentBatteryCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "battery_critical_high_voltage",
+                     [](double value) { power_config.battery_critical_high_voltage = value; }, true);
+}
+
+void llPowerPersistentChargeCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "charge_critical_high_voltage",
+                     [](double value) { power_config.charge_critical_high_voltage = value; }, true);
+}
+
+void llPowerPersistentChargeCriticalHighCurrentCb(const std_msgs::Float64::ConstPtr& msg) {
+  updateLlPowerValue(msg, "charge_critical_high_current",
+                     [](double value) { power_config.charge_critical_high_current = value; }, true);
 }
 
 void llPowerRenewCb(const std_msgs::Empty::ConstPtr&) {
+  reloadLlPowerPersistentSettingsMetadata();
   publishLlPowerStatusJson();
 }
 
@@ -759,6 +999,8 @@ void powerReconfigCB(const ll::PowerConfig& config) {
   ROS_INFO_STREAM("mower_comms received new mower_logic config");
 
   power_config = config;
+  syncLlPowerActiveParamTree();
+  syncLlPowerLegacyWorkingParams();
 
   checkAndSendConfig();
   publishLlPowerStatusJson();
@@ -783,8 +1025,13 @@ int main(int argc, char** argv) {
   mower_logic_config.__fromServer__(mowerLogicParamNh);
   reconfigClient = new dynamic_reconfigure::Client<mower_logic::MowerLogicConfig>("/mower_logic", reconfigCB);
 
-  power_config = ll::PowerConfig::__getDefault__();
+  n.param("/settings/persistent_file", ll_power_settings_persistent_path,
+          std::string("/data/ros/settings_persistent.json"));
+
+  ll_power_default_config = ll::PowerConfig::__getDefault__();
+  power_config = ll_power_default_config;
   power_config.__fromServer__(powerParamNh);
+  initializeLlPowerPersistentSettings();
   powerReconfigClient = new dynamic_reconfigure::Client<ll::PowerConfig>("/ll/services/power", powerReconfigCB);
 
   std::string ll_serial_port_name;
@@ -843,6 +1090,12 @@ int main(int argc, char** argv) {
   ros::Subscriber ll_power_set_battery_critical_high_voltage_sub = n.subscribe("/ll/services/power/set/battery_critical_high_voltage", 10, llPowerBatteryCriticalHighVoltageCb);
   ros::Subscriber ll_power_set_charge_critical_high_voltage_sub = n.subscribe("/ll/services/power/set/charge_critical_high_voltage", 10, llPowerChargeCriticalHighVoltageCb);
   ros::Subscriber ll_power_set_charge_critical_high_current_sub = n.subscribe("/ll/services/power/set/charge_critical_high_current", 10, llPowerChargeCriticalHighCurrentCb);
+  ros::Subscriber ll_power_set_persistent_battery_critical_voltage_sub = n.subscribe("/ll/services/power/set_persistent/battery_critical_voltage", 10, llPowerPersistentBatteryCriticalVoltageCb);
+  ros::Subscriber ll_power_set_persistent_battery_empty_voltage_sub = n.subscribe("/ll/services/power/set_persistent/battery_empty_voltage", 10, llPowerPersistentBatteryEmptyVoltageCb);
+  ros::Subscriber ll_power_set_persistent_battery_full_voltage_sub = n.subscribe("/ll/services/power/set_persistent/battery_full_voltage", 10, llPowerPersistentBatteryFullVoltageCb);
+  ros::Subscriber ll_power_set_persistent_battery_critical_high_voltage_sub = n.subscribe("/ll/services/power/set_persistent/battery_critical_high_voltage", 10, llPowerPersistentBatteryCriticalHighVoltageCb);
+  ros::Subscriber ll_power_set_persistent_charge_critical_high_voltage_sub = n.subscribe("/ll/services/power/set_persistent/charge_critical_high_voltage", 10, llPowerPersistentChargeCriticalHighVoltageCb);
+  ros::Subscriber ll_power_set_persistent_charge_critical_high_current_sub = n.subscribe("/ll/services/power/set_persistent/charge_critical_high_current", 10, llPowerPersistentChargeCriticalHighCurrentCb);
   ros::Subscriber ll_power_renew_sub = n.subscribe("/ll/services/power/renew", 10, llPowerRenewCb);
   ros::Timer publish_timer = n.createTimer(ros::Duration(0.02), publishActuatorsTimerTask);
   publishLlPowerStatusJson();
