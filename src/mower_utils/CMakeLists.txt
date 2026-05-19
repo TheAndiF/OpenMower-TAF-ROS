@@ -8,7 +8,6 @@ project(mower_utils)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-  open_mower
   roscpp
         xbot_msgs
         geometry_msgs
@@ -108,7 +107,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES mower_utils
-#  CATKIN_DEPENDS open_mower roscpp
+#  CATKIN_DEPENDS roscpp
 #  DEPENDS system_lib
 )
 

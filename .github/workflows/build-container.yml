@@ -122,11 +122,11 @@ jobs:
           # Image nach dem Build nach GHCR hochladen.
           push: true
 
-          # Cache aus vorherigen GitHub-Actions-Builds verwenden.
-          cache-from: type=gha
+          # Cache aus GHCR verwenden.
+          cache-from: type=registry,ref=ghcr.io/theandif/open_mower_ros:taf_buildcache
 
-          # Neuen Cache für spätere Builds speichern.
-          cache-to: type=gha,mode=max
+          # Neuen Cache für spätere Builds nach GHCR schreiben.
+          cache-to: type=registry,ref=ghcr.io/theandif/open_mower_ros:taf_buildcache,mode=max
 
           # Ein Build bekommt drei Tags:
           #
