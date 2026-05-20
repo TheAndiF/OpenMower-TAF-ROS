@@ -55,6 +55,7 @@
 #include "slic3r_coverage_planner/PlanPath.h"
 #include "std_msgs/String.h"
 #include "std_msgs/Empty.h"
+#include <open_mower/settings_persistence.h>
 #include "utils.h"
 #include "xbot_msgs/AbsolutePose.h"
 #include "xbot_msgs/RegisterActionsSrv.h"
