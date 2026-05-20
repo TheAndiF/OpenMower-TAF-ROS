@@ -649,7 +649,11 @@ class MowerLogicSettingsBridge {
                              ValueType type, json& out) {
     switch (type) {
       case ValueType::kBoolean:
-        for (const auto& item : config.bools) if (item.name == key) { out = item.value; return true; }
+        // dynamic_reconfigure::BoolParameter::value is represented as an integer-like
+        // ROS message field in C++. Convert explicitly to bool before storing it in
+        // JSON. Without this cast, nlohmann::json stores 0/1 as a number and later
+        // get<bool>() aborts with type_error.302 during settings initialization.
+        for (const auto& item : config.bools) if (item.name == key) { out = static_cast<bool>(item.value); return true; }
         return false;
       case ValueType::kInteger:
         for (const auto& item : config.ints) if (item.name == key) { out = item.value; return true; }
