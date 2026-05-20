@@ -29,6 +29,8 @@ class MowLoadFactorNode {
 
     computed_pub_ = nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/computed", 1, true);
     effective_pub_ = nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/effective", 1, true);
+    load_factor_computed_pub_ = nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/load_factor_computed", 1, true);
+    load_factor_effective_pub_ = nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/load_factor_effective", 1, true);
     status_json_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/mow_load_factor/status_json", 1, true);
 
     status_sub_ = nh_.subscribe("/ll/mower_status", 10, &MowLoadFactorNode::statusCallback, this);
@@ -303,7 +305,6 @@ class MowLoadFactorNode {
     last_effective_factor_ = enabled_ ? last_computed_factor_ : 1.0;
 
     publishFactorTopics();
-    publishStatusJsonIfDue();
   }
 
   bool validateMinFactor(double requested) const {
@@ -440,16 +441,12 @@ class MowLoadFactorNode {
     std_msgs::Float32 effective;
     effective.data = static_cast<float>(last_effective_factor_);
     effective_pub_.publish(effective);
+
+    // Clear semantic names for consumers that want to enrich RobotState and UIs.
+    load_factor_computed_pub_.publish(computed);
+    load_factor_effective_pub_.publish(effective);
   }
 
-  void publishStatusJsonIfDue() {
-    const ros::WallTime now = ros::WallTime::now();
-    if (last_status_json_publish_wall_time_.isZero() ||
-        (now - last_status_json_publish_wall_time_).toSec() >= status_publish_period_) {
-      publishStatusJson();
-      last_status_json_publish_wall_time_ = now;
-    }
-  }
 
   static bool differs(double active, double persistent) { return std::fabs(active - persistent) > 1e-9; }
 
@@ -503,12 +500,6 @@ class MowLoadFactorNode {
     status["settings"]["min_factor"] = statusNumber("min_factor", min_factor_, persistent_min_factor_);
     status["settings"]["current_start"] = statusNumber("current_start", current_start_, persistent_current_start_);
     status["settings"]["current_end"] = statusNumber("current_end", current_end_, persistent_current_end_);
-    status["telemetry"] = json::object();
-    status["telemetry"]["factor_current"] = last_factor_current_;
-    status["telemetry"]["factor_motor_temp"] = last_factor_motor_temp_;
-    status["telemetry"]["factor_esc_temp"] = last_factor_esc_temp_;
-    status["telemetry"]["computed_factor"] = last_computed_factor_;
-    status["telemetry"]["effective_factor"] = last_effective_factor_;
 
     std_msgs::String msg;
     msg.data = status.dump();
@@ -531,6 +522,8 @@ class MowLoadFactorNode {
 
   mutable ros::Publisher computed_pub_;
   mutable ros::Publisher effective_pub_;
+  mutable ros::Publisher load_factor_computed_pub_;
+  mutable ros::Publisher load_factor_effective_pub_;
   mutable ros::Publisher status_json_pub_;
 
   std::string settings_persistent_path_;

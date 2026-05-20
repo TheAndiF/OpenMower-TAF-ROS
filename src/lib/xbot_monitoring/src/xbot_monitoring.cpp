@@ -89,7 +89,14 @@ ros::Publisher mow_load_factor_set_persistent_min_factor_pub;
 ros::Publisher mow_load_factor_set_persistent_current_start_pub;
 ros::Publisher mow_load_factor_set_persistent_current_end_pub;
 ros::Publisher mow_load_factor_renew_pub;
+ros::Publisher mower_logic_settings_set_session_json_pub;
+ros::Publisher mower_logic_settings_set_persistent_json_pub;
+ros::Publisher mower_logic_settings_renew_pub;
 ros::Publisher ll_power_set_battery_critical_voltage_pub;
+
+std::mutex load_factor_state_mutex;
+double load_factor_computed_snapshot = 1.0;
+double load_factor_effective_snapshot = 1.0;
 ros::Publisher ll_power_set_battery_empty_voltage_pub;
 ros::Publisher ll_power_set_battery_full_voltage_pub;
 ros::Publisher ll_power_set_battery_critical_high_voltage_pub;
@@ -149,6 +156,9 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/session/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/renew/json", 0);
@@ -339,6 +349,17 @@ public:
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/renew/json") {
             std_msgs::Empty msg;
             mow_load_factor_renew_pub.publish(msg);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/session/json") {
+            std_msgs::String msg;
+            msg.data = ptr->get_payload_str();
+            mower_logic_settings_set_session_json_pub.publish(msg);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/persistent/json") {
+            std_msgs::String msg;
+            msg.data = ptr->get_payload_str();
+            mower_logic_settings_set_persistent_json_pub.publish(msg);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json") {
+            std_msgs::Empty msg;
+            mower_logic_settings_renew_pub.publish(msg);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/session/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json") {
             const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json";
@@ -565,6 +586,24 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
 
 void mow_load_factor_status_json_callback(const std_msgs::String::ConstPtr &msg) {
     try_publish("settings/mow_load_factor/json", msg->data, true);
+}
+
+void mower_logic_settings_status_json_callback(const std_msgs::String::ConstPtr &msg) {
+    try_publish("settings/mower_logic/json", msg->data, true);
+}
+
+void mower_logic_settings_validation_json_callback(const std_msgs::String::ConstPtr &msg) {
+    try_publish("settings/mower_logic/validation/json", msg->data, true);
+}
+
+void load_factor_computed_callback(const std_msgs::Float32::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lk(load_factor_state_mutex);
+    load_factor_computed_snapshot = static_cast<double>(msg->data);
+}
+
+void load_factor_effective_callback(const std_msgs::Float32::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lk(load_factor_state_mutex);
+    load_factor_effective_snapshot = static_cast<double>(msg->data);
 }
 
 void ll_power_status_json_callback(const std_msgs::String::ConstPtr &msg) {
@@ -1087,6 +1126,11 @@ void robot_state_callback(const xbot_msgs::RobotState::ConstPtr &msg) {
     j["pose"]["pos_accuracy"] = msg->robot_pose.position_accuracy;
     j["pose"]["heading_accuracy"] = msg->robot_pose.orientation_accuracy;
     j["pose"]["heading_valid"] = msg->robot_pose.orientation_valid;
+    {
+        std::lock_guard<std::mutex> lk(load_factor_state_mutex);
+        j["load_factor_computed"] = load_factor_computed_snapshot;
+        j["load_factor_effective"] = load_factor_effective_snapshot;
+    }
 
     maybe_append_statustransition_log(msg);
 
@@ -1553,6 +1597,10 @@ int main(int argc, char **argv) {
     ros::Subscriber timetableSubscriber = n->subscribe("timetable/status", 10, timetable_status_callback);
     ros::Subscriber mapOverlaySubscriber = n->subscribe("xbot_monitoring/map_overlay", 10, map_overlay_callback);
     ros::Subscriber mowLoadFactorStatusSubscriber = n->subscribe("/mower_logic/mow_load_factor/status_json", 10, mow_load_factor_status_json_callback);
+    ros::Subscriber mowerLogicSettingsStatusSubscriber = n->subscribe("/mower_logic/settings/status_json", 10, mower_logic_settings_status_json_callback);
+    ros::Subscriber mowerLogicSettingsValidationSubscriber = n->subscribe("/mower_logic/settings/validation_json", 10, mower_logic_settings_validation_json_callback);
+    ros::Subscriber loadFactorComputedSubscriber = n->subscribe("/mower_logic/mow_load_factor/load_factor_computed", 10, load_factor_computed_callback);
+    ros::Subscriber loadFactorEffectiveSubscriber = n->subscribe("/mower_logic/mow_load_factor/load_factor_effective", 10, load_factor_effective_callback);
     ros::Subscriber llPowerStatusSubscriber = n->subscribe("/ll/services/power/status_json", 10, ll_power_status_json_callback);
 
     cmd_vel_pub = n->advertise<geometry_msgs::Twist>("xbot_monitoring/remote_cmd_vel", 1);
@@ -1566,6 +1614,9 @@ int main(int argc, char **argv) {
     mow_load_factor_set_persistent_current_start_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_persistent_current_start", 10);
     mow_load_factor_set_persistent_current_end_pub = n->advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/set_persistent_current_end", 10);
     mow_load_factor_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/mow_load_factor/renew", 10);
+    mower_logic_settings_set_session_json_pub = n->advertise<std_msgs::String>("/mower_logic/settings/set_session_json", 10);
+    mower_logic_settings_set_persistent_json_pub = n->advertise<std_msgs::String>("/mower_logic/settings/set_persistent_json", 10);
+    mower_logic_settings_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/settings/renew", 10);
     ll_power_set_battery_critical_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_critical_voltage", 10);
     ll_power_set_battery_empty_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_empty_voltage", 10);
     ll_power_set_battery_full_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_full_voltage", 10);

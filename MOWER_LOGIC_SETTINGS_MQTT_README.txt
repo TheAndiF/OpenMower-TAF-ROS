@@ -32,20 +32,15 @@ Session changes are applied through the existing dynamic_reconfigure service:
 Persistent changes
 ------------------
 
-Persistent payloads use the same flat JSON format, but they only update YAML and do not alter the active session.
-The YAML target defaults to:
+Persistent payloads use the same flat JSON format. They update the persistent value, apply it to the active session immediately and store it in:
 
-  $PARAMS_PATH/mower_params.yaml
+  /data/ros/settings_persistent.json
 
-or, if PARAMS_PATH is not defined:
+The path follows the shared ROS parameter:
 
-  /data/ros/mower_params.yaml
+  /settings/persistent_file
 
-The path can be overridden with the private ROS parameter:
-
-  ~mower_logic_settings_yaml_path
-
-YAML writes use a temporary file, a .bak backup of the previous file, and an atomic rename.
+The same default/persistent/active model is therefore used as for ll_board and mow_load_factor.
 
 Status payload
 --------------
@@ -83,3 +78,14 @@ The backend validates:
     - mow_load_esc_temp_end >= mow_load_esc_temp_start
 
 Batch writes are atomic at the validation level: when validation fails, the request is rejected and not applied.
+
+
+Zusätzliche Einstellung
+-----------------------
+
+  mow_motor_direction_mode
+    -1 = feste Richtung reverse/left
+     0 = beim Start zwischen beiden Richtungen wechseln
+     1 = feste Richtung forward/right
+
+Die tatsächliche mechanische Zuordnung left/right hängt von der Motor-/Board-Verdrahtung ab.

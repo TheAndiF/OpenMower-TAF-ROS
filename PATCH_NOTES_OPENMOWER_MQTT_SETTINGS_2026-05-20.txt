@@ -1,0 +1,47 @@
+OpenMower ROS MQTT-/Settings-Paket
+===================================
+
+Enthaltene Änderungen
+----------------------
+1. settings/mower_logic/... vollständig ergänzt:
+   - settings/mower_logic/json
+   - settings/mower_logic/set/session/json
+   - settings/mower_logic/set/persistent/json
+   - settings/mower_logic/set/renew/json
+   - settings/mower_logic/validation/json
+   Die MQTT-Brücke leitet die Payloads an mower_logic weiter.
+   mower_logic veröffentlicht die dynamischen Einstellwerte im default/persistent/active-Modell.
+   Persistenz erfolgt über /data/ros/settings_persistent.json.
+
+2. Load-Factor-Zustandswerte in robot_state/json:
+   - load_factor_computed
+   - load_factor_effective
+   Dazu werden neue ROS-Zwischentopics angeboten:
+   - /mower_logic/mow_load_factor/load_factor_computed
+   - /mower_logic/mow_load_factor/load_factor_effective
+   Die bisherigen ROS-Topics /computed und /effective bleiben zur Kompatibilität erhalten.
+
+3. settings/mow_load_factor/json wird nicht mehr zyklisch durch laufende Telemetrie aktualisiert.
+   Es wird weiterhin publiziert bei Start, Settings-Änderung und Renew.
+
+4. Neue mower_logic-Einstellung:
+   mow_motor_direction_mode
+     -1 = feste Richtung reverse/left
+      0 = bei jedem echten Motorstart zwischen den Richtungen wechseln
+      1 = feste Richtung forward/right
+   Hinweis: Die physische Zuordnung reverse/left bzw. forward/right hängt von der Verdrahtung ab.
+
+Geänderte Dateien
+-----------------
+- MOWER_LOGIC_SETTINGS_MQTT_README.txt
+- MOW_LOAD_FACTOR_MQTT_README.txt
+- PATCH_NOTES_OPENMOWER_MQTT_SETTINGS_2026-05-20.txt
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/mower_logic/CMakeLists.txt
+- src/mower_logic/cfg/MowerLogic.cfg
+- src/mower_logic/src/mow_load_factor.cpp
+- src/mower_logic/src/mower_logic/mower_logic.cpp
+
+Hinweis zur Verifikation
+------------------------
+Das Paket ist als Quellcode-Änderungspaket erstellt. Ein vollständiger ROS-/Docker-Build wurde in dieser Umgebung nicht ausgeführt.

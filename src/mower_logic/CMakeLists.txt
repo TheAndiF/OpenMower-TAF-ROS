@@ -192,7 +192,7 @@ add_executable(mower_logic
         src/mower_logic/behaviors/AreaRecordingBehavior.cpp
 )
 add_dependencies(mower_logic ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
-target_link_libraries(mower_logic ${catkin_LIBRARIES} ${CRYPTOPP_LIBRARIES})
+target_link_libraries(mower_logic ${catkin_LIBRARIES} ${CRYPTOPP_LIBRARIES} nlohmann_json::nlohmann_json)
 
 add_executable(monitoring src/monitoring/monitoring.cpp)
 add_dependencies(monitoring ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})

@@ -91,3 +91,6 @@ Hinweis
 -------
 Rohwerte wie Mähmotorstrom, Mähmotortemperatur, Mäh-ESC-Temperatur und RPM bleiben
 wie bereits vorhanden unter sensors/om_mow_.../data im MQTT verfügbar.
+
+
+Update: Laufende Faktoren werden zusätzlich als load_factor_computed und load_factor_effective in robot_state/json veröffentlicht. settings/mow_load_factor/json wird nicht mehr zyklisch aus Status-Telemetrie heraus aktualisiert, sondern nur beim Start, bei Änderung und Renew.

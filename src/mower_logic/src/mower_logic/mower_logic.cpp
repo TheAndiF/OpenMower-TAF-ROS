@@ -17,6 +17,8 @@
 
 #include <actionlib/client/simple_action_client.h>
 #include <dynamic_reconfigure/server.h>
+#include <dynamic_reconfigure/Config.h>
+#include <dynamic_reconfigure/ConfigDescription.h>
 #include <mower_logic/PowerConfig.h>
 #include <mower_msgs/ESCStatus.h>
 #include <mower_msgs/Emergency.h>
@@ -24,6 +26,9 @@
 #include <tf2/LinearMath/Transform.h>
 
 #include <atomic>
+#include <cmath>
+#include <map>
+#include <set>
 #include <ios>
 #include <mutex>
 #include <sstream>
@@ -49,6 +54,7 @@
 #include "ros/ros.h"
 #include "slic3r_coverage_planner/PlanPath.h"
 #include "std_msgs/String.h"
+#include "std_msgs/Empty.h"
 #include "utils.h"
 #include "xbot_msgs/AbsolutePose.h"
 #include "xbot_msgs/RegisterActionsSrv.h"
@@ -68,6 +74,9 @@ actionlib::SimpleActionClient<mbf_msgs::ExePathAction>* mbfClientExePath;
 ros::Publisher cmd_vel_pub, high_level_state_publisher;
 mower_logic::MowerLogicConfig last_config;
 ll::PowerConfig last_power_config;
+
+class MowerLogicSettingsBridge;
+MowerLogicSettingsBridge* mower_logic_settings_bridge = nullptr;
 
 StateSubscriber<mower_msgs::Emergency> emergency_state_subscriber{"/ll/emergency"};
 StateSubscriber<mower_msgs::Status> status_state_subscriber{"/ll/mower_status"};
@@ -232,9 +241,23 @@ bool setMowerEnabled(bool enabled) {
     ros::Time started = ros::Time::now();
     mower_msgs::MowerControlSrv mow_srv;
     mow_srv.request.mow_enabled = enabled;
-    mow_srv.request.mow_direction = started.sec & 0x1;  // Randomize mower direction on second
+    // User-selectable direction mode:
+    // -1: fixed reverse/left, 0: alternate using the historic timestamp-based behaviour, 1: fixed forward/right.
+    if (last_config.mow_motor_direction_mode < 0) {
+      mow_srv.request.mow_direction = 0;
+    } else if (last_config.mow_motor_direction_mode > 0) {
+      mow_srv.request.mow_direction = 1;
+    } else {
+      // Alternate direction on every real motor start. This avoids a time-based pseudo-random choice.
+      static bool next_alternating_direction = false;
+      if (enabled) {
+        next_alternating_direction = !next_alternating_direction;
+      }
+      mow_srv.request.mow_direction = next_alternating_direction ? 1 : 0;
+    }
     ROS_WARN_STREAM("#### om_mower_logic: setMowerEnabled("
-                    << enabled << ", " << static_cast<unsigned>(mow_srv.request.mow_direction) << ") call");
+                    << enabled << ", " << static_cast<unsigned>(mow_srv.request.mow_direction)
+                    << ", direction_mode=" << last_config.mow_motor_direction_mode << ") call");
 
     ros::Rate retry_delay(1);
     bool success = false;
@@ -563,9 +586,428 @@ void checkSafety(const ros::TimerEvent& timer_event) {
   }
 }
 
+
+class MowerLogicSettingsBridge {
+ public:
+  using json = open_mower_settings::json;
+
+  MowerLogicSettingsBridge(ros::NodeHandle& nh, ros::NodeHandle& private_nh) : nh_(nh) {
+    private_nh.param("/settings/persistent_file", settings_persistent_path_,
+                     std::string("/data/ros/settings_persistent.json"));
+    status_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/settings/status_json", 1, true);
+    validation_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/settings/validation_json", 1, true);
+    session_sub_ = nh_.subscribe("/mower_logic/settings/set_session_json", 10,
+                                 &MowerLogicSettingsBridge::sessionSetCallback, this);
+    persistent_sub_ = nh_.subscribe("/mower_logic/settings/set_persistent_json", 10,
+                                    &MowerLogicSettingsBridge::persistentSetCallback, this);
+    renew_sub_ = nh_.subscribe("/mower_logic/settings/renew", 10,
+                               &MowerLogicSettingsBridge::renewCallback, this);
+    initializeMetadataAndPersistentValues();
+    publishStatus();
+  }
+
+  void notifyConfigChanged() { publishStatus(); }
+
+ private:
+  enum class ValueType { kBoolean, kInteger, kNumber, kString, kUnknown };
+
+  static constexpr const char* kNamespace = "mower_logic";
+
+  struct ParamMeta {
+    std::string name;
+    ValueType type = ValueType::kUnknown;
+    std::string type_name;
+    std::string description;
+    json default_value;
+    json min_value;
+    json max_value;
+    bool has_min = false;
+    bool has_max = false;
+    int order = 0;
+  };
+
+  static ValueType valueTypeForDescription(const std::string& type) {
+    if (type == "bool") return ValueType::kBoolean;
+    if (type == "int") return ValueType::kInteger;
+    if (type == "double") return ValueType::kNumber;
+    if (type == "str") return ValueType::kString;
+    return ValueType::kUnknown;
+  }
+
+  static std::string jsonTypeName(ValueType type) {
+    switch (type) {
+      case ValueType::kBoolean: return "boolean";
+      case ValueType::kInteger: return "integer";
+      case ValueType::kNumber: return "number";
+      case ValueType::kString: return "string";
+      default: return "unknown";
+    }
+  }
+
+  static bool getConfigValue(const dynamic_reconfigure::Config& config, const std::string& key,
+                             ValueType type, json& out) {
+    switch (type) {
+      case ValueType::kBoolean:
+        for (const auto& item : config.bools) if (item.name == key) { out = item.value; return true; }
+        return false;
+      case ValueType::kInteger:
+        for (const auto& item : config.ints) if (item.name == key) { out = item.value; return true; }
+        return false;
+      case ValueType::kNumber:
+        for (const auto& item : config.doubles) if (item.name == key) { out = item.value; return true; }
+        return false;
+      case ValueType::kString:
+        for (const auto& item : config.strs) if (item.name == key) { out = item.value; return true; }
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  static bool setConfigValue(dynamic_reconfigure::Config& config, const std::string& key,
+                             ValueType type, const json& value) {
+    switch (type) {
+      case ValueType::kBoolean:
+        for (auto& item : config.bools) if (item.name == key) { item.value = value.get<bool>(); return true; }
+        return false;
+      case ValueType::kInteger:
+        for (auto& item : config.ints) if (item.name == key) { item.value = value.get<int>(); return true; }
+        return false;
+      case ValueType::kNumber:
+        for (auto& item : config.doubles) if (item.name == key) { item.value = value.get<double>(); return true; }
+        return false;
+      case ValueType::kString:
+        for (auto& item : config.strs) if (item.name == key) { item.value = value.get<std::string>(); return true; }
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  static bool valuesDiffer(const json& active, const json& persistent) {
+    if (active.is_number() && persistent.is_number()) {
+      return std::fabs(active.get<double>() - persistent.get<double>()) > 1e-9;
+    }
+    return active != persistent;
+  }
+
+  bool isTypeValid(const ParamMeta& meta, const json& value) const {
+    switch (meta.type) {
+      case ValueType::kBoolean: return value.is_boolean();
+      case ValueType::kInteger: return value.is_number_integer();
+      case ValueType::kNumber: return value.is_number();
+      case ValueType::kString: return value.is_string();
+      default: return false;
+    }
+  }
+
+  bool isRangeValid(const ParamMeta& meta, const json& value) const {
+    if (meta.type != ValueType::kInteger && meta.type != ValueType::kNumber) return true;
+    const double requested = value.get<double>();
+    if (!std::isfinite(requested)) return false;
+    if (meta.has_min && requested < meta.min_value.get<double>()) return false;
+    if (meta.has_max && requested > meta.max_value.get<double>()) return false;
+    return true;
+  }
+
+  std::string labelForKey(const std::string& key) const {
+    if (key == "mow_motor_direction_mode") return "Mähmotor-Drehrichtungsmodus";
+    return key;
+  }
+
+  std::string unitForKey(const std::string& key) const {
+    if (key.find("temperature") != std::string::npos || key.find("_temp_") != std::string::npos) return "°C";
+    if (key.find("distance") != std::string::npos || key == "tool_width" || key == "max_position_accuracy") return "m";
+    if (key.find("angle") != std::string::npos || key == "shutdown_esc_max_pitch") return "°";
+    if (key.find("minutes") != std::string::npos) return "min";
+    if (key.find("seconds") != std::string::npos || key.find("_time") != std::string::npos || key.find("period") != std::string::npos) return "s";
+    if (key.find("current") != std::string::npos) return "A";
+    return "";
+  }
+
+  json seedEntriesFromDynamicReconfigure() {
+    json seed = json::object();
+    const auto& description = mower_logic::MowerLogicConfig::__getDescriptionMessage__();
+    const auto& defaults = mower_logic::MowerLogicConfig::__getDefault__();
+    const auto& mins = mower_logic::MowerLogicConfig::__getMin__();
+    const auto& maxs = mower_logic::MowerLogicConfig::__getMax__();
+    dynamic_reconfigure::Config default_msg, min_msg, max_msg;
+    defaults.__toMessage__(default_msg);
+    mins.__toMessage__(min_msg);
+    maxs.__toMessage__(max_msg);
+
+    int order = 10;
+    for (const auto& group : description.groups) {
+      for (const auto& param : group.parameters) {
+        ParamMeta meta;
+        meta.name = param.name;
+        meta.type = valueTypeForDescription(param.type);
+        meta.type_name = jsonTypeName(meta.type);
+        meta.description = param.description;
+        meta.order = order;
+        order += 10;
+        if (meta.type == ValueType::kUnknown) continue;
+        if (!getConfigValue(default_msg, meta.name, meta.type, meta.default_value)) continue;
+        meta.has_min = getConfigValue(min_msg, meta.name, meta.type, meta.min_value);
+        meta.has_max = getConfigValue(max_msg, meta.name, meta.type, meta.max_value);
+        metadata_[meta.name] = meta;
+
+        json entry = json::object();
+        entry["label"] = labelForKey(meta.name);
+        entry["description"] = meta.description;
+        entry["group"] = kNamespace;
+        entry["order"] = meta.order;
+        entry["session_apply_supported"] = true;
+        entry["restart_required"] = false;
+        entry["default"] = meta.default_value;
+        entry["persistent"] = meta.default_value;
+        entry["unit"] = unitForKey(meta.name);
+        entry["type"] = meta.type_name;
+        if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_min) entry["min"] = meta.min_value;
+        if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_max) entry["max"] = meta.max_value;
+        seed[meta.name] = entry;
+      }
+    }
+    return seed;
+  }
+
+  void initializeMetadataAndPersistentValues() {
+    settings_entries_ = open_mower_settings::mergeNamespaceWithSeed(settings_persistent_path_, kNamespace,
+                                                                     seedEntriesFromDynamicReconfigure());
+    mower_logic::MowerLogicConfig target = getConfig();
+    dynamic_reconfigure::Config target_msg;
+    target.__toMessage__(target_msg);
+    bool changed = false;
+    for (const auto& pair : metadata_) {
+      const std::string& key = pair.first;
+      const ParamMeta& meta = pair.second;
+      json persistent = meta.default_value;
+      if (settings_entries_.contains(key) && settings_entries_[key].is_object() &&
+          settings_entries_[key].contains("persistent") && isTypeValid(meta, settings_entries_[key]["persistent"]) &&
+          isRangeValid(meta, settings_entries_[key]["persistent"])) {
+        persistent = settings_entries_[key]["persistent"];
+      } else {
+        settings_entries_[key]["persistent"] = persistent;
+        open_mower_settings::updateEntryField(settings_persistent_path_, kNamespace, key, "persistent", persistent);
+      }
+      if (setConfigValue(target_msg, key, meta.type, persistent)) changed = true;
+      syncParamTree(key, meta, persistent, persistent);
+    }
+    if (changed) {
+      mower_logic::MowerLogicConfig applied = target;
+      if (applied.__fromMessage__(target_msg)) {
+        setConfig(applied);
+      } else {
+        ROS_WARN_STREAM("Could not apply persistent mower_logic settings from " << settings_persistent_path_);
+      }
+    }
+  }
+
+  void syncParamTree(const std::string& key, const ParamMeta& meta, const json& persistent, const json& active) const {
+    const std::string base = std::string("/settings/") + kNamespace;
+    const json& def = meta.default_value;
+    if (meta.type == ValueType::kBoolean) {
+      ros::param::set(base + "/default/" + key, def.get<bool>());
+      ros::param::set(base + "/persistent/" + key, persistent.get<bool>());
+      ros::param::set(base + "/active/" + key, active.get<bool>());
+    } else if (meta.type == ValueType::kInteger) {
+      ros::param::set(base + "/default/" + key, def.get<int>());
+      ros::param::set(base + "/persistent/" + key, persistent.get<int>());
+      ros::param::set(base + "/active/" + key, active.get<int>());
+    } else if (meta.type == ValueType::kNumber) {
+      ros::param::set(base + "/default/" + key, def.get<double>());
+      ros::param::set(base + "/persistent/" + key, persistent.get<double>());
+      ros::param::set(base + "/active/" + key, active.get<double>());
+    } else if (meta.type == ValueType::kString) {
+      ros::param::set(base + "/default/" + key, def.get<std::string>());
+      ros::param::set(base + "/persistent/" + key, persistent.get<std::string>());
+      ros::param::set(base + "/active/" + key, active.get<std::string>());
+    }
+  }
+
+  json activeValue(const std::string& key, const ParamMeta& meta) const {
+    mower_logic::MowerLogicConfig current = getConfig();
+    dynamic_reconfigure::Config current_msg;
+    current.__toMessage__(current_msg);
+    json value = meta.default_value;
+    getConfigValue(current_msg, key, meta.type, value);
+    return value;
+  }
+
+  json persistentValue(const std::string& key, const ParamMeta& meta) const {
+    if (settings_entries_.contains(key) && settings_entries_[key].is_object() &&
+        settings_entries_[key].contains("persistent") && isTypeValid(meta, settings_entries_[key]["persistent"])) {
+      return settings_entries_[key]["persistent"];
+    }
+    return meta.default_value;
+  }
+
+  bool crossFieldPlausible(const std::map<std::string, json>& prospective, std::string& reason) const {
+    auto getNumber = [&](const std::string& key) -> double {
+      auto it = prospective.find(key);
+      if (it != prospective.end() && it->second.is_number()) return it->second.get<double>();
+      auto meta_it = metadata_.find(key);
+      if (meta_it == metadata_.end()) return 0.0;
+      return activeValue(key, meta_it->second).get<double>();
+    };
+    if (getNumber("motor_hot_temperature") < getNumber("motor_cold_temperature")) {
+      reason = "motor_hot_temperature must be >= motor_cold_temperature";
+      return false;
+    }
+    if (getNumber("mow_load_current_end") < getNumber("mow_load_current_start")) {
+      reason = "mow_load_current_end must be >= mow_load_current_start";
+      return false;
+    }
+    if (getNumber("mow_load_motor_temp_end") < getNumber("mow_load_motor_temp_start")) {
+      reason = "mow_load_motor_temp_end must be >= mow_load_motor_temp_start";
+      return false;
+    }
+    if (getNumber("mow_load_esc_temp_end") < getNumber("mow_load_esc_temp_start")) {
+      reason = "mow_load_esc_temp_end must be >= mow_load_esc_temp_start";
+      return false;
+    }
+    return true;
+  }
+
+  void handleSet(const std::string& payload_text, bool persistent) {
+    json validation = {{"valid", false}, {"namespace", kNamespace},
+                       {"mode", persistent ? "persistent" : "session"},
+                       {"accepted", json::array()}, {"rejected", json::array()}};
+    json payload;
+    try {
+      payload = json::parse(payload_text);
+    } catch (const json::exception& e) {
+      validation["rejected"].push_back({{"key", "$"}, {"reason", std::string("Error decoding JSON: ") + e.what()}});
+      publishValidation(validation);
+      return;
+    }
+    if (!payload.is_object()) {
+      validation["rejected"].push_back({{"key", "$"}, {"reason", "payload must be a JSON object"}});
+      publishValidation(validation);
+      return;
+    }
+    std::map<std::string, json> accepted_values;
+    for (auto it = payload.begin(); it != payload.end(); ++it) {
+      auto meta_it = metadata_.find(it.key());
+      if (meta_it == metadata_.end()) {
+        validation["rejected"].push_back({{"key", it.key()}, {"reason", "unknown setting"}});
+        continue;
+      }
+      const ParamMeta& meta = meta_it->second;
+      if (!isTypeValid(meta, it.value())) {
+        validation["rejected"].push_back({{"key", it.key()}, {"reason", std::string("value must be ") + meta.type_name}});
+        continue;
+      }
+      if (!isRangeValid(meta, it.value())) {
+        validation["rejected"].push_back({{"key", it.key()}, {"reason", "value is outside metadata limits"}});
+        continue;
+      }
+      accepted_values[it.key()] = it.value();
+    }
+    if (accepted_values.empty() && validation["rejected"].empty()) {
+      validation["rejected"].push_back({{"key", "$"}, {"reason", "payload does not contain any settings"}});
+    }
+    std::string cross_reason;
+    if (!accepted_values.empty() && !crossFieldPlausible(accepted_values, cross_reason)) {
+      validation["rejected"].push_back({{"key", "$"}, {"reason", cross_reason}});
+      accepted_values.clear();
+    }
+    if (!validation["rejected"].empty()) {
+      publishValidation(validation);
+      return;
+    }
+
+    mower_logic::MowerLogicConfig active = getConfig();
+    dynamic_reconfigure::Config active_msg;
+    active.__toMessage__(active_msg);
+    for (const auto& pair : accepted_values) {
+      const auto& meta = metadata_.at(pair.first);
+      setConfigValue(active_msg, pair.first, meta.type, pair.second);
+    }
+    mower_logic::MowerLogicConfig applied = active;
+    if (!applied.__fromMessage__(active_msg)) {
+      validation["rejected"].push_back({{"key", "$"}, {"reason", "dynamic_reconfigure rejected the payload"}});
+      publishValidation(validation);
+      return;
+    }
+    setConfig(applied);
+    for (const auto& pair : accepted_values) {
+      const auto& meta = metadata_.at(pair.first);
+      if (persistent) {
+        settings_entries_[pair.first]["persistent"] = pair.second;
+        open_mower_settings::updateEntryField(settings_persistent_path_, kNamespace, pair.first, "persistent", pair.second);
+      }
+      const json persistent_value = persistent ? pair.second : persistentValue(pair.first, meta);
+      syncParamTree(pair.first, meta, persistent_value, pair.second);
+      validation["accepted"].push_back(pair.first);
+    }
+    validation["valid"] = true;
+    publishValidation(validation);
+    publishStatus();
+  }
+
+  void publishValidation(const json& validation) const {
+    std_msgs::String msg;
+    msg.data = validation.dump();
+    validation_pub_.publish(msg);
+  }
+
+  void publishStatus() const {
+    if (metadata_.empty()) return;
+    json status = json::object();
+    status["schema"] = "settings_v1";
+    status["namespace"] = kNamespace;
+    status["settings"] = json::object();
+    for (const auto& pair : metadata_) {
+      const std::string& key = pair.first;
+      const ParamMeta& meta = pair.second;
+      const json active = activeValue(key, meta);
+      const json persistent = persistentValue(key, meta);
+      json entry = json::object();
+      const json persisted_meta = settings_entries_.contains(key) ? settings_entries_.at(key) : json::object();
+      entry["label"] = open_mower_settings::stringOr(persisted_meta, "label", labelForKey(key));
+      entry["description"] = open_mower_settings::stringOr(persisted_meta, "description", meta.description);
+      entry["group"] = open_mower_settings::stringOr(persisted_meta, "group", kNamespace);
+      entry["order"] = open_mower_settings::intOr(persisted_meta, "order", meta.order);
+      entry["session_apply_supported"] = open_mower_settings::boolOr(persisted_meta, "session_apply_supported", true);
+      entry["restart_required"] = open_mower_settings::boolOr(persisted_meta, "restart_required", false);
+      entry["default"] = meta.default_value;
+      entry["persistent"] = persistent;
+      entry["active"] = active;
+      entry["different"] = valuesDiffer(active, persistent);
+      entry["unit"] = open_mower_settings::stringOr(persisted_meta, "unit", unitForKey(key));
+      entry["type"] = open_mower_settings::stringOr(persisted_meta, "type", meta.type_name);
+      if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_min) entry["min"] = meta.min_value;
+      if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_max) entry["max"] = meta.max_value;
+      status["settings"][key] = entry;
+      syncParamTree(key, meta, persistent, active);
+    }
+    std_msgs::String msg;
+    msg.data = status.dump();
+    status_pub_.publish(msg);
+  }
+
+  void sessionSetCallback(const std_msgs::String::ConstPtr& msg) { handleSet(msg->data, false); }
+  void persistentSetCallback(const std_msgs::String::ConstPtr& msg) { handleSet(msg->data, true); }
+  void renewCallback(const std_msgs::Empty::ConstPtr&) { publishStatus(); }
+
+  ros::NodeHandle& nh_;
+  ros::Publisher status_pub_;
+  ros::Publisher validation_pub_;
+  ros::Subscriber session_sub_;
+  ros::Subscriber persistent_sub_;
+  ros::Subscriber renew_sub_;
+  std::string settings_persistent_path_;
+  std::map<std::string, ParamMeta> metadata_;
+  json settings_entries_ = json::object();
+};
+
 void reconfigureCB(mower_logic::MowerLogicConfig& c, uint32_t level) {
   ROS_INFO_STREAM("om_mower_logic: Setting mower_logic config");
   last_config = c;
+  if (mower_logic_settings_bridge != nullptr) {
+    mower_logic_settings_bridge->notifyConfigChanged();
+  }
 }
 
 bool highLevelCommand(mower_msgs::HighLevelControlSrvRequest& req, mower_msgs::HighLevelControlSrvResponse& res) {
@@ -658,6 +1100,7 @@ int main(int argc, char** argv) {
 
   reconfigServer = new dynamic_reconfigure::Server<mower_logic::MowerLogicConfig>(mutex, *paramNh);
   reconfigServer->setCallback(reconfigureCB);
+  mower_logic_settings_bridge = new MowerLogicSettingsBridge(*n, *paramNh);
 
   last_power_config = ll::PowerConfig::__getDefault__();
   last_power_config.__fromServer__(powerNodeHandle);
