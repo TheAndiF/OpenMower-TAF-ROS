@@ -56,7 +56,7 @@ void publish_actions();
 void publish_version();
 void publish_params();
 void publish_ll_power_status_request();
-void try_publish(std::string topic, const std::string &data, bool retain);
+void try_publish(const std::string &topic, const std::string &data, bool retain = false);
 void rpc_request_callback(const std::string &payload);
 
 // Stores registered actions (prefix to vector<action>)
@@ -487,7 +487,7 @@ void setupMqttClient() {
     }
 }
 
-void try_publish(std::string topic, std::string data, bool retain = false) {
+void try_publish(const std::string &topic, const std::string &data, bool retain) {
     try {
         if (retain) {
             // QOS 1 so that the data actually arrives at the client at least once.

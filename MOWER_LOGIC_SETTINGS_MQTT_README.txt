@@ -76,6 +76,8 @@ The backend validates:
     - mow_load_current_end >= mow_load_current_start
     - mow_load_motor_temp_end >= mow_load_motor_temp_start
     - mow_load_esc_temp_end >= mow_load_esc_temp_start
+    - mow_load_factor_smoothing_down_alpha: 0.0 bis 1.0
+    - mow_load_factor_smoothing_up_alpha: 0.0 bis 1.0
 
 Batch writes are atomic at the validation level: when validation fails, the request is rejected and not applied.
 
@@ -89,3 +91,23 @@ Zusätzliche Einstellung
      1 = feste Richtung forward/right
 
 Die tatsächliche mechanische Zuordnung left/right hängt von der Motor-/Board-Verdrahtung ab.
+
+Load-Factor-Glättung
+---------------------
+
+Die Lastfaktor-Glättung ist Teil von settings/mower_logic:
+
+  mow_load_factor_smoothing_enabled
+    true = berechneten Lastfaktor asymmetrisch tiefpassfiltern
+    false = Rohfaktor direkt als computed_factor verwenden
+
+  mow_load_factor_smoothing_down_alpha
+    Alpha wenn der Faktor sinkt, z. B. 0.50 fuer schnelle Reaktion bei Last.
+
+  mow_load_factor_smoothing_up_alpha
+    Alpha wenn der Faktor steigt, z. B. 0.10 fuer langsame Erholung nach Entlastung.
+
+Beispiel Session-Set:
+
+  Topic: settings/mower_logic/set/session/json
+  Payload: {"mow_load_factor_smoothing_enabled":true,"mow_load_factor_smoothing_down_alpha":0.50,"mow_load_factor_smoothing_up_alpha":0.10}

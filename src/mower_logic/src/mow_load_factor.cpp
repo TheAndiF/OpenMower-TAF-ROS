@@ -18,9 +18,9 @@
 class MowLoadFactorNode {
  public:
   MowLoadFactorNode()
-      : nh_(), last_status_json_publish_wall_time_(), last_factor_current_(1.0),
-        last_factor_motor_temp_(1.0), last_factor_esc_temp_(1.0), last_computed_factor_(1.0),
-        last_effective_factor_(1.0) {
+      : nh_(), last_status_json_publish_wall_time_(), last_param_refresh_wall_time_(),
+        last_factor_current_(1.0), last_factor_motor_temp_(1.0), last_factor_esc_temp_(1.0), last_raw_factor_(1.0),
+        last_computed_factor_(1.0), last_effective_factor_(1.0) {
     nh_.param("/settings/persistent_file", settings_persistent_path_,
               std::string("/data/ros/settings_persistent.json"));
 
@@ -78,7 +78,12 @@ class MowLoadFactorNode {
     nh_.param("/mower_logic/mow_load_motor_temp_end", motor_temp_end_, 68.0);
     nh_.param("/mower_logic/mow_load_esc_temp_start", esc_temp_start_, 60.0);
     nh_.param("/mower_logic/mow_load_esc_temp_end", esc_temp_end_, 78.0);
+    nh_.param("/mower_logic/mow_load_factor_smoothing_enabled", smoothing_enabled_, true);
+    nh_.param("/mower_logic/mow_load_factor_smoothing_down_alpha", smoothing_down_alpha_, 0.50);
+    nh_.param("/mower_logic/mow_load_factor_smoothing_up_alpha", smoothing_up_alpha_, 0.10);
     nh_.param("/mower_logic/mow_load_status_publish_period", status_publish_period_, 0.50);
+
+    refreshRuntimeParametersFromParamTree();
 
     if (!std::isfinite(min_factor_) || min_factor_ < minAllowedFactor() || min_factor_ > maxAllowedFactor()) {
       ROS_WARN_STREAM("Invalid /mower_logic/mow_load_factor_min=" << min_factor_
@@ -98,6 +103,8 @@ class MowLoadFactorNode {
       current_end_ = std::max(1.25, current_start_ + 0.01);
       ros::param::set("/mower_logic/mow_load_current_end", current_end_);
     }
+    validateSmoothingParameters(true);
+
     if (!std::isfinite(status_publish_period_) || status_publish_period_ < 0.05) {
       ROS_WARN_STREAM("Invalid /mower_logic/mow_load_status_publish_period=" << status_publish_period_
                       << ". Falling back to 0.50 s.");
@@ -279,6 +286,125 @@ class MowLoadFactorNode {
     ros::param::set("/mower_logic/mow_load_factor_min", min_factor_);
     ros::param::set("/mower_logic/mow_load_current_start", current_start_);
     ros::param::set("/mower_logic/mow_load_current_end", current_end_);
+    ros::param::set("/mower_logic/mow_load_factor_smoothing_enabled", smoothing_enabled_);
+    ros::param::set("/mower_logic/mow_load_factor_smoothing_down_alpha", smoothing_down_alpha_);
+    ros::param::set("/mower_logic/mow_load_factor_smoothing_up_alpha", smoothing_up_alpha_);
+  }
+
+  void validateSmoothingParameters(bool write_legacy_params) {
+    if (!std::isfinite(smoothing_down_alpha_) || smoothing_down_alpha_ < 0.0 || smoothing_down_alpha_ > 1.0) {
+      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_factor_smoothing_down_alpha=" << smoothing_down_alpha_
+                      << ". Falling back to 0.50.");
+      smoothing_down_alpha_ = 0.50;
+      if (write_legacy_params) {
+        ros::param::set("/mower_logic/mow_load_factor_smoothing_down_alpha", smoothing_down_alpha_);
+      }
+    }
+    if (!std::isfinite(smoothing_up_alpha_) || smoothing_up_alpha_ < 0.0 || smoothing_up_alpha_ > 1.0) {
+      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_factor_smoothing_up_alpha=" << smoothing_up_alpha_
+                      << ". Falling back to 0.10.");
+      smoothing_up_alpha_ = 0.10;
+      if (write_legacy_params) {
+        ros::param::set("/mower_logic/mow_load_factor_smoothing_up_alpha", smoothing_up_alpha_);
+      }
+    }
+  }
+
+  void refreshRuntimeParametersFromParamTree() {
+    // settings/mower_logic is the consolidated MQTT/UI settings namespace. Read it
+    // periodically so session/persistent MQTT changes are applied without restarting
+    // this helper node. Legacy /mower_logic parameters remain a fallback.
+    const ros::WallTime now = ros::WallTime::now();
+    if (last_param_refresh_wall_time_.toSec() > 0.0 &&
+        (now - last_param_refresh_wall_time_).toSec() < 0.50) {
+      return;
+    }
+    last_param_refresh_wall_time_ = now;
+
+    bool bool_value = false;
+    double number_value = 0.0;
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_factor_enabled", bool_value)) {
+      enabled_ = bool_value;
+    } else if (ros::param::get("/mower_logic/mow_load_factor_enabled", bool_value)) {
+      enabled_ = bool_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_factor_min", number_value)) {
+      min_factor_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_factor_min", number_value)) {
+      min_factor_ = number_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_current_start", number_value)) {
+      current_start_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_current_start", number_value)) {
+      current_start_ = number_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_current_end", number_value)) {
+      current_end_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_current_end", number_value)) {
+      current_end_ = number_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_motor_temp_start", number_value)) {
+      motor_temp_start_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_motor_temp_start", number_value)) {
+      motor_temp_start_ = number_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_motor_temp_end", number_value)) {
+      motor_temp_end_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_motor_temp_end", number_value)) {
+      motor_temp_end_ = number_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_esc_temp_start", number_value)) {
+      esc_temp_start_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_esc_temp_start", number_value)) {
+      esc_temp_start_ = number_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_esc_temp_end", number_value)) {
+      esc_temp_end_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_esc_temp_end", number_value)) {
+      esc_temp_end_ = number_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_factor_smoothing_enabled", bool_value)) {
+      smoothing_enabled_ = bool_value;
+    } else if (ros::param::get("/mower_logic/mow_load_factor_smoothing_enabled", bool_value)) {
+      smoothing_enabled_ = bool_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_factor_smoothing_down_alpha", number_value)) {
+      smoothing_down_alpha_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_factor_smoothing_down_alpha", number_value)) {
+      smoothing_down_alpha_ = number_value;
+    }
+
+    if (ros::param::get("/settings/mower_logic/active/mow_load_factor_smoothing_up_alpha", number_value)) {
+      smoothing_up_alpha_ = number_value;
+    } else if (ros::param::get("/mower_logic/mow_load_factor_smoothing_up_alpha", number_value)) {
+      smoothing_up_alpha_ = number_value;
+    }
+
+    validateSmoothingParameters(false);
+  }
+
+  double clampFactor(double factor) const {
+    if (!std::isfinite(factor)) {
+      return 1.0;
+    }
+    return std::max(min_factor_, std::min(1.0, factor));
+  }
+
+  double applyAsymmetricLowpass(double raw_factor) const {
+    const double raw = clampFactor(raw_factor);
+    const double previous = clampFactor(last_computed_factor_);
+    const double alpha = raw < previous ? smoothing_down_alpha_ : smoothing_up_alpha_;
+    return clampFactor(previous * (1.0 - alpha) + raw * alpha);
   }
 
   double derateFactor(double value, double start, double end) const {
@@ -297,15 +423,18 @@ class MowLoadFactorNode {
       return min_factor_;
     }
     const double ratio = (value - start) / (end - start);
-    return 1.0 - ratio * (1.0 - min_factor_);
+    return clampFactor(1.0 - ratio * (1.0 - min_factor_));
   }
 
   void statusCallback(const mower_msgs::Status::ConstPtr& msg) {
+    refreshRuntimeParametersFromParamTree();
+
     last_factor_current_ = derateFactor(msg->mower_esc_current, current_start_, current_end_);
     last_factor_motor_temp_ = derateFactor(msg->mower_motor_temperature, motor_temp_start_, motor_temp_end_);
     last_factor_esc_temp_ = derateFactor(msg->mower_esc_temperature, esc_temp_start_, esc_temp_end_);
 
-    last_computed_factor_ = std::min({last_factor_current_, last_factor_motor_temp_, last_factor_esc_temp_});
+    last_raw_factor_ = std::min({last_factor_current_, last_factor_motor_temp_, last_factor_esc_temp_});
+    last_computed_factor_ = smoothing_enabled_ ? applyAsymmetricLowpass(last_raw_factor_) : last_raw_factor_;
     last_effective_factor_ = enabled_ ? last_computed_factor_ : 1.0;
 
     publishFactorTopics();
@@ -545,13 +674,18 @@ class MowLoadFactorNode {
   double motor_temp_end_;
   double esc_temp_start_;
   double esc_temp_end_;
+  bool smoothing_enabled_;
+  double smoothing_down_alpha_;
+  double smoothing_up_alpha_;
   double status_publish_period_;
 
   ros::WallTime last_status_json_publish_wall_time_;
+  ros::WallTime last_param_refresh_wall_time_;
 
   double last_factor_current_;
   double last_factor_motor_temp_;
   double last_factor_esc_temp_;
+  double last_raw_factor_;
   double last_computed_factor_;
   double last_effective_factor_;
 };

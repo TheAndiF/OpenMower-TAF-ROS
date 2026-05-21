@@ -20,6 +20,9 @@ Die Startwerte sind in MowerLogic.cfg und openmower_defaults_v2.yaml hinterlegt:
 - mow_load_motor_temp_end: 68.0 °C
 - mow_load_esc_temp_start: 60.0 °C
 - mow_load_esc_temp_end: 78.0 °C
+- mow_load_factor_smoothing_enabled: true
+- mow_load_factor_smoothing_down_alpha: 0.50
+- mow_load_factor_smoothing_up_alpha: 0.10
 - mow_load_status_publish_period: 0.50 s (Status-JSON maximal ca. 2 Hz)
 
 Dauerhafte roboterspezifische Überschreibung
@@ -31,6 +34,9 @@ mower_logic:
   mow_load_factor_min: 0.40
   mow_load_current_start: 0.75
   mow_load_current_end: 1.25
+  mow_load_factor_smoothing_enabled: true
+  mow_load_factor_smoothing_down_alpha: 0.50
+  mow_load_factor_smoothing_up_alpha: 0.10
   mow_load_status_publish_period: 0.50
 
 MQTT
@@ -42,10 +48,10 @@ Status, retained:
   mow_load_status_publish_period gedrosselt. Standard: 0.50 s, also maximal ca. 2 Hz.
   Direkte MQTT-Aenderungen und renew publizieren weiterhin sofort.
 - Performance-Hinweis:
-  Die Lastfaktor-Berechnung laeuft weiterhin bei neuen mower_status-Meldungen,
-  liest dabei aber KEINE Parameter mehr vom ROS-Parameter-Server.
-  Parameter werden beim Start geladen, durch MQTT-Set-Kommandos lokal aktualisiert
-  und bei renew gezielt einmal neu eingelesen. Das reduziert die rosmaster-Last deutlich.
+  Die Lastfaktor-Berechnung laeuft weiterhin bei neuen mower_status-Meldungen.
+  Die aktiven Werte werden gedrosselt aus settings/mower_logic/active gelesen, damit MQTT/UI-Aenderungen
+  ohne Neustart im separaten mow_load_factor-Node wirksam werden. Legacy-Parameter unter
+  /mower_logic/... bleiben als Fallback erhalten.
 
 Beispiel:
   {"enabled":false,"min_factor":0.400000,"current_start":0.750000,"current_end":1.250000,"factor_current":0.820000,"factor_motor_temp":1.000000,"factor_esc_temp":1.000000,"computed_factor":0.820000,"effective_factor":1.000000}
@@ -73,6 +79,15 @@ Stromkennlinie zur Laufzeit ändern:
 Die Werte können auch einzeln geändert werden, solange die Grenzen danach gültig bleiben:
   Payload: {"current_start":0.80}
   Payload: {"current_end":1.40}
+
+Asymmetrische Tiefpass-Glättung ändern:
+  Topic: settings/mower_logic/set/session/json
+  Payload: {"mow_load_factor_smoothing_enabled":true,"mow_load_factor_smoothing_down_alpha":0.50,"mow_load_factor_smoothing_up_alpha":0.10}
+
+  Bedeutung:
+  - down_alpha wird verwendet, wenn der Faktor fällt. Höhere Werte reagieren schneller auf Last.
+  - up_alpha wird verwendet, wenn der Faktor steigt. Kleinere Werte erholen sich langsamer.
+  - Erlaubter Bereich für beide Alpha-Werte: 0.0 bis 1.0
 
 Kombinierte Änderung:
   Payload: {"enabled":true,"min_factor":0.45,"current_start":0.80,"current_end":1.40}
