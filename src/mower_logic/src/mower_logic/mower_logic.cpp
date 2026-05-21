@@ -777,6 +777,12 @@ class MowerLogicSettingsBridge {
   }
 
   void initializeMetadataAndPersistentValues() {
+    open_mower_settings::migratePersistentFieldsAndRemoveNamespace(
+        settings_persistent_path_, "mow_load_factor", kNamespace,
+        {{"enabled", "mow_load_factor_enabled"},
+         {"min_factor", "mow_load_factor_min"},
+         {"current_start", "mow_load_current_start"},
+         {"current_end", "mow_load_current_end"}});
     settings_entries_ = open_mower_settings::mergeNamespaceWithSeed(settings_persistent_path_, kNamespace,
                                                                      seedEntriesFromDynamicReconfigure());
     mower_logic::MowerLogicConfig target = getConfig();

@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 
@@ -131,6 +132,56 @@ inline json mergeNamespaceWithSeed(const std::string& path, const std::string& n
     *wrote_file = changed;
   }
   return namespace_entries;
+}
+
+
+inline bool removeNamespace(const std::string& path, const std::string& namespace_name) {
+  ensureDataRosDirectory();
+  FileLock lock(path + ".lock");
+  json root = readRootUnlocked(path);
+  if (!root.contains("settings") || !root["settings"].is_object() ||
+      !root["settings"].contains(namespace_name)) {
+    return false;
+  }
+  root["settings"].erase(namespace_name);
+  return writeRootUnlocked(path, root);
+}
+
+inline bool migratePersistentFieldsAndRemoveNamespace(
+    const std::string& path, const std::string& source_namespace,
+    const std::string& target_namespace,
+    const std::map<std::string, std::string>& persistent_field_map) {
+  ensureDataRosDirectory();
+  FileLock lock(path + ".lock");
+  json root = readRootUnlocked(path);
+  if (!root.contains("settings") || !root["settings"].is_object() ||
+      !root["settings"].contains(source_namespace) ||
+      !root["settings"][source_namespace].is_object()) {
+    return false;
+  }
+
+  if (!root["settings"].contains(target_namespace) ||
+      !root["settings"][target_namespace].is_object()) {
+    root["settings"][target_namespace] = json::object();
+  }
+
+  const json source_entries = root["settings"][source_namespace];
+  json& target_entries = root["settings"][target_namespace];
+  for (const auto& mapping : persistent_field_map) {
+    const std::string& source_key = mapping.first;
+    const std::string& target_key = mapping.second;
+    if (!source_entries.contains(source_key) || !source_entries[source_key].is_object() ||
+        !source_entries[source_key].contains("persistent")) {
+      continue;
+    }
+    if (!target_entries.contains(target_key) || !target_entries[target_key].is_object()) {
+      target_entries[target_key] = json::object();
+    }
+    target_entries[target_key]["persistent"] = source_entries[source_key]["persistent"];
+  }
+
+  root["settings"].erase(source_namespace);
+  return writeRootUnlocked(path, root);
 }
 
 inline json readNamespace(const std::string& path, const std::string& namespace_name) {

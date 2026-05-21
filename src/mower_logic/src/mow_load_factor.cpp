@@ -160,6 +160,10 @@ class MowLoadFactorNode {
     settings_entries_ = open_mower_settings::mergeNamespaceWithSeed(settings_persistent_path_, kNamespace,
                                                                      seedEntriesFromBootstrap());
     loadPersistentValuesFromEntries(true);
+    // The UI/MQTT settings namespace is now consolidated under settings/mower_logic.
+    // Keep legacy runtime topics working, but remove the deprecated persisted namespace
+    // so settings_persistent.json does not grow a second visible settings block.
+    open_mower_settings::removeNamespace(settings_persistent_path_, kNamespace);
   }
 
   void reloadPersistentSettingsMetadata() {

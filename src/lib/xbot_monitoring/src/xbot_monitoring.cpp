@@ -56,6 +56,7 @@ void publish_actions();
 void publish_version();
 void publish_params();
 void publish_ll_power_status_request();
+void try_publish(std::string topic, const std::string &data, bool retain);
 void rpc_request_callback(const std::string &payload);
 
 // Stores registered actions (prefix to vector<action>)
@@ -153,9 +154,11 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "map/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/session/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "settings/mow_load_factor/set/renew/json", 0);
+        // settings/mow_load_factor is deprecated. The load regulation settings are
+        // exposed exclusively through settings/mower_logic to avoid duplicate UI groups.
+        // Publishing an empty retained payload clears older retained broker state.
+        try_publish("settings/mow_load_factor/json", "", true);
+        try_publish("settings/mow_load_factor/validation/json", "", true);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
@@ -288,67 +291,6 @@ public:
                 }
             }
             publish_statustransition_log(requested_limit);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/session/json" ||
-                   ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json") {
-            const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/persistent/json";
-            const std::string mode = persistent ? "persistent" : "session";
-            json validation = {
-                {"valid", false},
-                {"namespace", "mow_load_factor"},
-                {"mode", mode},
-                {"accepted", json::array()},
-                {"rejected", json::array()}
-            };
-            try {
-                json payload = json::parse(ptr->get_payload_str());
-                if (!payload.is_object()) {
-                    validation["rejected"].push_back({{"key", "$"}, {"reason", "payload must be a JSON object"}});
-                    ROS_WARN_STREAM("Ignoring settings/mow_load_factor set payload because it is not a JSON object.");
-                } else {
-                    for (auto it = payload.begin(); it != payload.end(); ++it) {
-                        const std::string key = it.key();
-                        const json &value = it.value();
-                        if (key == "enabled") {
-                            if (!value.is_boolean()) {
-                                validation["rejected"].push_back({{"key", key}, {"reason", "value must be boolean"}});
-                                continue;
-                            }
-                            std_msgs::Bool msg;
-                            msg.data = value.get<bool>();
-                            (persistent ? mow_load_factor_set_persistent_enabled_pub : mow_load_factor_set_enabled_pub).publish(msg);
-                            validation["accepted"].push_back(key);
-                        } else if (key == "min_factor" || key == "current_start" || key == "current_end") {
-                            if (!value.is_number()) {
-                                validation["rejected"].push_back({{"key", key}, {"reason", "value must be numeric"}});
-                                continue;
-                            }
-                            std_msgs::Float32 msg;
-                            msg.data = value.get<float>();
-                            if (key == "min_factor") {
-                                (persistent ? mow_load_factor_set_persistent_min_factor_pub : mow_load_factor_set_min_factor_pub).publish(msg);
-                            } else if (key == "current_start") {
-                                (persistent ? mow_load_factor_set_persistent_current_start_pub : mow_load_factor_set_current_start_pub).publish(msg);
-                            } else {
-                                (persistent ? mow_load_factor_set_persistent_current_end_pub : mow_load_factor_set_current_end_pub).publish(msg);
-                            }
-                            validation["accepted"].push_back(key);
-                        } else {
-                            validation["rejected"].push_back({{"key", key}, {"reason", "unknown setting"}});
-                        }
-                    }
-                    if (validation["accepted"].empty() && validation["rejected"].empty()) {
-                        validation["rejected"].push_back({{"key", "$"}, {"reason", "payload does not contain any settings"}});
-                    }
-                }
-            } catch (const json::exception &e) {
-                validation["rejected"].push_back({{"key", "$"}, {"reason", std::string("Error decoding JSON: ") + e.what()}});
-                ROS_WARN_STREAM("Error decoding settings/mow_load_factor set JSON: " << e.what());
-            }
-            validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
-            publish_settings_validation("mow_load_factor", validation);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mow_load_factor/set/renew/json") {
-            std_msgs::Empty msg;
-            mow_load_factor_renew_pub.publish(msg);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/session/json") {
             std_msgs::String msg;
             msg.data = ptr->get_payload_str();
@@ -585,7 +527,9 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
 }
 
 void mow_load_factor_status_json_callback(const std_msgs::String::ConstPtr &msg) {
-    try_publish("settings/mow_load_factor/json", msg->data, true);
+    (void)msg;
+    // Deprecated: settings/mow_load_factor/json is intentionally not bridged to MQTT.
+    // The canonical settings topic is settings/mower_logic/json.
 }
 
 void mower_logic_settings_status_json_callback(const std_msgs::String::ConstPtr &msg) {
