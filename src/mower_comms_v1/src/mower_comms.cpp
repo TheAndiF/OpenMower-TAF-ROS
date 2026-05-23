@@ -712,6 +712,7 @@ LlSettingsJson makeLlPowerNumberEntry(const std::string& label, const std::strin
   entry["label"] = label;
   entry["description"] = description;
   entry["group"] = kLlBoardSettingsNamespace;
+  entry["expert"] = false;
   entry["order"] = order;
   entry["session_apply_supported"] = true;
   entry["restart_required"] = false;
@@ -843,6 +844,7 @@ LlSettingsJson orderedLlPowerStatusBase(const LlSettingsJson& entry) {
   out["label"] = open_mower_settings::stringOr(entry, "label", "");
   out["description"] = open_mower_settings::stringOr(entry, "description", "");
   out["group"] = open_mower_settings::stringOr(entry, "group", kLlBoardSettingsNamespace);
+  out["expert"] = open_mower_settings::boolOr(entry, "expert", false);
   out["order"] = open_mower_settings::intOr(entry, "order", 0);
   out["session_apply_supported"] = open_mower_settings::boolOr(entry, "session_apply_supported", true);
   out["restart_required"] = open_mower_settings::boolOr(entry, "restart_required", false);

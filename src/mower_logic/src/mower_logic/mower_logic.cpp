@@ -26,6 +26,7 @@
 #include <tf2/LinearMath/Transform.h>
 
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <map>
 #include <set>
@@ -715,6 +716,39 @@ class MowerLogicSettingsBridge {
     return true;
   }
 
+  static std::string trimString(const std::string& value) {
+    std::size_t begin = 0;
+    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin]))) ++begin;
+    std::size_t end = value.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+    return value.substr(begin, end - begin);
+  }
+
+  static bool isMetadataUpdate(const json& value) {
+    if (!value.is_object() || value.empty()) return false;
+    for (auto it = value.begin(); it != value.end(); ++it) {
+      if (it.key() != "group" && it.key() != "expert") return false;
+    }
+    return true;
+  }
+
+  static bool validateGroupName(const json& value, std::string& group, std::string& reason) {
+    if (!value.is_string()) {
+      reason = "group must be a string";
+      return false;
+    }
+    group = trimString(value.get<std::string>());
+    if (group.empty()) {
+      reason = "group must not be empty";
+      return false;
+    }
+    if (group.size() > 80) {
+      reason = "group must not be longer than 80 characters";
+      return false;
+    }
+    return true;
+  }
+
   std::string labelForKey(const std::string& key) const {
     if (key == "mow_motor_direction_mode") return "Mähmotor-Drehrichtungsmodus";
     return key;
@@ -761,6 +795,7 @@ class MowerLogicSettingsBridge {
         entry["label"] = labelForKey(meta.name);
         entry["description"] = meta.description;
         entry["group"] = kNamespace;
+        entry["expert"] = false;
         entry["order"] = meta.order;
         entry["session_apply_supported"] = true;
         entry["restart_required"] = false;
@@ -898,10 +933,34 @@ class MowerLogicSettingsBridge {
       return;
     }
     std::map<std::string, json> accepted_values;
+    std::map<std::string, std::map<std::string, json>> accepted_metadata;
     for (auto it = payload.begin(); it != payload.end(); ++it) {
       auto meta_it = metadata_.find(it.key());
       if (meta_it == metadata_.end()) {
         validation["rejected"].push_back({{"key", it.key()}, {"reason", "unknown setting"}});
+        continue;
+      }
+      if (isMetadataUpdate(it.value())) {
+        if (!persistent) {
+          validation["rejected"].push_back({{"key", it.key()}, {"reason", "metadata changes require persistent mode"}});
+          continue;
+        }
+        if (it.value().contains("group")) {
+          std::string group;
+          std::string reason;
+          if (!validateGroupName(it.value()["group"], group, reason)) {
+            validation["rejected"].push_back({{"key", it.key()}, {"reason", reason}});
+            continue;
+          }
+          accepted_metadata[it.key()]["group"] = group;
+        }
+        if (it.value().contains("expert")) {
+          if (!it.value()["expert"].is_boolean()) {
+            validation["rejected"].push_back({{"key", it.key()}, {"reason", "expert must be a boolean"}});
+            continue;
+          }
+          accepted_metadata[it.key()]["expert"] = it.value()["expert"];
+        }
         continue;
       }
       const ParamMeta& meta = meta_it->second;
@@ -915,7 +974,7 @@ class MowerLogicSettingsBridge {
       }
       accepted_values[it.key()] = it.value();
     }
-    if (accepted_values.empty() && validation["rejected"].empty()) {
+    if (accepted_values.empty() && accepted_metadata.empty() && validation["rejected"].empty()) {
       validation["rejected"].push_back({{"key", "$"}, {"reason", "payload does not contain any settings"}});
     }
     std::string cross_reason;
@@ -942,15 +1001,44 @@ class MowerLogicSettingsBridge {
       return;
     }
     setConfig(applied);
+
+    std::map<std::string, std::map<std::string, json>> persistent_updates;
+    for (const auto& pair : accepted_values) {
+      if (persistent) {
+        persistent_updates[pair.first]["persistent"] = pair.second;
+      }
+    }
+    for (const auto& pair : accepted_metadata) {
+      for (const auto& field : pair.second) {
+        persistent_updates[pair.first][field.first] = field.second;
+      }
+    }
+    if (!persistent_updates.empty()) {
+      if (!open_mower_settings::updateEntryFields(settings_persistent_path_, kNamespace, persistent_updates)) {
+        validation["rejected"].push_back({{"key", "$"}, {"reason", "could not write settings_persistent.json"}});
+        publishValidation(validation);
+        return;
+      }
+      for (const auto& pair : accepted_values) {
+        if (persistent) settings_entries_[pair.first]["persistent"] = pair.second;
+      }
+      for (const auto& pair : accepted_metadata) {
+        for (const auto& field : pair.second) {
+          settings_entries_[pair.first][field.first] = field.second;
+        }
+      }
+    }
+
     for (const auto& pair : accepted_values) {
       const auto& meta = metadata_.at(pair.first);
-      if (persistent) {
-        settings_entries_[pair.first]["persistent"] = pair.second;
-        open_mower_settings::updateEntryField(settings_persistent_path_, kNamespace, pair.first, "persistent", pair.second);
-      }
       const json persistent_value = persistent ? pair.second : persistentValue(pair.first, meta);
       syncParamTree(pair.first, meta, persistent_value, pair.second);
       validation["accepted"].push_back(pair.first);
+    }
+    for (const auto& pair : accepted_metadata) {
+      for (const auto& field : pair.second) {
+        validation["accepted"].push_back(pair.first + "." + field.first);
+      }
     }
     validation["valid"] = true;
     publishValidation(validation);
@@ -979,6 +1067,7 @@ class MowerLogicSettingsBridge {
       entry["label"] = open_mower_settings::stringOr(persisted_meta, "label", labelForKey(key));
       entry["description"] = open_mower_settings::stringOr(persisted_meta, "description", meta.description);
       entry["group"] = open_mower_settings::stringOr(persisted_meta, "group", kNamespace);
+      entry["expert"] = open_mower_settings::boolOr(persisted_meta, "expert", false);
       entry["order"] = open_mower_settings::intOr(persisted_meta, "order", meta.order);
       entry["session_apply_supported"] = open_mower_settings::boolOr(persisted_meta, "session_apply_supported", true);
       entry["restart_required"] = open_mower_settings::boolOr(persisted_meta, "restart_required", false);

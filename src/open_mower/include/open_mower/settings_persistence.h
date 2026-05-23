@@ -213,6 +213,28 @@ inline bool updateEntryField(const std::string& path, const std::string& namespa
   return writeRootUnlocked(path, root);
 }
 
+inline bool updateEntryFields(
+    const std::string& path, const std::string& namespace_name,
+    const std::map<std::string, std::map<std::string, json>>& updates) {
+  ensureDataRosDirectory();
+  FileLock lock(path + ".lock");
+  json root = readRootUnlocked(path);
+  if (!root["settings"].contains(namespace_name) || !root["settings"][namespace_name].is_object()) {
+    root["settings"][namespace_name] = json::object();
+  }
+  json& namespace_entries = root["settings"][namespace_name];
+  for (const auto& key_update : updates) {
+    const std::string& key = key_update.first;
+    if (!namespace_entries.contains(key) || !namespace_entries[key].is_object()) {
+      namespace_entries[key] = json::object();
+    }
+    for (const auto& field_update : key_update.second) {
+      namespace_entries[key][field_update.first] = field_update.second;
+    }
+  }
+  return writeRootUnlocked(path, root);
+}
+
 inline bool isNumber(const json& object, const std::string& field) {
   return object.is_object() && object.contains(field) && object[field].is_number();
 }

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <chrono>
 #include <ctime>
+#include <cctype>
 #include <iomanip>
 #include <sstream>
 
@@ -38,8 +39,44 @@
 #include "xbot_rpc/provider.h"
 #include "xbot_rpc/RegisterMethodsSrv.h"
 #include "capabilities.h"
+#include "open_mower/settings_persistence.h"
 
 using json = nlohmann::ordered_json;
+
+
+static std::string trim_settings_string(const std::string &value) {
+    std::size_t begin = 0;
+    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin]))) ++begin;
+    std::size_t end = value.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+    return value.substr(begin, end - begin);
+}
+
+static bool is_settings_metadata_update(const json &value) {
+    if (!value.is_object() || value.empty()) return false;
+    for (auto it = value.begin(); it != value.end(); ++it) {
+        if (it.key() != "group" && it.key() != "expert") return false;
+    }
+    return true;
+}
+
+static bool validate_group_metadata_value(const json &value, std::string &group, std::string &reason) {
+    if (!value.is_string()) {
+        reason = "group must be a string";
+        return false;
+    }
+    group = trim_settings_string(value.get<std::string>());
+    if (group.empty()) {
+        reason = "group must not be empty";
+        return false;
+    }
+    if (group.size() > 80) {
+        reason = "group must not be longer than 80 characters";
+        return false;
+    }
+    return true;
+}
+
 
 void publish_capabilities();
 void publish_sensor_metadata();
@@ -327,6 +364,8 @@ public:
                         {"charge_critical_high_voltage", {&ll_power_set_charge_critical_high_voltage_pub, &ll_power_set_persistent_charge_critical_high_voltage_pub}},
                         {"charge_critical_high_current", {&ll_power_set_charge_critical_high_current_pub, &ll_power_set_persistent_charge_critical_high_current_pub}}
                     };
+                    std::map<std::string, double> accepted_values;
+                    std::map<std::string, std::map<std::string, open_mower_settings::json>> accepted_metadata;
                     for (auto it = payload.begin(); it != payload.end(); ++it) {
                         const std::string key = it.key();
                         const json &value = it.value();
@@ -335,18 +374,67 @@ public:
                             validation["rejected"].push_back({{"key", key}, {"reason", "unknown setting"}});
                             continue;
                         }
+                        if (is_settings_metadata_update(value)) {
+                            if (!persistent) {
+                                validation["rejected"].push_back({{"key", key}, {"reason", "metadata changes require persistent mode"}});
+                                continue;
+                            }
+                            if (value.contains("group")) {
+                                std::string group;
+                                std::string reason;
+                                if (!validate_group_metadata_value(value["group"], group, reason)) {
+                                    validation["rejected"].push_back({{"key", key}, {"reason", reason}});
+                                    continue;
+                                }
+                                accepted_metadata[key]["group"] = group;
+                            }
+                            if (value.contains("expert")) {
+                                if (!value["expert"].is_boolean()) {
+                                    validation["rejected"].push_back({{"key", key}, {"reason", "expert must be a boolean"}});
+                                    continue;
+                                }
+                                accepted_metadata[key]["expert"] = value["expert"];
+                            }
+                            continue;
+                        }
                         if (!value.is_number()) {
                             validation["rejected"].push_back({{"key", key}, {"reason", "value must be numeric"}});
                             continue;
                         }
-                        std_msgs::Float64 msg;
-                        msg.data = value.get<double>();
-                        ros::Publisher *publisher = persistent ? publisher_it->second.second : publisher_it->second.first;
-                        publisher->publish(msg);
-                        validation["accepted"].push_back(key);
+                        accepted_values[key] = value.get<double>();
                     }
-                    if (validation["accepted"].empty() && validation["rejected"].empty()) {
+                    if (accepted_values.empty() && accepted_metadata.empty() && validation["rejected"].empty()) {
                         validation["rejected"].push_back({{"key", "$"}, {"reason", "payload does not contain any settings"}});
+                    }
+                    if (validation["rejected"].empty()) {
+                        bool metadata_write_ok = true;
+                        if (!accepted_metadata.empty()) {
+                            std::string settings_persistent_path;
+                            ros::param::param<std::string>("/settings/persistent_file", settings_persistent_path,
+                                                           std::string("/data/ros/settings_persistent.json"));
+                            metadata_write_ok = open_mower_settings::updateEntryFields(settings_persistent_path, "ll_board", accepted_metadata);
+                            if (!metadata_write_ok) {
+                                validation["rejected"].push_back({{"key", "$"}, {"reason", "could not write settings_persistent.json"}});
+                            }
+                        }
+                        if (metadata_write_ok && validation["rejected"].empty()) {
+                            for (const auto &pair : accepted_values) {
+                                std_msgs::Float64 msg;
+                                msg.data = pair.second;
+                                const auto publisher_it = publishers.find(pair.first);
+                                ros::Publisher *publisher = persistent ? publisher_it->second.second : publisher_it->second.first;
+                                publisher->publish(msg);
+                                validation["accepted"].push_back(pair.first);
+                            }
+                            for (const auto &pair : accepted_metadata) {
+                                for (const auto &field : pair.second) {
+                                    validation["accepted"].push_back(pair.first + "." + field.first);
+                                }
+                            }
+                            if (!accepted_metadata.empty()) {
+                                publish_ll_power_status_request();
+                            }
+                        }
                     }
                 }
             } catch (const json::exception &e) {

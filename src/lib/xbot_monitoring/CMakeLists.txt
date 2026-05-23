@@ -45,6 +45,7 @@ add_subdirectory(../json json EXCLUDE_FROM_ALL)
 include_directories(
         # include
         ${catkin_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../open_mower/include
 )
 
 add_executable(xbot_monitoring
