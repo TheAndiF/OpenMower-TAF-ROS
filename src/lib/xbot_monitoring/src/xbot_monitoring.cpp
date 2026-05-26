@@ -52,14 +52,6 @@ static std::string trim_settings_string(const std::string &value) {
     return value.substr(begin, end - begin);
 }
 
-static bool is_settings_metadata_update(const json &value) {
-    if (!value.is_object() || value.empty()) return false;
-    for (auto it = value.begin(); it != value.end(); ++it) {
-        if (it.key() != "group" && it.key() != "expert") return false;
-    }
-    return true;
-}
-
 static bool validate_group_metadata_value(const json &value, std::string &group, std::string &reason) {
     if (!value.is_string()) {
         reason = "group must be a string";
@@ -368,40 +360,60 @@ public:
                     std::map<std::string, std::map<std::string, open_mower_settings::json>> accepted_metadata;
                     for (auto it = payload.begin(); it != payload.end(); ++it) {
                         const std::string key = it.key();
-                        const json &value = it.value();
+                        const json &entry = it.value();
                         const auto publisher_it = publishers.find(key);
                         if (publisher_it == publishers.end()) {
                             validation["rejected"].push_back({{"key", key}, {"reason", "unknown setting"}});
                             continue;
                         }
-                        if (is_settings_metadata_update(value)) {
-                            if (!persistent) {
-                                validation["rejected"].push_back({{"key", key}, {"reason", "metadata changes require persistent mode"}});
+                        if (!entry.is_object()) {
+                            validation["rejected"].push_back({{"key", key}, {"reason", "setting entry must be an object"}});
+                            continue;
+                        }
+                        if (entry.empty()) {
+                            validation["rejected"].push_back({{"key", key}, {"reason", "setting entry must contain at least one field"}});
+                            continue;
+                        }
+
+                        bool rejected = false;
+                        for (auto field = entry.begin(); field != entry.end(); ++field) {
+                            if (field.key() != "value" && field.key() != "group" && field.key() != "expert") {
+                                validation["rejected"].push_back({{"key", key}, {"field", field.key()}, {"reason", "unknown field"}});
+                                rejected = true;
+                            }
+                        }
+                        if (rejected) continue;
+
+                        if (!persistent && (entry.contains("group") || entry.contains("expert"))) {
+                            validation["rejected"].push_back({{"key", key}, {"reason", "metadata changes require persistent mode"}});
+                            continue;
+                        }
+
+                        if (entry.contains("value")) {
+                            if (!entry["value"].is_number()) {
+                                validation["rejected"].push_back({{"key", key}, {"field", "value"}, {"reason", "value must be numeric"}});
                                 continue;
                             }
-                            if (value.contains("group")) {
-                                std::string group;
-                                std::string reason;
-                                if (!validate_group_metadata_value(value["group"], group, reason)) {
-                                    validation["rejected"].push_back({{"key", key}, {"reason", reason}});
-                                    continue;
-                                }
-                                accepted_metadata[key]["group"] = group;
-                            }
-                            if (value.contains("expert")) {
-                                if (!value["expert"].is_boolean()) {
-                                    validation["rejected"].push_back({{"key", key}, {"reason", "expert must be a boolean"}});
-                                    continue;
-                                }
-                                accepted_metadata[key]["expert"] = value["expert"];
-                            }
-                            continue;
+                            accepted_values[key] = entry["value"].get<double>();
                         }
-                        if (!value.is_number()) {
-                            validation["rejected"].push_back({{"key", key}, {"reason", "value must be numeric"}});
-                            continue;
+
+                        if (entry.contains("group")) {
+                            std::string group;
+                            std::string reason;
+                            if (!validate_group_metadata_value(entry["group"], group, reason)) {
+                                validation["rejected"].push_back({{"key", key}, {"field", "group"}, {"reason", reason}});
+                                continue;
+                            }
+                            accepted_metadata[key]["group"] = group;
                         }
-                        accepted_values[key] = value.get<double>();
+
+                        if (entry.contains("expert")) {
+                            if (!entry["expert"].is_boolean()) {
+                                validation["rejected"].push_back({{"key", key}, {"field", "expert"}, {"reason", "expert must be a boolean"}});
+                                continue;
+                            }
+                            accepted_metadata[key]["expert"] = entry["expert"];
+                        }
                     }
                     if (accepted_values.empty() && accepted_metadata.empty() && validation["rejected"].empty()) {
                         validation["rejected"].push_back({{"key", "$"}, {"reason", "payload does not contain any settings"}});
@@ -418,18 +430,22 @@ public:
                             }
                         }
                         if (metadata_write_ok && validation["rejected"].empty()) {
+                            std::map<std::string, json> accepted_field_names;
                             for (const auto &pair : accepted_values) {
                                 std_msgs::Float64 msg;
                                 msg.data = pair.second;
                                 const auto publisher_it = publishers.find(pair.first);
                                 ros::Publisher *publisher = persistent ? publisher_it->second.second : publisher_it->second.first;
                                 publisher->publish(msg);
-                                validation["accepted"].push_back(pair.first);
+                                accepted_field_names[pair.first].push_back("value");
                             }
                             for (const auto &pair : accepted_metadata) {
                                 for (const auto &field : pair.second) {
-                                    validation["accepted"].push_back(pair.first + "." + field.first);
+                                    accepted_field_names[pair.first].push_back(field.first);
                                 }
+                            }
+                            for (const auto &pair : accepted_field_names) {
+                                validation["accepted"].push_back({{"key", pair.first}, {"fields", pair.second}});
                             }
                             if (!accepted_metadata.empty()) {
                                 publish_ll_power_status_request();

@@ -855,6 +855,7 @@ LlSettingsJson llPowerStatusNumber(const std::string& key, double active, double
   const LlSettingsJson& entry = ll_power_settings_entries.at(key);
   LlSettingsJson out = orderedLlPowerStatusBase(entry);
   out["default"] = open_mower_settings::numberOr(entry, "default", 0.0);
+  out["value"] = active;
   out["persistent"] = persistent;
   out["active"] = active;
   out["different"] = llPowerDiffers(active, persistent);
@@ -871,7 +872,7 @@ LlSettingsJson llPowerStatusNumber(const std::string& key, double active, double
 
 void publishLlPowerStatusJson() {
   LlSettingsJson status = LlSettingsJson::object();
-  status["schema"] = "settings_v1";
+  status["schema"] = "settings_v2";
   status["namespace"] = kLlBoardSettingsNamespace;
   status["settings"] = LlSettingsJson::object();
   status["settings"]["battery_critical_voltage"] =

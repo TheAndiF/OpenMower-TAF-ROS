@@ -724,14 +724,6 @@ class MowerLogicSettingsBridge {
     return value.substr(begin, end - begin);
   }
 
-  static bool isMetadataUpdate(const json& value) {
-    if (!value.is_object() || value.empty()) return false;
-    for (auto it = value.begin(); it != value.end(); ++it) {
-      if (it.key() != "group" && it.key() != "expert") return false;
-    }
-    return true;
-  }
-
   static bool validateGroupName(const json& value, std::string& group, std::string& reason) {
     if (!value.is_string()) {
       reason = "group must be a string";
@@ -932,51 +924,84 @@ class MowerLogicSettingsBridge {
       publishValidation(validation);
       return;
     }
+
     std::map<std::string, json> accepted_values;
     std::map<std::string, std::map<std::string, json>> accepted_metadata;
+
     for (auto it = payload.begin(); it != payload.end(); ++it) {
-      auto meta_it = metadata_.find(it.key());
+      const std::string key = it.key();
+      const json& entry = it.value();
+      auto meta_it = metadata_.find(key);
       if (meta_it == metadata_.end()) {
-        validation["rejected"].push_back({{"key", it.key()}, {"reason", "unknown setting"}});
+        validation["rejected"].push_back({{"key", key}, {"reason", "unknown setting"}});
         continue;
       }
-      if (isMetadataUpdate(it.value())) {
-        if (!persistent) {
-          validation["rejected"].push_back({{"key", it.key()}, {"reason", "metadata changes require persistent mode"}});
+      if (!entry.is_object()) {
+        validation["rejected"].push_back({{"key", key}, {"reason", "setting entry must be an object"}});
+        continue;
+      }
+      if (entry.empty()) {
+        validation["rejected"].push_back({{"key", key}, {"reason", "setting entry must contain at least one field"}});
+        continue;
+      }
+
+      bool rejected = false;
+      for (auto field = entry.begin(); field != entry.end(); ++field) {
+        if (field.key() != "value" && field.key() != "group" && field.key() != "expert") {
+          validation["rejected"].push_back({{"key", key}, {"field", field.key()}, {"reason", "unknown field"}});
+          rejected = true;
+        }
+      }
+      if (rejected) continue;
+
+      if (!persistent && (entry.contains("group") || entry.contains("expert"))) {
+        validation["rejected"].push_back({{"key", key}, {"reason", "metadata changes require persistent mode"}});
+        continue;
+      }
+
+      const ParamMeta& meta = meta_it->second;
+      json accepted_fields = json::array();
+      if (entry.contains("value")) {
+        const json& value = entry["value"];
+        if (!isTypeValid(meta, value)) {
+          validation["rejected"].push_back({{"key", key}, {"field", "value"},
+                                             {"reason", std::string("value must be ") + meta.type_name}});
           continue;
         }
-        if (it.value().contains("group")) {
-          std::string group;
-          std::string reason;
-          if (!validateGroupName(it.value()["group"], group, reason)) {
-            validation["rejected"].push_back({{"key", it.key()}, {"reason", reason}});
-            continue;
-          }
-          accepted_metadata[it.key()]["group"] = group;
+        if (!isRangeValid(meta, value)) {
+          validation["rejected"].push_back({{"key", key}, {"field", "value"},
+                                             {"reason", "value is outside metadata limits"}});
+          continue;
         }
-        if (it.value().contains("expert")) {
-          if (!it.value()["expert"].is_boolean()) {
-            validation["rejected"].push_back({{"key", it.key()}, {"reason", "expert must be a boolean"}});
-            continue;
-          }
-          accepted_metadata[it.key()]["expert"] = it.value()["expert"];
+        accepted_values[key] = value;
+        accepted_fields.push_back("value");
+      }
+
+      if (entry.contains("group")) {
+        std::string group;
+        std::string reason;
+        if (!validateGroupName(entry["group"], group, reason)) {
+          validation["rejected"].push_back({{"key", key}, {"field", "group"}, {"reason", reason}});
+          continue;
         }
-        continue;
+        accepted_metadata[key]["group"] = group;
+        accepted_fields.push_back("group");
       }
-      const ParamMeta& meta = meta_it->second;
-      if (!isTypeValid(meta, it.value())) {
-        validation["rejected"].push_back({{"key", it.key()}, {"reason", std::string("value must be ") + meta.type_name}});
-        continue;
+
+      if (entry.contains("expert")) {
+        if (!entry["expert"].is_boolean()) {
+          validation["rejected"].push_back({{"key", key}, {"field", "expert"}, {"reason", "expert must be a boolean"}});
+          continue;
+        }
+        accepted_metadata[key]["expert"] = entry["expert"];
+        accepted_fields.push_back("expert");
       }
-      if (!isRangeValid(meta, it.value())) {
-        validation["rejected"].push_back({{"key", it.key()}, {"reason", "value is outside metadata limits"}});
-        continue;
-      }
-      accepted_values[it.key()] = it.value();
     }
+
     if (accepted_values.empty() && accepted_metadata.empty() && validation["rejected"].empty()) {
       validation["rejected"].push_back({{"key", "$"}, {"reason", "payload does not contain any settings"}});
     }
+
     std::string cross_reason;
     if (!accepted_values.empty() && !crossFieldPlausible(accepted_values, cross_reason)) {
       validation["rejected"].push_back({{"key", "$"}, {"reason", cross_reason}});
@@ -1000,7 +1025,9 @@ class MowerLogicSettingsBridge {
       publishValidation(validation);
       return;
     }
-    setConfig(applied);
+    if (!accepted_values.empty()) {
+      setConfig(applied);
+    }
 
     std::map<std::string, std::map<std::string, json>> persistent_updates;
     for (const auto& pair : accepted_values) {
@@ -1029,16 +1056,20 @@ class MowerLogicSettingsBridge {
       }
     }
 
+    std::map<std::string, json> accepted_field_names;
     for (const auto& pair : accepted_values) {
       const auto& meta = metadata_.at(pair.first);
       const json persistent_value = persistent ? pair.second : persistentValue(pair.first, meta);
       syncParamTree(pair.first, meta, persistent_value, pair.second);
-      validation["accepted"].push_back(pair.first);
+      accepted_field_names[pair.first].push_back("value");
     }
     for (const auto& pair : accepted_metadata) {
       for (const auto& field : pair.second) {
-        validation["accepted"].push_back(pair.first + "." + field.first);
+        accepted_field_names[pair.first].push_back(field.first);
       }
+    }
+    for (const auto& pair : accepted_field_names) {
+      validation["accepted"].push_back({{"key", pair.first}, {"fields", pair.second}});
     }
     validation["valid"] = true;
     publishValidation(validation);
@@ -1054,7 +1085,7 @@ class MowerLogicSettingsBridge {
   void publishStatus() const {
     if (metadata_.empty()) return;
     json status = json::object();
-    status["schema"] = "settings_v1";
+    status["schema"] = "settings_v2";
     status["namespace"] = kNamespace;
     status["settings"] = json::object();
     for (const auto& pair : metadata_) {
@@ -1072,6 +1103,7 @@ class MowerLogicSettingsBridge {
       entry["session_apply_supported"] = open_mower_settings::boolOr(persisted_meta, "session_apply_supported", true);
       entry["restart_required"] = open_mower_settings::boolOr(persisted_meta, "restart_required", false);
       entry["default"] = meta.default_value;
+      entry["value"] = active;
       entry["persistent"] = persistent;
       entry["active"] = active;
       entry["different"] = valuesDiffer(active, persistent);
