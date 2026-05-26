@@ -22,6 +22,7 @@
 #include "tf2_eigen/tf2_eigen.h"
 #include <mbf_costmap_core/costmap_controller.h>
 #include <visualization_msgs/Marker.h>
+#include <std_msgs/Float32.h>
 
 namespace ftc_local_planner
 {
@@ -80,6 +81,14 @@ namespace ftc_local_planner
         double current_movement_speed;
 
         /**
+         * Mowing load derating. The mow_load_factor node publishes 1.0 when disabled
+         * and a value below 1.0 when the mower should slow down due to load.
+         */
+        ros::Subscriber mow_load_factor_sub_;
+        double mow_load_factor_effective_ = 1.0;
+        bool mow_load_factor_received_ = false;
+
+        /**
          * State for point interpolation
          */
         uint32_t current_index;
@@ -99,6 +108,8 @@ namespace ftc_local_planner
         PlannerState update_planner_state();
         void update_control_point(double dt);
         void calculate_velocity_commands(double dt, geometry_msgs::TwistStamped &cmd_vel);
+        void mowLoadFactorCallback(const std_msgs::Float32::ConstPtr &msg);
+        double sanitizedMowLoadFactor() const;
 
         /**
          * @brief check for obstacles in path as well as collision at actual pose

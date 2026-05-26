@@ -1,6 +1,9 @@
 
 #include <ftc_local_planner/ftc_planner.h>
 
+#include <algorithm>
+#include <cmath>
+
 #include <pluginlib/class_list_macros.h>
 #include "mbf_msgs/ExePathAction.h"
 
@@ -28,6 +31,11 @@ namespace ftc_local_planner
         global_plan_pub = private_nh.advertise<nav_msgs::Path>("global_plan", 1, true);
         obstacle_marker_pub = private_nh.advertise<visualization_msgs::Marker>("costmap_marker", 10);
 
+        // Effective mower load factor from mower_logic.
+        // The publisher is latched, so the planner receives the last value after startup.
+        mow_load_factor_sub_ = private_nh.subscribe("/mower_logic/mow_load_factor/effective", 1,
+                                                    &FTCPlanner::mowLoadFactorCallback, this);
+
         costmap = costmap_ros;
         costmap_map_ = costmap->getCostmap();
         tf_buffer = tf;
@@ -50,6 +58,37 @@ namespace ftc_local_planner
         failure_detector_.setBufferLength(std::round(config.oscillation_recovery_min_duration * 10));
 
         ROS_INFO("FTCLocalPlannerROS: Version 2 Init.");
+    }
+
+
+    void FTCPlanner::mowLoadFactorCallback(const std_msgs::Float32::ConstPtr &msg)
+    {
+        const double value = static_cast<double>(msg->data);
+        if (!std::isfinite(value))
+        {
+            ROS_WARN_THROTTLE(5.0, "FTCLocalPlannerROS: Ignoring invalid mow load factor: not finite.");
+            return;
+        }
+
+        // Keep the planner safe even if another publisher sends an invalid value.
+        mow_load_factor_effective_ = std::max(0.10, std::min(1.00, value));
+        mow_load_factor_received_ = true;
+
+        if (mow_load_factor_effective_ != value)
+        {
+            ROS_WARN_THROTTLE(5.0, "FTCLocalPlannerROS: Clamped mow load factor from %.3f to %.3f.",
+                              value, mow_load_factor_effective_);
+        }
+    }
+
+    double FTCPlanner::sanitizedMowLoadFactor() const
+    {
+        if (!mow_load_factor_received_ || !std::isfinite(mow_load_factor_effective_))
+        {
+            return 1.0;
+        }
+
+        return std::max(0.10, std::min(1.00, mow_load_factor_effective_));
     }
 
     void FTCPlanner::reconfigureCB(FTCPlannerConfig &c, uint32_t level)
@@ -320,6 +359,12 @@ namespace ftc_local_planner
             {
                 speed = config.speed_slow;
             }
+
+            // Apply mower load derating to the selected target speed.
+            // A factor of 1.0 leaves speed unchanged; lower values reduce both
+            // speed_fast and speed_slow before the acceleration ramp is applied.
+            const double load_factor = sanitizedMowLoadFactor();
+            speed *= load_factor;
 
             if (speed > current_movement_speed)
             {
