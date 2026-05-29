@@ -1,4 +1,4 @@
-﻿name: TAF Release Build ROS
+name: TAF Release Build ROS
 
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ jobs:
           ref: ${{ inputs.source_ref }}
           submodules: recursive
 
-      - name: Show build info
+      - name: Show ROS image build info
         run: |
           echo "Release version: ${{ inputs.release_version }}"
           echo "Source ref:      ${{ inputs.source_ref }}"
@@ -49,6 +49,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The ROS runtime is published as a container image.
+      # taf_latest is the rolling robot/update tag.
+      # release_version is the immutable tag for reproducible deployments.
       - name: Build and push ROS Docker image
         uses: docker/build-push-action@v6
         with:
