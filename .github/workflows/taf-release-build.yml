@@ -33,8 +33,8 @@ jobs:
         run: |
           echo "Release version: ${{ inputs.release_version }}"
           echo "Source ref:      ${{ inputs.source_ref }}"
-          echo "ROS image latest:    ghcr.io/theandif/openmower-taf-ros:taf_latest"
-          echo "ROS image versioned: ghcr.io/theandif/openmower-taf-ros:${{ inputs.release_version }}"
+          echo "ROS image latest:    ghcr.io/theandif/open_mower_ros:taf_latest"
+          echo "ROS image versioned: ghcr.io/theandif/open_mower_ros:${{ inputs.release_version }}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -59,8 +59,8 @@ jobs:
           file: ./docker/Dockerfile
           platforms: linux/arm64
           push: true
-          cache-from: type=registry,ref=ghcr.io/theandif/openmower-taf-ros:taf_buildcache
-          cache-to: type=registry,ref=ghcr.io/theandif/openmower-taf-ros:taf_buildcache,mode=max
+          cache-from: type=registry,ref=ghcr.io/theandif/open_mower_ros:taf_buildcache
+          cache-to: type=registry,ref=ghcr.io/theandif/open_mower_ros:taf_buildcache,mode=max
           tags: |
-            ghcr.io/theandif/openmower-taf-ros:taf_latest
-            ghcr.io/theandif/openmower-taf-ros:${{ inputs.release_version }}
+            ghcr.io/theandif/open_mower_ros:taf_latest
+            ghcr.io/theandif/open_mower_ros:${{ inputs.release_version }}

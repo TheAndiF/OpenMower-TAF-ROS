@@ -131,7 +131,7 @@ jobs:
 
           # Ein Build bekommt drei Tags:
           #
-          # latest = letzter erfolgreicher Build
+          # taf_latest = letzter erfolgreicher TAF-Build
           # test   = Tag, den der Mower aktuell verwendet
           # Datum  = feste, nachvollziehbare Version
           tags: |
