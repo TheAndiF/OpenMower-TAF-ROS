@@ -5,6 +5,9 @@
 inline const nlohmann::ordered_json CAPABILITIES = {
     {"rpc", 1},
     {"map:json", 1},
+    {"map:mowing_progress:json", 1},
+    {"map:mowing_progress:status:json", 1},
+    {"map:mowing_progress:renew:json", 1},
     {"timetable:json", 1},
     {"timetable:bson", 1},
     {"timetable:set:json", 1},

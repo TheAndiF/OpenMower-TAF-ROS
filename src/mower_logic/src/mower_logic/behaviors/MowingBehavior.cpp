@@ -18,6 +18,12 @@
 #include <cryptopp/hex.h>
 #include <cryptopp/sha.h>
 #include <nav_msgs/Path.h>
+#include <nlohmann/json.hpp>
+#include <std_msgs/Empty.h>
+#include <std_msgs/String.h>
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
 
@@ -31,6 +37,7 @@ extern ros::ServiceClient pathClient;
 extern ros::ServiceClient pathProgressClient;
 extern ros::ServiceClient setNavPointClient;
 extern ros::ServiceClient clearNavPointClient;
+extern ros::NodeHandle* n;
 
 extern actionlib::SimpleActionClient<mbf_msgs::MoveBaseAction>* mbfClient;
 extern actionlib::SimpleActionClient<mbf_msgs::ExePathAction>* mbfClientExePath;
@@ -40,6 +47,26 @@ extern void setConfig(mower_logic::MowerLogicConfig);
 extern void registerActions(std::string prefix, const std::vector<xbot_msgs::ActionInfo>& actions);
 
 MowingBehavior MowingBehavior::INSTANCE;
+
+using json = nlohmann::json;
+
+namespace {
+std::string make_path_id(const std::string& area_id, int path_index) {
+  std::ostringstream ss;
+  ss << area_id << "_path_" << std::setw(3) << std::setfill('0') << path_index;
+  return ss.str();
+}
+
+json path_points_to_json(const std::vector<geometry_msgs::PoseStamped>& poses, std::size_t begin, std::size_t end) {
+  json points = json::array();
+  end = std::min(end, poses.size());
+  begin = std::min(begin, end);
+  for (std::size_t i = begin; i < end; ++i) {
+    points.push_back({{"x", poses[i].pose.position.x}, {"y", poses[i].pose.position.y}});
+  }
+  return points;
+}
+}
 
 std::string MowingBehavior::state_name() {
   if (paused) {
@@ -98,6 +125,7 @@ void MowingBehavior::enter() {
     a.enabled = true;
   }
   registerActions("mower_logic:mowing", actions);
+  publish_mowing_progress(true);
 }
 
 void MowingBehavior::exit() {
@@ -113,6 +141,7 @@ void MowingBehavior::reset() {
   currentAreaId.clear();
   currentMowingPath = 0;
   currentMowingPathIndex = 0;
+  publish_mowing_progress(true);
   // increase cumulative mowing angle offset increment
   currentMowingAngleIncrementSum = std::fmod(currentMowingAngleIncrementSum + getConfig().mow_angle_increment, 360);
   checkpoint();
@@ -147,6 +176,10 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   ROS_INFO_STREAM("MowingBehavior: Creating mowing plan for area: " << area_index);
   // Delete old plan and progress.
   currentMowingPaths.clear();
+  currentAreaId.clear();
+  currentMowingPath = 0;
+  currentMowingPathIndex = 0;
+  publish_mowing_progress(true);
 
   // get the mowing area
   mower_map::GetMowingAreaSrv mapSrv;
@@ -211,6 +244,7 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   }
 
   currentMowingPaths = pathSrv.response.paths;
+  publish_mowing_progress(true);
 
   // Calculate mowing plan digest from the poses
   // TODO: move to slic3r_coverage_planner
@@ -241,6 +275,7 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
     currentMowingPathIndex = 0;
   }
 
+  publish_mowing_progress(true);
   return true;
 }
 
@@ -375,6 +410,7 @@ bool MowingBehavior::execute_mowing_plan() {
             skip_path = false;
             currentMowingPath++;
             currentMowingPathIndex = 0;
+            publish_mowing_progress(true);
             return false;
           }
           if (aborted) {
@@ -490,6 +526,7 @@ bool MowingBehavior::execute_mowing_plan() {
             skip_path = false;
             currentMowingPath++;
             currentMowingPathIndex = 0;
+            publish_mowing_progress(true);
             return false;
           }
           if (aborted) {
@@ -509,6 +546,10 @@ bool MowingBehavior::execute_mowing_plan() {
             int currentIndex = getCurrentMowPathIndex();
             if (currentIndex != -1) {
               currentMowingPathIndex = exePathStartIndex + currentIndex;
+              // Keep live pose updates prioritized: publish only the small status payload regularly,
+              // and throttle the heavy path geometry payload aggressively.
+              publish_mowing_progress_status(false);
+              publish_mowing_progress(false);
             }
             ROS_INFO_STREAM_THROTTLE(
                 5, "MowingBehavior: (MOW) Progress: " << currentMowingPathIndex << "/" << path.path.poses.size());
@@ -539,6 +580,7 @@ bool MowingBehavior::execute_mowing_plan() {
           ROS_INFO_STREAM("MowingBehavior: (MOW) Mow path finished, skipping to next mow path.");
           currentMowingPath++;
           currentMowingPathIndex = 0;
+          publish_mowing_progress(true);
           // continue with next segment
         } else {
           // we didnt drive all points in the mow path, so we go into pause mode
@@ -548,6 +590,7 @@ bool MowingBehavior::execute_mowing_plan() {
 
           // currentMowingPathIndex might be 0 if we never consumed one of the points, we advance at least 1 point
           if (currentMowingPathIndex == 0) currentMowingPathIndex++;
+          publish_mowing_progress(true);
           if (!requested_pause_flag) {
             ROS_INFO_STREAM("MowingBehavior: (MOW) PAUSED due to MBF Error at " << currentMowingPathIndex);
             paused = true;
@@ -559,9 +602,159 @@ bool MowingBehavior::execute_mowing_plan() {
   }
 
   mowerEnabled = false;
+  publish_mowing_progress(true);
 
   // true, if we have executed all paths
   return currentMowingPath >= currentMowingPaths.size();
+}
+
+
+void MowingBehavior::ensure_mowing_progress_interface() {
+  if (mowing_progress_interface_initialized || n == nullptr) return;
+
+  // Heavy retained payload for map overlays. Contains planned_paths and mowed_paths and can be large.
+  mowing_progress_pub = n->advertise<std_msgs::String>("/mower_logic/map/mowing_progress/json", 1, true);
+
+  // Lightweight retained payload for frequent UI progress updates. Does NOT contain path geometry.
+  // This prevents large mowing-progress MQTT messages from delaying robot_state/json pose updates.
+  mowing_progress_status_pub = n->advertise<std_msgs::String>("/mower_logic/map/mowing_progress/status/json", 1, true);
+
+  mowing_progress_renew_sub = n->subscribe("/mower_logic/map/mowing_progress/renew", 10,
+                                           &MowingBehavior::mowing_progress_renew_callback, this);
+  last_mowing_progress_publish = ros::Time(0.0);
+  last_mowing_progress_status_publish = ros::Time(0.0);
+  mowing_progress_interface_initialized = true;
+}
+
+void MowingBehavior::mowing_progress_renew_callback(const std_msgs::Empty::ConstPtr&) {
+  publish_mowing_progress(true);
+}
+
+json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
+  const ros::Time now = ros::Time::now();
+
+  json payload;
+  payload["timestamp"] = now.toSec();
+  payload["frame_id"] = "map";
+  payload["current_area_id"] = currentAreaId;
+  payload["areas"] = json::object();
+
+  if (!currentAreaId.empty()) {
+    json area;
+    area["area_id"] = currentAreaId;
+    area["state"] = currentMowingPaths.empty() ? "pending" :
+        (currentMowingPath >= static_cast<int>(currentMowingPaths.size()) ? "done" : (paused ? "paused" : "mowing"));
+
+    if (include_paths) {
+      area["planned_paths"] = json::array();
+      area["mowed_paths"] = json::array();
+    }
+
+    std::size_t total_points = 0;
+    std::size_t completed_points = 0;
+
+    for (std::size_t path_index = 0; path_index < currentMowingPaths.size(); ++path_index) {
+      const auto& poses = currentMowingPaths[path_index].path.poses;
+      const std::string path_id = make_path_id(currentAreaId, static_cast<int>(path_index));
+      total_points += poses.size();
+
+      if (include_paths) {
+        json planned_path;
+        planned_path["path_id"] = path_id;
+        planned_path["index"] = static_cast<int>(path_index);
+        planned_path["points"] = path_points_to_json(poses, 0, poses.size());
+        area["planned_paths"].push_back(planned_path);
+      }
+
+      std::size_t completed_for_path = 0;
+      if (static_cast<int>(path_index) < currentMowingPath) {
+        completed_for_path = poses.size();
+      } else if (static_cast<int>(path_index) == currentMowingPath) {
+        completed_for_path = std::min<std::size_t>(std::max(currentMowingPathIndex, 0), poses.size());
+      }
+
+      completed_points += completed_for_path;
+      if (include_paths && completed_for_path > 0) {
+        json mowed_path;
+        mowed_path["path_id"] = path_id;
+        mowed_path["index"] = static_cast<int>(path_index);
+        mowed_path["completed_percent"] = poses.empty() ? 0.0 :
+            std::min(100.0, 100.0 * static_cast<double>(completed_for_path) / static_cast<double>(poses.size()));
+        mowed_path["points"] = path_points_to_json(poses, 0, completed_for_path);
+        area["mowed_paths"].push_back(mowed_path);
+      }
+    }
+
+    area["percent"] = total_points == 0 ? 0.0 :
+        std::min(100.0, 100.0 * static_cast<double>(completed_points) / static_cast<double>(total_points));
+    area["current_path"] = currentMowingPath;
+    area["current_path_index"] = currentMowingPathIndex;
+    if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPaths.size())) {
+      area["current_path_id"] = make_path_id(currentAreaId, currentMowingPath);
+    } else {
+      area["current_path_id"] = "";
+    }
+
+    payload["areas"][currentAreaId] = area;
+  }
+
+  return payload;
+}
+
+void MowingBehavior::publish_mowing_progress(bool force) {
+  ensure_mowing_progress_interface();
+  if (!mowing_progress_interface_initialized) return;
+
+  const ros::Time now = ros::Time::now();
+
+  // This is the heavy geometry payload. Keep it retained, but do not publish it frequently while mowing,
+  // otherwise it can block/delay robot_state/json pose updates on the MQTT connection.
+  if (!force) {
+    if ((now - last_mowing_progress_publish) < ros::Duration(30.0)) {
+      return;
+    }
+    if (currentMowingPath == last_published_mowing_path &&
+        currentMowingPathIndex == last_published_mowing_path_index &&
+        (now - last_mowing_progress_publish) < ros::Duration(120.0)) {
+      return;
+    }
+  }
+
+  std_msgs::String msg;
+  msg.data = build_mowing_progress_payload(true).dump(2);
+  mowing_progress_pub.publish(msg);
+  last_mowing_progress_publish = now;
+  last_published_mowing_path = currentMowingPath;
+  last_published_mowing_path_index = currentMowingPathIndex;
+
+  // Always update the small status payload after a forced full update, so the app has a fresh percentage too.
+  if (force) {
+    publish_mowing_progress_status(true);
+  }
+}
+
+void MowingBehavior::publish_mowing_progress_status(bool force) {
+  ensure_mowing_progress_interface();
+  if (!mowing_progress_interface_initialized) return;
+
+  const ros::Time now = ros::Time::now();
+  if (!force) {
+    if (currentMowingPath == last_published_mowing_status_path &&
+        currentMowingPathIndex == last_published_mowing_status_path_index &&
+        (now - last_mowing_progress_status_publish) < ros::Duration(2.0)) {
+      return;
+    }
+    if ((now - last_mowing_progress_status_publish) < ros::Duration(1.0)) {
+      return;
+    }
+  }
+
+  std_msgs::String msg;
+  msg.data = build_mowing_progress_payload(false).dump();
+  mowing_progress_status_pub.publish(msg);
+  last_mowing_progress_status_publish = now;
+  last_published_mowing_status_path = currentMowingPath;
+  last_published_mowing_status_path_index = currentMowingPathIndex;
 }
 
 void MowingBehavior::command_home() {

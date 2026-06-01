@@ -77,6 +77,8 @@ void publish_map_validation(const json &validation);
 void publish_settings_validation(const std::string &settings_namespace, const json &validation);
 json validate_map_payload_for_mqtt(const json &payload);
 void publish_map_overlay();
+void publish_mowing_progress(const std::string &payload);
+void publish_mowing_progress_status(const std::string &payload);
 void publish_timetable();
 void maybe_publish_timetable(bool force = false);
 void publish_timetable_validation(const json &validation);
@@ -122,6 +124,7 @@ ros::Publisher mow_load_factor_renew_pub;
 ros::Publisher mower_logic_settings_set_session_json_pub;
 ros::Publisher mower_logic_settings_set_persistent_json_pub;
 ros::Publisher mower_logic_settings_renew_pub;
+ros::Publisher map_mowing_progress_renew_pub;
 ros::Publisher ll_power_set_battery_critical_voltage_pub;
 
 std::mutex load_factor_state_mutex;
@@ -182,6 +185,7 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "timetable/set/suspension/bson", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/set/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "map/mowing_progress/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
         // settings/mow_load_factor is deprecated. The load regulation settings are
         // exposed exclusively through settings/mower_logic to avoid duplicate UI groups.
@@ -297,6 +301,9 @@ public:
             // App opened the areas page and requests the current retained map again.
             // The payload is intentionally optional; any message on this topic triggers a republish.
             publish_map();
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "map/mowing_progress/set/renew/json") {
+            std_msgs::Empty msg;
+            map_mowing_progress_renew_pub.publish(msg);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "statustransition_log/set/renew/json") {
             // App requests the current retained status transition log again.
             // Empty payload: use the configured default limit.
@@ -1189,6 +1196,14 @@ void robot_state_callback(const xbot_msgs::RobotState::ConstPtr &msg) {
     try_publish_binary("robot_state/bson", bson.data(), bson.size());
 }
 
+void mowing_progress_callback(const std_msgs::String::ConstPtr &msg) {
+    publish_mowing_progress(msg->data);
+}
+
+void mowing_progress_status_callback(const std_msgs::String::ConstPtr &msg) {
+    publish_mowing_progress_status(msg->data);
+}
+
 void publish_actions() {
     json actions = json::array();
     {
@@ -1302,6 +1317,18 @@ void publish_map_overlay() {
     auto bson = json::to_bson(data);
     try_publish_binary("map/overlay/bson", bson.data(), bson.size(), true);
     try_publish_binary("map_overlay/bson", bson.data(), bson.size(), true);
+}
+
+void publish_mowing_progress(const std::string &payload) {
+    // Retained heavy map overlay payload for graphical mowing progress per area.
+    // This contains path geometry and is intentionally published at a low rate by mower_logic.
+    try_publish("map/mowing_progress/json", payload, true);
+}
+
+void publish_mowing_progress_status(const std::string &payload) {
+    // Retained lightweight progress status. Contains percent/current path, but no planned_paths/mowed_paths geometry.
+    // Apps should use this for frequent progress text updates and robot_state/json for the live pose.
+    try_publish("map/mowing_progress/status/json", payload, true);
 }
 
 void publish_timetable_validation(const json &validation) {
@@ -1644,6 +1671,9 @@ int main(int argc, char **argv) {
     ros::Subscriber mapSubscriber = n->subscribe("mower_map_service/json_map", 10, map_callback);
     ros::Subscriber timetableSubscriber = n->subscribe("timetable/status", 10, timetable_status_callback);
     ros::Subscriber mapOverlaySubscriber = n->subscribe("xbot_monitoring/map_overlay", 10, map_overlay_callback);
+    ros::Subscriber mapMowingProgressSubscriber = n->subscribe("/mower_logic/map/mowing_progress/json", 2, mowing_progress_callback);
+    ros::Subscriber mapMowingProgressStatusSubscriber =
+        n->subscribe("/mower_logic/map/mowing_progress/status/json", 10, mowing_progress_status_callback);
     ros::Subscriber mowLoadFactorStatusSubscriber = n->subscribe("/mower_logic/mow_load_factor/status_json", 10, mow_load_factor_status_json_callback);
     ros::Subscriber mowerLogicSettingsStatusSubscriber = n->subscribe("/mower_logic/settings/status_json", 10, mower_logic_settings_status_json_callback);
     ros::Subscriber mowerLogicSettingsValidationSubscriber = n->subscribe("/mower_logic/settings/validation_json", 10, mower_logic_settings_validation_json_callback);
@@ -1665,6 +1695,7 @@ int main(int argc, char **argv) {
     mower_logic_settings_set_session_json_pub = n->advertise<std_msgs::String>("/mower_logic/settings/set_session_json", 10);
     mower_logic_settings_set_persistent_json_pub = n->advertise<std_msgs::String>("/mower_logic/settings/set_persistent_json", 10);
     mower_logic_settings_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/settings/renew", 10);
+    map_mowing_progress_renew_pub = n->advertise<std_msgs::Empty>("/mower_logic/map/mowing_progress/renew", 10);
     ll_power_set_battery_critical_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_critical_voltage", 10);
     ll_power_set_battery_empty_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_empty_voltage", 10);
     ll_power_set_battery_full_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set/battery_full_voltage", 10);

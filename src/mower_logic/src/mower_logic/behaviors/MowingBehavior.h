@@ -21,6 +21,9 @@
 #include "slic3r_coverage_planner/Path.h"
 #include "slic3r_coverage_planner/PlanPath.h"
 #include "xbot_msgs/ActionInfo.h"
+#include "std_msgs/Empty.h"
+#include "std_msgs/String.h"
+#include <nlohmann/json.hpp>
 
 class MowingBehavior : public Behavior {
  private:
@@ -43,6 +46,23 @@ class MowingBehavior : public Behavior {
   int currentMowingPathIndex;
   std::string currentMowingPlanDigest;
   double currentMowingAngleIncrementSum;
+
+  ros::Publisher mowing_progress_pub;
+  ros::Publisher mowing_progress_status_pub;
+  ros::Subscriber mowing_progress_renew_sub;
+  bool mowing_progress_interface_initialized = false;
+  ros::Time last_mowing_progress_publish;
+  ros::Time last_mowing_progress_status_publish;
+  int last_published_mowing_path = -1;
+  int last_published_mowing_path_index = -1;
+  int last_published_mowing_status_path = -1;
+  int last_published_mowing_status_path_index = -1;
+
+  void ensure_mowing_progress_interface();
+  void mowing_progress_renew_callback(const std_msgs::Empty::ConstPtr& msg);
+  nlohmann::json build_mowing_progress_payload(bool include_paths);
+  void publish_mowing_progress(bool force = false);
+  void publish_mowing_progress_status(bool force = false);
 
  public:
   MowingBehavior();
