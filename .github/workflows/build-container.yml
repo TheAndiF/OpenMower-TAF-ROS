@@ -64,7 +64,7 @@ jobs:
 
       # Erzeugt einen Datums-/Zeit-Tag für das Docker-Image.
       # Beispiel:
-      # ghcr.io/theandif/open_mower_ros:2026-05-09-1430
+      # ghcr.io/theandif/openmower_taf_ros:2026-05-09-1430
       #
       # Zeit ist UTC, nicht lokale deutsche Zeit.
       - name: Set build date
@@ -87,7 +87,7 @@ jobs:
       #
       #
       # Ergebnis landet später z. B. hier:
-      # ghcr.io/theandif/open_mower_ros:test
+      # ghcr.io/theandif/openmower_taf_ros:test
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -124,10 +124,10 @@ jobs:
           push: true
 
           # Cache aus GHCR verwenden.
-          cache-from: type=registry,ref=ghcr.io/theandif/open_mower_ros:taf_buildcache
+          cache-from: type=registry,ref=ghcr.io/theandif/openmower_taf_ros:taf_buildcache
 
           # Neuen Cache für spätere Builds nach GHCR schreiben.
-          cache-to: type=registry,ref=ghcr.io/theandif/open_mower_ros:taf_buildcache,mode=max
+          cache-to: type=registry,ref=ghcr.io/theandif/openmower_taf_ros:taf_buildcache,mode=max
 
           # Ein Build bekommt drei Tags:
           #
@@ -135,9 +135,9 @@ jobs:
           # test   = Tag, den der Mower aktuell verwendet
           # Datum  = feste, nachvollziehbare Version
           tags: |
-            ghcr.io/theandif/open_mower_ros:taf_latest
-            ghcr.io/theandif/open_mower_ros:taf_test
-            ghcr.io/theandif/open_mower_ros:taf_${{ env.BUILD_DATE }}
+            ghcr.io/theandif/openmower_taf_ros:taf_latest
+            ghcr.io/theandif/openmower_taf_ros:taf_test
+            ghcr.io/theandif/openmower_taf_ros:taf_${{ env.BUILD_DATE }}
 
       # Kompletter Build ohne Cache.
       #
@@ -179,6 +179,6 @@ jobs:
 
           # Auch der komplette Neubuild bekommt dieselben drei Tags.
           tags: |
-            ghcr.io/theandif/open_mower_ros:taf_latest
-            ghcr.io/theandif/open_mower_ros:taf_test
-            ghcr.io/theandif/open_mower_ros:taf_${{ env.BUILD_DATE }}
+            ghcr.io/theandif/openmower_taf_ros:taf_latest
+            ghcr.io/theandif/openmower_taf_ros:taf_test
+            ghcr.io/theandif/openmower_taf_ros:taf_${{ env.BUILD_DATE }}
