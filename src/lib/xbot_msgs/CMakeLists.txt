@@ -19,6 +19,8 @@ add_message_files(
         ActionInfo.msg
         MapOverlay.msg
         MapOverlayPolygon.msg
+        GnssSatellite.msg
+        GnssSatelliteArray.msg
 )
 
 add_service_files(

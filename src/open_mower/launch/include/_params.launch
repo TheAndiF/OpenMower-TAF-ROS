@@ -73,6 +73,7 @@
         <param name="ll/services/gps/mode" value="absolute" unless="$(env OM_USE_RELATIVE_POSITION)"/>
         <param name="ll/services/gps/mode" value="relative" if="$(env OM_USE_RELATIVE_POSITION)"/>
         <param name="ll/services/gps/protocol" value="$(optenv OM_GPS_PROTOCOL UBX)"/>
+        <param name="ll/services/gps/publish_satellites" value="$(optenv OM_GPS_PUBLISH_SATELLITES True)"/>
         <param unless="$(optenv OM_USE_RELATIVE_POSITION False)" name="ll/services/gps/datum_lat"
                value="$(env OM_DATUM_LAT)"/>
         <param unless="$(optenv OM_USE_RELATIVE_POSITION False)" name="ll/services/gps/datum_long"
