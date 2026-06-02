@@ -121,7 +121,9 @@ class PathOrderOptimizer {
         } else {
           geometry_msgs::PoseStamped current = req.current_pose;
           if (!ordered.empty() && hasUsablePath(ordered.back())) current = lastPose(ordered.back());
-          ordered_fill_paths = optimizeFillPaths(fill_paths, current, req, res.used_fallback);
+          bool used_fallback = res.used_fallback;
+          ordered_fill_paths = optimizeFillPaths(fill_paths, current, req, used_fallback);
+          res.used_fallback = used_fallback;
           res.used_optimization = true;
         }
       }

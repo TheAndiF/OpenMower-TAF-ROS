@@ -3,6 +3,7 @@
     Use this file to record new mowing and navigation areas in the simulator.
  -->
 <launch>
+    <arg name="enable_path_order_optimizer_node" default="false"/>
     <include file="$(find open_mower)/launch/include/_params.launch"/>
     <include file="$(find mower_simulation)/launch/_mower_simulation.launch"/>
     <include file="$(find open_mower)/launch/include/_move_base.launch"/>
