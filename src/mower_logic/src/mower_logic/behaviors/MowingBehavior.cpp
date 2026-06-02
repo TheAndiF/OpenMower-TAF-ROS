@@ -31,9 +31,12 @@
 #include "mower_map/ClearNavPointSrv.h"
 #include "mower_map/GetMowingAreaSrv.h"
 #include "mower_map/SetNavPointSrv.h"
+#include "mowing_path_order_optimizer/OptimizePaths.h"
+#include "xbot_msgs/AbsolutePose.h"
 
 extern ros::ServiceClient mapClient;
 extern ros::ServiceClient pathClient;
+extern ros::ServiceClient pathOrderOptimizerClient;
 extern ros::ServiceClient pathProgressClient;
 extern ros::ServiceClient setNavPointClient;
 extern ros::ServiceClient clearNavPointClient;
@@ -42,6 +45,7 @@ extern ros::NodeHandle* n;
 extern actionlib::SimpleActionClient<mbf_msgs::MoveBaseAction>* mbfClient;
 extern actionlib::SimpleActionClient<mbf_msgs::ExePathAction>* mbfClientExePath;
 extern mower_logic::MowerLogicConfig getConfig();
+extern xbot_msgs::AbsolutePose getPose();
 extern void setConfig(mower_logic::MowerLogicConfig);
 
 extern void registerActions(std::string prefix, const std::vector<xbot_msgs::ActionInfo>& actions);
@@ -244,6 +248,46 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   }
 
   currentMowingPaths = pathSrv.response.paths;
+
+  // Optional stage-3 path order optimization. The optimizer is deliberately fail-open:
+  // if it is disabled, unavailable or fails, the original slicer order remains active.
+  mowing_path_order_optimizer::OptimizePaths optimizeSrv;
+  optimizeSrv.request.paths = pathSrv.response.paths;
+  optimizeSrv.request.enabled = config.path_order_optimizer_enabled;
+  optimizeSrv.request.optimize_fill_order = config.path_order_optimizer_optimize_fill_order;
+  optimizeSrv.request.move_obstacles_to_end = config.path_order_optimizer_move_obstacles_to_end;
+  optimizeSrv.request.allow_reverse = config.path_order_optimizer_allow_reverse;
+  optimizeSrv.request.cost_mode = config.path_order_optimizer_cost_mode;
+  optimizeSrv.request.max_fill_paths = config.path_order_optimizer_max_fill_paths;
+  optimizeSrv.request.candidate_limit = config.path_order_optimizer_candidate_limit;
+  optimizeSrv.request.planner_timeout = config.path_order_optimizer_planner_timeout;
+  optimizeSrv.request.fallback_to_euclidean = config.path_order_optimizer_fallback_to_euclidean;
+  optimizeSrv.request.fallback_to_slicer_order = config.path_order_optimizer_fallback_to_slicer_order;
+  optimizeSrv.request.fail_open = config.path_order_optimizer_fail_open;
+  optimizeSrv.request.planner_action = config.path_order_optimizer_planner_action;
+  optimizeSrv.request.planner_name = config.path_order_optimizer_planner_name;
+  optimizeSrv.request.current_pose.header.frame_id = "map";
+  optimizeSrv.request.current_pose.header.stamp = ros::Time::now();
+  optimizeSrv.request.current_pose.pose = getPose().pose.pose;
+
+  if (pathOrderOptimizerClient.call(optimizeSrv)) {
+    if (optimizeSrv.response.success) {
+      currentMowingPaths = optimizeSrv.response.paths;
+      ROS_INFO_STREAM("MowingBehavior: path order optimizer response: " << optimizeSrv.response.message);
+    } else if (config.path_order_optimizer_fail_open) {
+      ROS_WARN_STREAM("MowingBehavior: path order optimizer returned failure, using slicer order: "
+                      << optimizeSrv.response.message);
+    } else {
+      ROS_ERROR_STREAM("MowingBehavior: path order optimizer returned failure: " << optimizeSrv.response.message);
+      return false;
+    }
+  } else if (config.path_order_optimizer_enabled && !config.path_order_optimizer_fail_open) {
+    ROS_ERROR_STREAM("MowingBehavior: path order optimizer unavailable and fail-open is disabled");
+    return false;
+  } else if (config.path_order_optimizer_enabled) {
+    ROS_WARN_STREAM("MowingBehavior: path order optimizer unavailable, using slicer order");
+  }
+
   publish_mowing_progress(true);
 
   // Calculate mowing plan digest from the poses

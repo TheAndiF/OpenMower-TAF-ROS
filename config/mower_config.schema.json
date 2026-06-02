@@ -543,6 +543,85 @@
                 "description": "The increment value will automatically add specified number of degrees to the mowing angle everytime the whole map is finished",
                 "x-environment-variable": "OM_MOWING_ANGLE_INCREMENT"
               },
+              "OM_PATH_ORDER_OPTIMIZER_ENABLED": {
+                "type": "boolean",
+                "default": false,
+                "title": "Enable path order optimizer",
+                "description": "Enable the optional mowing path order optimizer. Default False keeps the original slicer order.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_ENABLED"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER": {
+                "type": "boolean",
+                "default": true,
+                "description": "Optimize the order of fill paths when the optimizer is enabled.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END": {
+                "type": "boolean",
+                "default": true,
+                "description": "Move inner obstacle outlines after fill paths.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE": {
+                "type": "boolean",
+                "default": true,
+                "description": "Allow reversing fill paths when their end point is cheaper to reach.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_COST_MODE": {
+                "type": "number",
+                "default": 2,
+                "description": "Cost mode: 0 euclidean, 1 MBF planner, 2 hybrid euclidean preselection plus MBF planner.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_COST_MODE"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_MAX_FILL_PATHS": {
+                "type": "number",
+                "default": 150,
+                "description": "Maximum fill path count for full optimization. 0 disables the limit.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_MAX_FILL_PATHS"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_CANDIDATE_LIMIT": {
+                "type": "number",
+                "default": 5,
+                "description": "Number of nearest candidates checked with MBF planner in planner/hybrid mode.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_CANDIDATE_LIMIT"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_PLANNER_TIMEOUT": {
+                "type": "number",
+                "default": 0.25,
+                "description": "Timeout in seconds for MBF planner availability and result checks.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_PLANNER_TIMEOUT"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_FALLBACK_TO_EUCLIDEAN": {
+                "type": "boolean",
+                "default": true,
+                "description": "Fallback to euclidean cost if planner cost requests fail.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_FALLBACK_TO_EUCLIDEAN"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_FALLBACK_TO_SLICER_ORDER": {
+                "type": "boolean",
+                "default": true,
+                "description": "Fallback to original slicer order if optimization fails.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_FALLBACK_TO_SLICER_ORDER"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_FAIL_OPEN": {
+                "type": "boolean",
+                "default": true,
+                "description": "Continue with original slicer paths if the optimizer service is unavailable or fails.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_FAIL_OPEN"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_PLANNER_ACTION": {
+                "type": "string",
+                "default": "/move_base_flex/get_path",
+                "description": "MBF GetPath action used for path-order planner costs.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_PLANNER_ACTION"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_PLANNER_NAME": {
+                "type": "string",
+                "default": "GlobalPlanner",
+                "description": "MBF planner name used for path-order planner costs.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_PLANNER_NAME"
+              },
               "OM_PERIMETER_SIGNAL": {
                 "type": "number",
                 "description": "Use perimeter sensor for docking. Set to 1 or 2 depending on the signal selected on the docking station. This is only supported by Mowgli builds for now.",

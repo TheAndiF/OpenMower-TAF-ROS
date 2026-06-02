@@ -199,6 +199,22 @@ export OM_MOWING_ANGLE_OFFSET_IS_ABSOLUTE=False
 # The increment value will automatically add specified number of degrees to the mowing angle everytime the whole map is finished
 export OM_MOWING_ANGLE_INCREMENT=0
 
+# Optional path-order optimizer. Disabled by default: original slicer order is kept.
+export OM_PATH_ORDER_OPTIMIZER_ENABLED=False
+export OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER=True
+export OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END=True
+export OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE=True
+# 0 = euclidean, 1 = MBF planner, 2 = hybrid
+export OM_PATH_ORDER_OPTIMIZER_COST_MODE=2
+export OM_PATH_ORDER_OPTIMIZER_MAX_FILL_PATHS=150
+export OM_PATH_ORDER_OPTIMIZER_CANDIDATE_LIMIT=5
+export OM_PATH_ORDER_OPTIMIZER_PLANNER_TIMEOUT=0.25
+export OM_PATH_ORDER_OPTIMIZER_FALLBACK_TO_EUCLIDEAN=True
+export OM_PATH_ORDER_OPTIMIZER_FALLBACK_TO_SLICER_ORDER=True
+export OM_PATH_ORDER_OPTIMIZER_FAIL_OPEN=True
+export OM_PATH_ORDER_OPTIMIZER_PLANNER_ACTION=/move_base_flex/get_path
+export OM_PATH_ORDER_OPTIMIZER_PLANNER_NAME=GlobalPlanner
+
 # The width of mowing paths.
 # Choose it smaller than your actual mowing tool in order to have some overlap.
 # 0.13 works well for the Classic 500.

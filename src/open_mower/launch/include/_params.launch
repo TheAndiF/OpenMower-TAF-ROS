@@ -127,6 +127,19 @@
         <param name="mower_logic/mow_angle_offset_is_absolute"
                value="$(optenv OM_MOWING_ANGLE_OFFSET_IS_ABSOLUTE False)"/>
         <param name="mower_logic/mow_angle_increment" value="$(optenv OM_MOWING_ANGLE_INCREMENT 0)"/>
+        <param name="mower_logic/path_order_optimizer_enabled" value="$(optenv OM_PATH_ORDER_OPTIMIZER_ENABLED False)"/>
+        <param name="mower_logic/path_order_optimizer_optimize_fill_order" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER True)"/>
+        <param name="mower_logic/path_order_optimizer_move_obstacles_to_end" value="$(optenv OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END True)"/>
+        <param name="mower_logic/path_order_optimizer_allow_reverse" value="$(optenv OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE True)"/>
+        <param name="mower_logic/path_order_optimizer_cost_mode" value="$(optenv OM_PATH_ORDER_OPTIMIZER_COST_MODE 2)"/>
+        <param name="mower_logic/path_order_optimizer_max_fill_paths" value="$(optenv OM_PATH_ORDER_OPTIMIZER_MAX_FILL_PATHS 150)"/>
+        <param name="mower_logic/path_order_optimizer_candidate_limit" value="$(optenv OM_PATH_ORDER_OPTIMIZER_CANDIDATE_LIMIT 5)"/>
+        <param name="mower_logic/path_order_optimizer_planner_timeout" value="$(optenv OM_PATH_ORDER_OPTIMIZER_PLANNER_TIMEOUT 0.25)"/>
+        <param name="mower_logic/path_order_optimizer_fallback_to_euclidean" value="$(optenv OM_PATH_ORDER_OPTIMIZER_FALLBACK_TO_EUCLIDEAN True)"/>
+        <param name="mower_logic/path_order_optimizer_fallback_to_slicer_order" value="$(optenv OM_PATH_ORDER_OPTIMIZER_FALLBACK_TO_SLICER_ORDER True)"/>
+        <param name="mower_logic/path_order_optimizer_fail_open" value="$(optenv OM_PATH_ORDER_OPTIMIZER_FAIL_OPEN True)"/>
+        <param name="mower_logic/path_order_optimizer_planner_action" value="$(optenv OM_PATH_ORDER_OPTIMIZER_PLANNER_ACTION /move_base_flex/get_path)"/>
+        <param name="mower_logic/path_order_optimizer_planner_name" value="$(optenv OM_PATH_ORDER_OPTIMIZER_PLANNER_NAME GlobalPlanner)"/>
         <param name="mower_logic/motor_hot_temperature" value="$(env OM_MOWING_MOTOR_TEMP_HIGH)"/>
         <param name="mower_logic/motor_cold_temperature" value="$(env OM_MOWING_MOTOR_TEMP_LOW)"/>
         <param name="mower_logic/gps_wait_time" value="$(optenv OM_GPS_WAIT_TIME_SEC 10.0)"/>

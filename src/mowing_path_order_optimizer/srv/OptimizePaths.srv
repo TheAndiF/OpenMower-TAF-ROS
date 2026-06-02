@@ -1,0 +1,27 @@
+# Cost modes. EUCLIDEAN is cheap, PLANNER asks the MBF GetPath action for each checked candidate,
+# HYBRID preselects candidates by euclidean distance and asks MBF only for those candidates.
+uint8 COST_EUCLIDEAN=0
+uint8 COST_PLANNER=1
+uint8 COST_HYBRID=2
+
+slic3r_coverage_planner/Path[] paths
+geometry_msgs/PoseStamped current_pose
+bool enabled
+bool optimize_fill_order
+bool move_obstacles_to_end
+bool allow_reverse
+uint8 cost_mode
+uint32 max_fill_paths
+uint32 candidate_limit
+float64 planner_timeout
+bool fallback_to_euclidean
+bool fallback_to_slicer_order
+bool fail_open
+string planner_action
+string planner_name
+---
+slic3r_coverage_planner/Path[] paths
+bool success
+bool used_optimization
+bool used_fallback
+string message

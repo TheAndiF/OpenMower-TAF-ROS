@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>mowing_path_order_optimizer</name>
+  <version>0.0.0</version>
+  <description>Optional mowing path order optimizer between slicer and mower logic.</description>
+  <maintainer email="openmower@example.invalid">OpenMower contributors</maintainer>
+  <license>GPLv3</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>actionlib</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>message_generation</build_depend>
+  <build_depend>mbf_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>roscpp</build_depend>
+  <build_depend>slic3r_coverage_planner</build_depend>
+  <build_depend>std_msgs</build_depend>
+
+  <build_export_depend>actionlib</build_export_depend>
+  <build_export_depend>geometry_msgs</build_export_depend>
+  <build_export_depend>mbf_msgs</build_export_depend>
+  <build_export_depend>nav_msgs</build_export_depend>
+  <build_export_depend>roscpp</build_export_depend>
+  <build_export_depend>slic3r_coverage_planner</build_export_depend>
+  <build_export_depend>std_msgs</build_export_depend>
+
+  <exec_depend>actionlib</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>message_runtime</exec_depend>
+  <exec_depend>mbf_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>slic3r_coverage_planner</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export/>
+</package>

@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
         mbf_msgs
         mower_map
         mower_msgs
+        mowing_path_order_optimizer
         nav_msgs
         rosbag
         roscpp

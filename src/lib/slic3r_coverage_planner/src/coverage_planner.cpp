@@ -214,6 +214,7 @@ void traverse_from_right(std::vector<PerimeterGeneratorLoop> &contours, std::vec
 slic3r_coverage_planner::Path determinePathForOutline(std_msgs::Header &header, Slic3r::Polygon &outline_poly, Slic3r::Polygons &group, bool isObstacle, Point *areaLastPoint) {
     slic3r_coverage_planner::Path path;
     path.is_outline = true;
+    path.path_type = isObstacle ? slic3r_coverage_planner::Path::TYPE_OBSTACLE_OUTLINE : slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE;
     path.path.header = header;
 
     Point lastPoint;
@@ -584,6 +585,7 @@ bool planPath(slic3r_coverage_planner::PlanPathRequest &req, slic3r_coverage_pla
             auto &line = fill_lines[i];
             slic3r_coverage_planner::Path path;
             path.is_outline = false;
+            path.path_type = slic3r_coverage_planner::Path::TYPE_FILL;
             path.path.header = header;
 
             line.remove_duplicate_points();

@@ -20,6 +20,8 @@
     <node pkg="mower_logic" type="mow_load_factor" name="mow_load_factor" output="screen" respawn="true" respawn_delay="10"/>
     <node pkg="slic3r_coverage_planner" type="slic3r_coverage_planner" name="slic3r_coverage_planner" output="screen"
           required="true"/>
+    <node pkg="mowing_path_order_optimizer" type="mowing_path_order_optimizer" name="mowing_path_order_optimizer" output="screen"
+          required="true"/>
 
     <node name="converter1" pkg="mower_utils" type="xbot_pose_converter" required="true">
         <param name="topic" value="/ll/position/gps"/>

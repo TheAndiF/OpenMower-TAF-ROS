@@ -47,6 +47,7 @@
 #include "mower_map/GetDockingPointSrv.h"
 #include "mower_map/GetMowingAreaSrv.h"
 #include "mower_map/SetNavPointSrv.h"
+#include "mowing_path_order_optimizer/OptimizePaths.h"
 #include "mower_msgs/EmergencyStopSrv.h"
 #include "mower_msgs/HighLevelControlSrv.h"
 #include "mower_msgs/HighLevelStatus.h"
@@ -63,8 +64,9 @@
 #include "xbot_positioning/GPSControlSrv.h"
 #include "xbot_positioning/SetPoseSrv.h"
 
-ros::ServiceClient pathClient, mapClient, dockingPointClient, gpsClient, mowClient, emergencyClient, pathProgressClient,
-    setNavPointClient, clearNavPointClient, clearMapClient, positioningClient, actionRegistrationClient;
+ros::ServiceClient pathClient, pathOrderOptimizerClient, mapClient, dockingPointClient, gpsClient, mowClient,
+    emergencyClient, pathProgressClient, setNavPointClient, clearNavPointClient, clearMapClient, positioningClient,
+    actionRegistrationClient;
 
 ros::NodeHandle* n;
 ros::NodeHandle* paramNh;
@@ -756,6 +758,16 @@ class MowerLogicSettingsBridge {
     return "";
   }
 
+  std::string groupForKey(const std::string& key) const {
+    if (key.find("path_order_optimizer_") == 0) return "path_order_optimizer";
+    return kNamespace;
+  }
+
+  bool expertForKey(const std::string& key) const {
+    if (key.find("path_order_optimizer_") == 0 && key != "path_order_optimizer_enabled") return true;
+    return false;
+  }
+
   json seedEntriesFromDynamicReconfigure() {
     json seed = json::object();
     const auto& description = mower_logic::MowerLogicConfig::__getDescriptionMessage__();
@@ -786,8 +798,8 @@ class MowerLogicSettingsBridge {
         json entry = json::object();
         entry["label"] = labelForKey(meta.name);
         entry["description"] = meta.description;
-        entry["group"] = kNamespace;
-        entry["expert"] = false;
+        entry["group"] = groupForKey(meta.name);
+        entry["expert"] = expertForKey(meta.name);
         entry["order"] = meta.order;
         entry["session_apply_supported"] = true;
         entry["restart_required"] = false;
@@ -1242,6 +1254,8 @@ int main(int argc, char** argv) {
   high_level_state_publisher = n->advertise<mower_msgs::HighLevelStatus>("mower_logic/current_state", 100, true);
 
   pathClient = n->serviceClient<slic3r_coverage_planner::PlanPath>("slic3r_coverage_planner/plan_path");
+  pathOrderOptimizerClient =
+      n->serviceClient<mowing_path_order_optimizer::OptimizePaths>("mowing_path_order_optimizer/optimize_paths");
   mapClient = n->serviceClient<mower_map::GetMowingAreaSrv>("mower_map_service/get_mowing_area");
   clearMapClient = n->serviceClient<mower_map::ClearMapSrv>("mower_map_service/clear_map");
 
