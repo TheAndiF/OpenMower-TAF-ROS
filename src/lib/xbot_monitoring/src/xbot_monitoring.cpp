@@ -11,6 +11,10 @@
 #include <cctype>
 #include <iomanip>
 #include <sstream>
+#include <csignal>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "ros/ros.h"
 #include <memory>
@@ -88,7 +92,12 @@ void publish_version();
 void publish_params();
 void publish_ll_power_status_request();
 void try_publish(const std::string &topic, const std::string &data, bool retain = false);
+std::string utc_timestamp_iso8601(const std::chrono::system_clock::time_point &time_point);
 void rpc_request_callback(const std::string &payload);
+void publish_satellite_logger_status(bool retain = true);
+void handle_satellite_logger_command(const std::string &payload);
+void handle_satellite_logger_cancel();
+void maybe_update_satellite_logger_cycle(const xbot_msgs::RobotState::ConstPtr &msg);
 
 // Stores registered actions (prefix to vector<action>)
 std::map<std::string, std::vector<xbot_msgs::ActionInfo>> registered_actions;
@@ -165,6 +174,7 @@ class MqttCallback : public mqtt::callback {
         publish_actions();
         publish_version();
         publish_params();
+        publish_satellite_logger_status(true);
 
         // BEGIN: Deprecated code (1/2)
         // Earlier implementations subscribed to "/action" and "prefix//action" topics, we do it to not break stuff as well.
@@ -187,6 +197,9 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "map/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/mowing_progress/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "satellite_logger/set/record_next/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "satellite_logger/set/cancel", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "satellite_logger/set/renew/json", 0);
         // settings/mow_load_factor is deprecated. The load regulation settings are
         // exposed exclusively through settings/mower_logic to avoid duplicate UI groups.
         // Publishing an empty retained payload clears older retained broker state.
@@ -327,6 +340,12 @@ public:
                 }
             }
             publish_statustransition_log(requested_limit);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "satellite_logger/set/record_next/json") {
+            handle_satellite_logger_command(ptr->get_payload_str());
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "satellite_logger/set/cancel") {
+            handle_satellite_logger_cancel();
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "satellite_logger/set/renew/json") {
+            publish_satellite_logger_status(true);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/session/json") {
             std_msgs::String msg;
             msg.data = ptr->get_payload_str();
@@ -516,6 +535,226 @@ std::chrono::system_clock::time_point last_statustransition_timestamp;
 
 std::mutex latest_double_sensor_values_mutex;
 std::map<std::string, double> latest_double_sensor_values;
+
+
+std::mutex satellite_logger_mutex;
+std::string satellite_logger_script = "/home/openmower/scripts/record_satellites.sh";
+std::string satellite_logger_output_dir = "/home/openmower/recordings/logs";
+std::string satellite_logger_ram_dir = "/dev/shm/openmower_satellite_logs";
+std::string satellite_logger_container_name = "";
+std::string satellite_logger_state = "idle";
+std::string satellite_logger_mode = "from_start_to_docking";
+std::string satellite_logger_started_at;
+std::string satellite_logger_finished_at;
+std::string satellite_logger_session_id;
+std::string satellite_logger_error;
+std::vector<std::string> satellite_logger_files;
+pid_t satellite_logger_pid = -1;
+bool satellite_logger_armed = false;
+bool satellite_logger_has_last_docked = false;
+bool satellite_logger_last_docked = false;
+
+std::string satellite_logger_now_compact() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+    gmtime_r(&t, &tm);
+    std::ostringstream ss;
+    ss << std::put_time(&tm, "%Y%m%d_%H%M%S");
+    return ss.str();
+}
+
+std::vector<std::string> satellite_logger_expected_files(const std::string &session_id) {
+    return {
+        "gps_satellite_list_" + session_id + ".log",
+        "gps_position_" + session_id + ".log",
+        "gps_accuracy_" + session_id + ".log",
+        "gps_rtcm_hz_" + session_id + ".log"
+    };
+}
+
+bool satellite_logger_is_active_work_state(const xbot_msgs::RobotState::ConstPtr &msg) {
+    std::string combined = msg->current_state + " " + msg->current_sub_state;
+    std::transform(combined.begin(), combined.end(), combined.begin(), [](unsigned char c) { return std::tolower(c); });
+    const std::vector<std::string> negative = {"dock", "charg", "idle", "error", "emergency"};
+    for (const auto &needle : negative) {
+        if (combined.find(needle) != std::string::npos) {
+            return false;
+        }
+    }
+    const std::vector<std::string> positive = {"mow", "area", "path", "follow", "navigate", "work", "run"};
+    for (const auto &needle : positive) {
+        if (combined.find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void satellite_logger_start_locked() {
+    if (satellite_logger_pid > 0 || satellite_logger_state == "running") {
+        return;
+    }
+
+    satellite_logger_session_id = satellite_logger_now_compact();
+    satellite_logger_started_at = utc_timestamp_iso8601(std::chrono::system_clock::now());
+    satellite_logger_finished_at.clear();
+    satellite_logger_error.clear();
+    satellite_logger_files = satellite_logger_expected_files(satellite_logger_session_id);
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        satellite_logger_state = "error";
+        satellite_logger_error = "fork failed";
+        return;
+    }
+    if (pid == 0) {
+        setpgid(0, 0);
+        setenv("SAT_LOG_SESSION_ID", satellite_logger_session_id.c_str(), 1);
+        setenv("SAT_LOG_OUTPUT_DIR", satellite_logger_output_dir.c_str(), 1);
+        setenv("SAT_LOG_RAM_DIR", satellite_logger_ram_dir.c_str(), 1);
+        setenv("SAT_LOG_CONTAINER", satellite_logger_container_name.c_str(), 1);
+        execl(satellite_logger_script.c_str(), satellite_logger_script.c_str(), static_cast<char *>(nullptr));
+        _exit(127);
+    }
+
+    satellite_logger_pid = pid;
+    satellite_logger_state = "running";
+    satellite_logger_armed = false;
+}
+
+void satellite_logger_stop_locked() {
+    if (satellite_logger_pid <= 0) {
+        return;
+    }
+
+    kill(-satellite_logger_pid, SIGTERM);
+    int status = 0;
+    bool exited = false;
+    for (int i = 0; i < 50; ++i) {
+        const pid_t result = waitpid(satellite_logger_pid, &status, WNOHANG);
+        if (result == satellite_logger_pid) {
+            exited = true;
+            break;
+        }
+        usleep(100000);
+    }
+    if (!exited) {
+        kill(-satellite_logger_pid, SIGKILL);
+        waitpid(satellite_logger_pid, &status, 0);
+    }
+
+    satellite_logger_pid = -1;
+    satellite_logger_finished_at = utc_timestamp_iso8601(std::chrono::system_clock::now());
+    satellite_logger_state = exited ? "finished" : "error";
+    if (!exited) {
+        satellite_logger_error = "logger did not stop after SIGTERM and was killed";
+    }
+}
+
+void publish_satellite_logger_status(bool retain) {
+    json payload;
+    {
+        std::lock_guard<std::mutex> lk(satellite_logger_mutex);
+        payload["state"] = satellite_logger_state;
+        payload["mode"] = satellite_logger_mode;
+        payload["armed"] = satellite_logger_armed;
+        payload["pid"] = satellite_logger_pid > 0 ? json(satellite_logger_pid) : json(nullptr);
+        payload["started_at"] = satellite_logger_started_at.empty() ? json(nullptr) : json(satellite_logger_started_at);
+        payload["finished_at"] = satellite_logger_finished_at.empty() ? json(nullptr) : json(satellite_logger_finished_at);
+        payload["session_id"] = satellite_logger_session_id.empty() ? json(nullptr) : json(satellite_logger_session_id);
+        payload["files"] = satellite_logger_files;
+        payload["path"] = satellite_logger_output_dir;
+        payload["ram_path"] = satellite_logger_ram_dir;
+        payload["script"] = satellite_logger_script;
+        payload["error"] = satellite_logger_error.empty() ? json(nullptr) : json(satellite_logger_error);
+    }
+    try_publish("satellite_logger/status/json", payload.dump(2), retain);
+}
+
+void handle_satellite_logger_command(const std::string &payload_text) {
+    std::string requested_mode = "from_start_to_docking";
+    if (!payload_text.empty()) {
+        try {
+            json payload = json::parse(payload_text);
+            if (payload.is_object() && payload.contains("mode") && payload["mode"].is_string()) {
+                requested_mode = payload["mode"].get<std::string>();
+            }
+        } catch (const json::exception &e) {
+            {
+                std::lock_guard<std::mutex> lk(satellite_logger_mutex);
+                satellite_logger_state = "error";
+                satellite_logger_error = std::string("Error decoding satellite logger command JSON: ") + e.what();
+            }
+            publish_satellite_logger_status(true);
+            return;
+        }
+    }
+
+    if (requested_mode != "from_start_to_docking" && requested_mode != "from_docking_to_docking") {
+        {
+            std::lock_guard<std::mutex> lk(satellite_logger_mutex);
+            satellite_logger_state = "error";
+            satellite_logger_error = "unsupported mode: " + requested_mode;
+        }
+        publish_satellite_logger_status(true);
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(satellite_logger_mutex);
+        satellite_logger_mode = requested_mode;
+        satellite_logger_state = "armed";
+        satellite_logger_armed = true;
+        satellite_logger_started_at.clear();
+        satellite_logger_finished_at.clear();
+        satellite_logger_session_id.clear();
+        satellite_logger_error.clear();
+        satellite_logger_files.clear();
+    }
+    publish_satellite_logger_status(true);
+}
+
+void handle_satellite_logger_cancel() {
+    {
+        std::lock_guard<std::mutex> lk(satellite_logger_mutex);
+        if (satellite_logger_pid > 0) {
+            satellite_logger_stop_locked();
+        } else {
+            satellite_logger_armed = false;
+            satellite_logger_state = "idle";
+            satellite_logger_error.clear();
+        }
+    }
+    publish_satellite_logger_status(true);
+}
+
+void maybe_update_satellite_logger_cycle(const xbot_msgs::RobotState::ConstPtr &msg) {
+    bool publish_after = false;
+    {
+        std::lock_guard<std::mutex> lk(satellite_logger_mutex);
+        const bool docked = msg->is_charging;
+        const bool left_dock = satellite_logger_has_last_docked && satellite_logger_last_docked && !docked;
+
+        if (satellite_logger_state == "running" && docked) {
+            satellite_logger_stop_locked();
+            publish_after = true;
+        } else if (satellite_logger_armed && satellite_logger_pid <= 0) {
+            const bool should_start = (satellite_logger_mode == "from_docking_to_docking" && left_dock) ||
+                                      (satellite_logger_mode == "from_start_to_docking" && !docked && satellite_logger_is_active_work_state(msg));
+            if (should_start) {
+                satellite_logger_start_locked();
+                publish_after = true;
+            }
+        }
+
+        satellite_logger_last_docked = docked;
+        satellite_logger_has_last_docked = true;
+    }
+    if (publish_after) {
+        publish_satellite_logger_status(true);
+    }
+}
 
 xbot_rpc::RpcProvider rpc_provider("xbot_monitoring", {{
     RPC_METHOD("rpc.ping", {
@@ -1188,6 +1427,7 @@ void robot_state_callback(const xbot_msgs::RobotState::ConstPtr &msg) {
     }
 
     maybe_append_statustransition_log(msg);
+    maybe_update_satellite_logger_cycle(msg);
 
     try_publish("robot_state/json", j.dump());
     json data;
@@ -1644,6 +1884,11 @@ int main(int argc, char **argv) {
         std::lock_guard<std::mutex> lk(statustransition_log_mutex);
         load_statustransition_log_if_needed_locked();
     }
+
+    satellite_logger_script = paramNh.param("satellite_logger_script", std::string("/home/openmower/scripts/record_satellites.sh"));
+    satellite_logger_output_dir = paramNh.param("satellite_logger_output_dir", std::string("/home/openmower/recordings/logs"));
+    satellite_logger_ram_dir = paramNh.param("satellite_logger_ram_dir", std::string("/dev/shm/openmower_satellite_logs"));
+    satellite_logger_container_name = paramNh.param("satellite_logger_container_name", std::string(""));
 
     external_mqtt_enable = paramNh.param("external_mqtt_enable", false);
     external_mqtt_topic_prefix = paramNh.param("external_mqtt_topic_prefix", std::string(""));
