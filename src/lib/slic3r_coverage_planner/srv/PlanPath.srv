@@ -6,6 +6,20 @@ float64 distance
 float64 outer_offset
 uint8 outline_count
 uint8 outline_overlap_count
+# Number of obstacle/inner outlines. -1 means: use outline_count (compatibility mode).
+int32 obstacle_outline_count
+# Obstacle/inner outline overlap count for fill clipping. -1 means: use outline_overlap_count.
+int32 obstacle_outline_overlap_count
+# Progressive area-outline simplification. 0.0 disables it. Applied from the second area outline. [m]
+float64 outline_simplify_per_loop
+# Maximum Douglas-Peucker tolerance for progressive area-outline simplification. [m]
+float64 outline_simplify_max_tolerance
+# Safety overlap factor used to reduce outline spacing while simplifying.
+float64 outline_simplify_safety_factor
+# Minimum simplified outline spacing as factor of distance/tool_width.
+float64 outline_simplify_min_distance_factor
+# If true, the simplified output outline is used as basis for the next outline.
+bool outline_simplify_affects_next_offset
 bool skip_area_outline
 bool skip_obstacle_outlines
 bool skip_fill

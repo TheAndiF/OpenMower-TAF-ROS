@@ -193,6 +193,15 @@ export OM_OUTLINE_COUNT=4
 # How many outlines should the fill (lanes) overlap
 export OM_OUTLINE_OVERLAP_COUNT=0
 
+# Progressive simplification for outer/area outlines. Disabled by default.
+# The outermost outline is never simplified. From the second outline on,
+# Douglas-Peucker simplification is applied with a safety overlap.
+export OM_OUTLINE_SIMPLIFY_PER_LOOP=0.0
+export OM_OUTLINE_SIMPLIFY_MAX_TOLERANCE=0.05
+export OM_OUTLINE_SIMPLIFY_SAFETY_FACTOR=2.0
+export OM_OUTLINE_SIMPLIFY_MIN_DISTANCE_FACTOR=0.5
+export OM_OUTLINE_SIMPLIFY_AFFECTS_NEXT_OFFSET=True
+
 # Mowing angle offset -180 deg - +180 deg, 0 = east, -90 = north. If mowing angle offset is not absolute it gets added to the auto detected angle which is set by the first 2 m of recorded outline.
 export OM_MOWING_ANGLE_OFFSET=0
 export OM_MOWING_ANGLE_OFFSET_IS_ABSOLUTE=False
@@ -203,6 +212,10 @@ export OM_MOWING_ANGLE_INCREMENT=0
 export OM_PATH_ORDER_OPTIMIZER_ENABLED=False
 export OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER=True
 export OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END=True
+# Used only when OM_PATH_ORDER_OPTIMIZER_ENABLED=True. -1 keeps compatibility with OM_OUTLINE_COUNT.
+export OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_COUNT=-1
+# Used only when OM_PATH_ORDER_OPTIMIZER_ENABLED=True. -1 keeps compatibility with OM_OUTLINE_OVERLAP_COUNT.
+export OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_OVERLAP_COUNT=-1
 export OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE=True
 # 0 = euclidean, 1 = MBF planner, 2 = hybrid
 export OM_PATH_ORDER_OPTIMIZER_COST_MODE=2

@@ -1,0 +1,18 @@
+BS_Add POO outline controls and checkpoint area tracking
+
+Start mowing_path_order_optimizer by default while keeping optimization controlled by path_order_optimizer_enabled.
+
+Add POO-specific obstacle outline settings:
+- path_order_optimizer_obstacle_outline_count
+- path_order_optimizer_obstacle_outline_overlap_count
+
+Add progressive outline simplification settings:
+- outline_simplify_per_loop
+- outline_simplify_max_tolerance
+- outline_simplify_safety_factor
+- outline_simplify_min_distance_factor
+- outline_simplify_affects_next_offset
+
+Store currentMowingAreaId in checkpoint.bag and publish checkpoint_area_id through robot_state/json.
+
+Defaults preserve existing behavior. A full ROS/Catkin rebuild is required because msg/srv files changed.

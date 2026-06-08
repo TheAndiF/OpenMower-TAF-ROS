@@ -678,6 +678,48 @@
                 "title": "Max. charge current",
                 "description": "Max. charge current before charging get switched off",
                 "x-environment-variable": "OM_CHARGE_CRITICAL_HIGH_CURRENT"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_COUNT": {
+                "type": "number",
+                "default": -1,
+                "description": "Obstacle/inner outline count used when the path order optimizer is enabled. -1 keeps compatibility and uses OM_OUTLINE_COUNT.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_COUNT"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_OVERLAP_COUNT": {
+                "type": "number",
+                "default": -1,
+                "description": "Obstacle/inner outline overlap used for fill clipping when the path order optimizer is enabled. -1 keeps compatibility and uses OM_OUTLINE_OVERLAP_COUNT.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_OVERLAP_COUNT"
+              },
+              "OM_OUTLINE_SIMPLIFY_PER_LOOP": {
+                "type": "number",
+                "default": 0.0,
+                "description": "Progressive Douglas-Peucker simplification per area outline after the outermost outline in meters. 0 disables simplification.",
+                "x-environment-variable": "OM_OUTLINE_SIMPLIFY_PER_LOOP"
+              },
+              "OM_OUTLINE_SIMPLIFY_MAX_TOLERANCE": {
+                "type": "number",
+                "default": 0.05,
+                "description": "Maximum Douglas-Peucker tolerance for progressive area-outline simplification in meters.",
+                "x-environment-variable": "OM_OUTLINE_SIMPLIFY_MAX_TOLERANCE"
+              },
+              "OM_OUTLINE_SIMPLIFY_SAFETY_FACTOR": {
+                "type": "number",
+                "default": 2.0,
+                "description": "Safety overlap factor for simplified area outlines. The outline spacing is reduced by factor * simplification tolerance.",
+                "x-environment-variable": "OM_OUTLINE_SIMPLIFY_SAFETY_FACTOR"
+              },
+              "OM_OUTLINE_SIMPLIFY_MIN_DISTANCE_FACTOR": {
+                "type": "number",
+                "default": 0.5,
+                "description": "Minimum simplified outline spacing as a factor of OM_TOOL_WIDTH.",
+                "x-environment-variable": "OM_OUTLINE_SIMPLIFY_MIN_DISTANCE_FACTOR"
+              },
+              "OM_OUTLINE_SIMPLIFY_AFFECTS_NEXT_OFFSET": {
+                "type": "boolean",
+                "default": true,
+                "description": "Use the simplified area outline as the basis for the next area outline.",
+                "x-environment-variable": "OM_OUTLINE_SIMPLIFY_AFFECTS_NEXT_OFFSET"
               }
             }
           }

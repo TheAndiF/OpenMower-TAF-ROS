@@ -3,3 +3,4 @@ int32 currentMowingArea
 int32 currentMowingPathIndex
 string currentMowingPlanDigest
 float32 currentMowingAngleIncrementSum
+string currentMowingAreaId

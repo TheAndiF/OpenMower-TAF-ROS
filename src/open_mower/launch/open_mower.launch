@@ -1,5 +1,5 @@
 <launch>
-    <arg name="enable_path_order_optimizer_node" default="false"/>
+    <arg name="enable_path_order_optimizer_node" default="true"/>
     <include file="$(find open_mower)/launch/include/_comms.launch"/>
     <include file="$(find open_mower)/launch/include/_move_base.launch"/>
     <include file="$(find open_mower)/launch/include/_localization.launch"/>

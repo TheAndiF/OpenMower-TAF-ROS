@@ -43,6 +43,7 @@ class MowingBehavior : public Behavior {
   int currentMowingPath;
   int currentMowingArea;
   std::string currentAreaId;
+  std::string checkpointAreaId;
   int currentMowingPathIndex;
   std::string currentMowingPlanDigest;
   double currentMowingAngleIncrementSum;
@@ -100,6 +101,8 @@ class MowingBehavior : public Behavior {
   int16_t get_current_area();
 
   std::string get_current_area_id();
+
+  std::string get_checkpoint_area_id();
 
   int16_t get_current_path();
 

@@ -655,6 +655,13 @@ void updateUI(const ros::TimerEvent& timer_event) {
     high_level_status.current_path_index = -1;
   }
 
+  try {
+    high_level_status.checkpoint_area_id = MowingBehavior::INSTANCE.get_checkpoint_area_id();
+  } catch (const std::runtime_error& re) {
+    ROS_ERROR_STREAM("Error getting checkpoint area id: " << re.what());
+    high_level_status.checkpoint_area_id = "";
+  }
+
   if (currentBehavior) {
     high_level_status.state_name = currentBehavior->state_name();
     high_level_status.state = (currentBehavior->get_state() & 0b11111) |
@@ -1026,6 +1033,13 @@ class MowerLogicSettingsBridge {
   }
 
   std::string labelForKey(const std::string& key) const {
+    if (key == "path_order_optimizer_obstacle_outline_count") return "POO innere Outline-Anzahl";
+    if (key == "path_order_optimizer_obstacle_outline_overlap_count") return "POO innere Outline-Überlappung";
+    if (key == "outline_simplify_per_loop") return "Outline-Glättung pro Linie";
+    if (key == "outline_simplify_max_tolerance") return "Maximale Outline-Glättung";
+    if (key == "outline_simplify_safety_factor") return "Outline-Glättung Sicherheitsfaktor";
+    if (key == "outline_simplify_min_distance_factor") return "Minimaler Outline-Abstandsfaktor";
+    if (key == "outline_simplify_affects_next_offset") return "Progressive Outline-Glättung";
     if (key == "mow_motor_direction_mode") return "Mähmotor-Drehrichtungsmodus";
     if (key == "satellite_logging_enabled") return "Satelliten-Logging aktiv";
     if (key == "satellite_logging_default_trigger") return "Satelliten-Logging Standard-Startart";
@@ -1039,7 +1053,8 @@ class MowerLogicSettingsBridge {
 
   std::string unitForKey(const std::string& key) const {
     if (key.find("temperature") != std::string::npos || key.find("_temp_") != std::string::npos) return "°C";
-    if (key.find("distance") != std::string::npos || key == "tool_width" || key == "max_position_accuracy") return "m";
+    if (key.find("distance") != std::string::npos || key == "tool_width" || key == "max_position_accuracy" ||
+        key == "outline_simplify_per_loop" || key == "outline_simplify_max_tolerance") return "m";
     if (key.find("angle") != std::string::npos || key == "shutdown_esc_max_pitch") return "°";
     if (key.find("minutes") != std::string::npos) return "min";
     if (key.find("seconds") != std::string::npos || key.find("_time") != std::string::npos || key.find("period") != std::string::npos) return "s";
@@ -1049,12 +1064,14 @@ class MowerLogicSettingsBridge {
 
   std::string groupForKey(const std::string& key) const {
     if (key.find("path_order_optimizer_") == 0) return "path_order_optimizer";
+    if (key.find("outline_simplify_") == 0) return "outline_simplification";
     if (key.find("satellite_logging_") == 0) return "satellite_logging";
     return kNamespace;
   }
 
   bool expertForKey(const std::string& key) const {
     if (key.find("path_order_optimizer_") == 0 && key != "path_order_optimizer_enabled") return true;
+    if (key.find("outline_simplify_") == 0) return true;
     if (key == "satellite_logging_script_path" || key == "satellite_logging_ram_path" ||
         key == "satellite_logging_output_path" || key == "satellite_logging_container_name") return true;
     return false;

@@ -1152,6 +1152,7 @@ void maybe_append_statustransition_log(const xbot_msgs::RobotState::ConstPtr &ms
         entry["automow_id"] = timetable_auto_mow_id;
     }
     entry["current_area_id"] = msg->current_area_id;
+    entry["checkpoint_area_id"] = msg->checkpoint_area_id;
     entry["position"]["x"] = msg->robot_pose.pose.pose.position.x;
     entry["position"]["y"] = msg->robot_pose.pose.pose.position.y;
     entry["position"]["heading"] = msg->robot_pose.vehicle_heading;
@@ -1187,6 +1188,7 @@ void robot_state_callback(const xbot_msgs::RobotState::ConstPtr &msg) {
     j["current_sub_state"] = msg->current_sub_state;
     j["current_area"] = msg->current_area;
     j["current_area_id"] = msg->current_area_id;
+    j["checkpoint_area_id"] = msg->checkpoint_area_id;
     j["current_path"] = msg->current_path;
     j["current_path_index"] = msg->current_path_index;
     j["emergency"] = msg->emergency;

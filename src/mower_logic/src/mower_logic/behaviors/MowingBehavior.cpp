@@ -143,6 +143,7 @@ void MowingBehavior::reset() {
   currentMowingPaths.clear();
   currentMowingArea = 0;
   currentAreaId.clear();
+  checkpointAreaId.clear();
   currentMowingPath = 0;
   currentMowingPathIndex = 0;
   publish_mowing_progress(true);
@@ -195,9 +196,11 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   }
 
   currentAreaId = mapSrv.response.area_id;
+  checkpointAreaId = currentAreaId;
 
   if (mapSrv.response.area.area.points.empty()) {
     currentAreaId.clear();
+    checkpointAreaId.clear();
     ROS_INFO_STREAM("MowingBehavior: Skipping inactive mowing area");
     return true;
   }
@@ -237,6 +240,21 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   pathSrv.request.angle = angle;
   pathSrv.request.outline_count = config.outline_count;
   pathSrv.request.outline_overlap_count = config.outline_overlap_count;
+  if (config.path_order_optimizer_enabled && config.path_order_optimizer_obstacle_outline_count >= 0) {
+    pathSrv.request.obstacle_outline_count = config.path_order_optimizer_obstacle_outline_count;
+  } else {
+    pathSrv.request.obstacle_outline_count = config.outline_count;
+  }
+  if (config.path_order_optimizer_enabled && config.path_order_optimizer_obstacle_outline_overlap_count >= 0) {
+    pathSrv.request.obstacle_outline_overlap_count = config.path_order_optimizer_obstacle_outline_overlap_count;
+  } else {
+    pathSrv.request.obstacle_outline_overlap_count = config.outline_overlap_count;
+  }
+  pathSrv.request.outline_simplify_per_loop = config.outline_simplify_per_loop;
+  pathSrv.request.outline_simplify_max_tolerance = config.outline_simplify_max_tolerance;
+  pathSrv.request.outline_simplify_safety_factor = config.outline_simplify_safety_factor;
+  pathSrv.request.outline_simplify_min_distance_factor = config.outline_simplify_min_distance_factor;
+  pathSrv.request.outline_simplify_affects_next_offset = config.outline_simplify_affects_next_offset;
   pathSrv.request.outline = mapSrv.response.area.area;
   pathSrv.request.holes = mapSrv.response.area.obstacles;
   pathSrv.request.fill_type = slic3r_coverage_planner::PlanPathRequest::FILL_LINEAR;
@@ -867,6 +885,10 @@ std::string MowingBehavior::get_current_area_id() {
   return currentAreaId;
 }
 
+std::string MowingBehavior::get_checkpoint_area_id() {
+  return checkpointAreaId;
+}
+
 int16_t MowingBehavior::get_current_path() {
   return currentMowingPath;
 }
@@ -939,6 +961,8 @@ void MowingBehavior::checkpoint() {
   cp.currentMowingPathIndex = currentMowingPathIndex;
   cp.currentMowingPlanDigest = currentMowingPlanDigest;
   cp.currentMowingAngleIncrementSum = currentMowingAngleIncrementSum;
+  cp.currentMowingAreaId = currentAreaId;
+  checkpointAreaId = currentAreaId;
   bag.open("checkpoint.bag", rosbag::bagmode::Write);
   bag.write("checkpoint", ros::Time::now(), cp);
   bag.close();
@@ -946,17 +970,22 @@ void MowingBehavior::checkpoint() {
 }
 
 bool MowingBehavior::restore_checkpoint() {
+  // Default to a clean start. This also makes old/incompatible checkpoint.bag files safe
+  // after CheckPoint.msg changes: if no compatible message can be instantiated, these
+  // values remain in effect.
+  currentMowingArea = 0;
+  currentAreaId.clear();
+  checkpointAreaId.clear();
+  currentMowingPath = 0;
+  currentMowingPathIndex = 0;
+  currentMowingAngleIncrementSum = 0;
+
   rosbag::Bag bag;
   bool found = false;
   try {
     bag.open("checkpoint.bag");
   } catch (rosbag::BagIOException& e) {
-    // Checkpoint does not exist or is corrupt, start at the very beginning
-    currentMowingArea = 0;
-    currentAreaId.clear();
-    currentMowingPath = 0;
-    currentMowingPathIndex = 0;
-    currentMowingAngleIncrementSum = 0;
+    // Checkpoint does not exist or is corrupt, start at the very beginning.
     return false;
   }
   {
@@ -966,11 +995,13 @@ bool MowingBehavior::restore_checkpoint() {
       if (cp) {
         ROS_INFO_STREAM("Restoring checkpoint for plan ("
                         << cp->currentMowingPlanDigest << ")"
-                        << " area: " << cp->currentMowingArea << " path: " << cp->currentMowingPath
+                        << " area: " << cp->currentMowingArea
+                        << " area_id: " << cp->currentMowingAreaId << " path: " << cp->currentMowingPath
                         << " index: " << cp->currentMowingPathIndex
                         << " angle increment sum: " << cp->currentMowingAngleIncrementSum);
         currentMowingPath = cp->currentMowingPath;
         currentMowingArea = cp->currentMowingArea;
+        checkpointAreaId = cp->currentMowingAreaId;
         currentMowingPathIndex = cp->currentMowingPathIndex;
         currentMowingPlanDigest = cp->currentMowingPlanDigest;
         currentMowingAngleIncrementSum = cp->currentMowingAngleIncrementSum;

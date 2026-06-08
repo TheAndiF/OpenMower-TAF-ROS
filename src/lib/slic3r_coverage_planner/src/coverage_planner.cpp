@@ -5,6 +5,10 @@
 #include "ros/ros.h"
 
 #include <boost/range/adaptor/reversed.hpp>
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <limits>
 
 #include "ExPolygon.hpp"
 #include "Polyline.hpp"
@@ -26,6 +30,153 @@
 
 bool visualize_plan;
 ros::Publisher marker_array_publisher;
+
+static coord_t clampCoordDistance(double meters) {
+    if (!std::isfinite(meters) || meters <= 0.0) return 0;
+    return scale_(meters);
+}
+
+static double pointLineDistanceSq(const Point &p, const Point &a, const Point &b) {
+    const double ax = static_cast<double>(a.x);
+    const double ay = static_cast<double>(a.y);
+    const double bx = static_cast<double>(b.x);
+    const double by = static_cast<double>(b.y);
+    const double px = static_cast<double>(p.x);
+    const double py = static_cast<double>(p.y);
+    const double dx = bx - ax;
+    const double dy = by - ay;
+    if (dx == 0.0 && dy == 0.0) {
+        const double ex = px - ax;
+        const double ey = py - ay;
+        return ex * ex + ey * ey;
+    }
+    const double t = std::max(0.0, std::min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+    const double cx = ax + t * dx;
+    const double cy = ay + t * dy;
+    const double ex = px - cx;
+    const double ey = py - cy;
+    return ex * ex + ey * ey;
+}
+
+static Slic3r::Polygon simplifyClosedPolygonDouglasPeucker(const Slic3r::Polygon &polygon, coord_t tolerance) {
+    if (tolerance <= 0 || polygon.points.size() < 4) return polygon;
+
+    std::vector<Point> points = polygon.points;
+    if (points.size() >= 2 && points.front().x == points.back().x && points.front().y == points.back().y) {
+        points.pop_back();
+    }
+    if (points.size() < 4) return polygon;
+
+    // Run Douglas-Peucker on the closed ring by appending the first point once.
+    std::vector<Point> ring = points;
+    ring.push_back(points.front());
+    std::vector<bool> keep(ring.size(), false);
+    keep.front() = true;
+    keep.back() = true;
+    const double tolerance_sq = static_cast<double>(tolerance) * static_cast<double>(tolerance);
+
+    std::function<void(std::size_t, std::size_t)> simplifyRange = [&](std::size_t begin, std::size_t end) {
+        if (end <= begin + 1) return;
+        double max_distance_sq = -1.0;
+        std::size_t max_index = begin;
+        for (std::size_t i = begin + 1; i < end; ++i) {
+            const double distance_sq = pointLineDistanceSq(ring[i], ring[begin], ring[end]);
+            if (distance_sq > max_distance_sq) {
+                max_distance_sq = distance_sq;
+                max_index = i;
+            }
+        }
+        if (max_distance_sq > tolerance_sq) {
+            keep[max_index] = true;
+            simplifyRange(begin, max_index);
+            simplifyRange(max_index, end);
+        }
+    };
+
+    simplifyRange(0, ring.size() - 1);
+
+    Slic3r::Polygon simplified;
+    simplified.points.reserve(points.size());
+    for (std::size_t i = 0; i + 1 < ring.size(); ++i) {
+        if (keep[i]) simplified.points.push_back(ring[i]);
+    }
+
+    if (simplified.points.size() < 3) return polygon;
+
+    // Preserve orientation because later code classifies area outlines vs obstacle outlines by orientation.
+    if (polygon.is_counter_clockwise()) {
+        simplified.make_counter_clockwise();
+    } else {
+        simplified.make_clockwise();
+    }
+    if (simplified.points.size() < 3) return polygon;
+    return simplified;
+}
+
+static Slic3r::Polygons simplifyAreaContoursOnly(const Slic3r::Polygons &input, coord_t tolerance) {
+    if (tolerance <= 0) return input;
+    Slic3r::Polygons output;
+    output.reserve(input.size());
+    for (const auto &polygon : input) {
+        if (polygon.is_counter_clockwise()) {
+            output.push_back(simplifyClosedPolygonDouglasPeucker(polygon, tolerance));
+        } else {
+            // Inner obstacle/hole outlines are intentionally not simplified by this setting.
+            output.push_back(polygon);
+        }
+    }
+    return output;
+}
+
+static coord_t fillClipOffset(int outline_count, int overlap_count, coord_t outer_distance, coord_t distance) {
+    if (outline_count <= 0) return 0;
+    const int loop_number = outline_count - 1;
+    const int inner_loop_number = loop_number - std::max(0, overlap_count);
+    if (inner_loop_number < 0) return 0;
+    return outer_distance + static_cast<coord_t>(inner_loop_number) * distance;
+}
+
+static Slic3r::ExPolygons buildFillExPolygons(const Slic3r::Polygon &outline_poly,
+                                               const Slic3r::Polygons &hole_polys,
+                                               int outline_count,
+                                               int outline_overlap_count,
+                                               int obstacle_outline_count,
+                                               int obstacle_outline_overlap_count,
+                                               coord_t outer_distance,
+                                               coord_t distance) {
+    const coord_t area_offset = fillClipOffset(outline_count, outline_overlap_count, outer_distance, distance);
+    const coord_t obstacle_offset = fillClipOffset(obstacle_outline_count, obstacle_outline_overlap_count,
+                                                  outer_distance, distance);
+
+    Slic3r::Polygons area_base;
+    area_base.push_back(outline_poly);
+    Slic3r::Polygons area_polys = area_offset > 0 ? offset(area_base, -area_offset) : area_base;
+    if (area_polys.empty()) return Slic3r::ExPolygons();
+
+    Slic3r::Polygons grown_holes;
+    for (const auto &hole : hole_polys) {
+        Slic3r::Polygons hole_base;
+        hole_base.push_back(hole);
+        Slic3r::Polygons hole_offsets = obstacle_offset > 0 ? offset(hole_base, obstacle_offset) : hole_base;
+        for (auto hole_poly : hole_offsets) {
+            hole_poly.make_clockwise();
+            grown_holes.push_back(hole_poly);
+        }
+    }
+
+    Slic3r::ExPolygons result;
+    for (auto area_poly : area_polys) {
+        area_poly.make_counter_clockwise();
+        Slic3r::ExPolygon exp(area_poly);
+        for (const auto &hole_poly : grown_holes) {
+            if (!intersection(area_poly, hole_poly).empty()) {
+                exp.holes.push_back(hole_poly);
+            }
+        }
+        result.push_back(exp);
+    }
+    return result;
+}
 
 
 void
@@ -330,6 +481,7 @@ bool planPath(slic3r_coverage_planner::PlanPathRequest &req, slic3r_coverage_pla
 
     // This ExPolygon contains our input area with holes.
     Slic3r::ExPolygon expoly(outline_poly);
+    Slic3r::Polygons original_holes;
 
     for (auto &hole: req.holes) {
         Slic3r::Polygon hole_poly;
@@ -339,6 +491,7 @@ bool planPath(slic3r_coverage_planner::PlanPathRequest &req, slic3r_coverage_pla
         hole_poly.make_clockwise();
 
         if (intersection(outline_poly, hole_poly).empty()) continue;
+        original_holes.push_back(hole_poly);
         expoly.holes.push_back(hole_poly);
     }
 
@@ -355,19 +508,27 @@ bool planPath(slic3r_coverage_planner::PlanPathRequest &req, slic3r_coverage_pla
     coord_t distance = scale_(req.distance);
     coord_t outer_distance = scale_(req.outer_offset);
 
-    // detect how many perimeters must be generated for this island
-    int loops = req.outline_count;
+    // Detect how many perimeters must be generated. Area and obstacle outlines can be separated
+    // by mower_logic when the path-order optimizer mode is enabled. Negative obstacle values mean
+    // compatibility mode and are resolved to the classic area outline values here as a safety net.
+    int area_loops = std::max(0, static_cast<int>(req.outline_count));
+    int obstacle_loops = req.obstacle_outline_count < 0 ? area_loops : std::max(0, req.obstacle_outline_count);
+    int obstacle_overlap_count = req.obstacle_outline_overlap_count < 0
+                                     ? static_cast<int>(req.outline_overlap_count)
+                                     : std::max(0, req.obstacle_outline_overlap_count);
+    int loops = std::max(area_loops, obstacle_loops);
 
-    ROS_INFO_STREAM("generating " << loops << " outlines");
+    ROS_INFO_STREAM("generating " << area_loops << " area outlines and "
+                    << obstacle_loops << " obstacle outlines");
 
     const int loop_number = loops - 1;  // 0-indexed loops
-    const int inner_loop_number = loop_number - req.outline_overlap_count;
+    const int area_loop_number = area_loops - 1;
+    const int obstacle_loop_number = obstacle_loops - 1;
 
 
     Polygons gaps;
 
     Polygons last = expoly;
-    Polygons inner = last;
     if (loop_number >= 0) {  // no loops = -1
 
         std::vector<PerimeterGeneratorLoops> contours(loop_number + 1);    // depth => loops
@@ -376,33 +537,44 @@ bool planPath(slic3r_coverage_planner::PlanPathRequest &req, slic3r_coverage_pla
         for (int i = 0; i <= loop_number; ++i) {  // outer loop is 0
             Polygons offsets;
 
-            if (i == 0) {
-                offsets = offset(
-                        last,
-                        -outer_distance
-                );
-            } else {
-                offsets = offset(
-                        last,
-                        -distance
-                );
+            double simplify_tolerance_m = 0.0;
+            double safety_overlap_m = 0.0;
+            if (i > 0 && req.outline_simplify_per_loop > 0.0) {
+                simplify_tolerance_m = static_cast<double>(i) * req.outline_simplify_per_loop;
+                if (req.outline_simplify_max_tolerance > 0.0) {
+                    simplify_tolerance_m = std::min(simplify_tolerance_m, req.outline_simplify_max_tolerance);
+                }
+                safety_overlap_m = std::max(0.0, req.outline_simplify_safety_factor) * simplify_tolerance_m;
             }
+
+            coord_t step_distance;
+            if (i == 0) {
+                step_distance = outer_distance;
+            } else {
+                const double min_factor = std::max(0.1, std::min(1.0, req.outline_simplify_min_distance_factor));
+                const double min_distance_m = req.distance * min_factor;
+                const double effective_distance_m = std::max(min_distance_m, req.distance - safety_overlap_m);
+                step_distance = scale_(effective_distance_m);
+            }
+
+            offsets = offset(last, -step_distance);
 
             if (offsets.empty()) break;
 
-
-            last = offsets;
-            if (i <= inner_loop_number) {
-                inner = last;
+            Polygons output_offsets = offsets;
+            if (i > 0 && simplify_tolerance_m > 0.0) {
+                output_offsets = simplifyAreaContoursOnly(output_offsets, clampCoordDistance(simplify_tolerance_m));
             }
 
-            for (Polygons::const_iterator polygon = offsets.begin(); polygon != offsets.end(); ++polygon) {
+            last = req.outline_simplify_affects_next_offset ? output_offsets : offsets;
+
+            for (Polygons::const_iterator polygon = output_offsets.begin(); polygon != output_offsets.end(); ++polygon) {
                 PerimeterGeneratorLoop loop(*polygon, i);
                 loop.is_contour = polygon->is_counter_clockwise();
                 if (loop.is_contour) {
-                    contours[i].push_back(loop);
+                    if (i <= area_loop_number) contours[i].push_back(loop);
                 } else {
-                    holes[i].push_back(loop);
+                    if (i <= obstacle_loop_number) holes[i].push_back(loop);
                 }
             }
         }
@@ -475,7 +647,10 @@ bool planPath(slic3r_coverage_planner::PlanPathRequest &req, slic3r_coverage_pla
 
 
     if (!req.skip_fill) {
-        ExPolygons expp = union_ex(inner);
+        ExPolygons expp = buildFillExPolygons(outline_poly, original_holes, area_loops,
+                                              static_cast<int>(req.outline_overlap_count),
+                                              obstacle_loops, obstacle_overlap_count,
+                                              outer_distance, distance);
 
 
         // Go through the innermost poly and create the fill path using a Fill object
