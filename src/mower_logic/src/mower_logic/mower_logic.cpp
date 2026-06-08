@@ -33,6 +33,14 @@
 #include <ios>
 #include <mutex>
 #include <sstream>
+#include <vector>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <iomanip>
+#include <ctime>
+#include <csignal>
+#include <chrono>
 
 #include "StateSubscriber.h"
 #include "behaviors/AreaRecordingBehavior.h"
@@ -80,7 +88,9 @@ mower_logic::MowerLogicConfig last_config;
 ll::PowerConfig last_power_config;
 
 class MowerLogicSettingsBridge;
+class SatelliteLoggingController;
 MowerLogicSettingsBridge* mower_logic_settings_bridge = nullptr;
+SatelliteLoggingController* satellite_logging_controller = nullptr;
 
 StateSubscriber<mower_msgs::Emergency> emergency_state_subscriber{"/ll/emergency"};
 StateSubscriber<mower_msgs::Status> status_state_subscriber{"/ll/mower_status"};
@@ -354,6 +364,271 @@ void setEmergencyMode(bool emergency) {
   }
 }
 
+
+static std::string mower_logic_utc_timestamp_iso8601(const std::chrono::system_clock::time_point& time_point) {
+  const std::time_t t = std::chrono::system_clock::to_time_t(time_point);
+  std::tm tm{};
+  gmtime_r(&t, &tm);
+  std::ostringstream out;
+  out << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
+  return out.str();
+}
+
+static std::string mower_logic_now_compact() {
+  const std::time_t t = std::time(nullptr);
+  std::tm tm{};
+  gmtime_r(&t, &tm);
+  std::ostringstream out;
+  out << std::put_time(&tm, "%Y%m%d_%H%M%S");
+  return out.str();
+}
+
+class SatelliteLoggingController {
+ public:
+  using json = open_mower_settings::json;
+
+  explicit SatelliteLoggingController(ros::NodeHandle& nh) : nh_(nh) {
+    status_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/satellite_logging/status_json", 1, true);
+    control_sub_ = nh_.subscribe("/mower_logic/satellite_logging/set_control_json", 10,
+                                 &SatelliteLoggingController::controlCallback, this);
+    renew_sub_ = nh_.subscribe("/mower_logic/satellite_logging/renew", 10,
+                               &SatelliteLoggingController::renewCallback, this);
+    publishStatus();
+  }
+
+  void notifyConfigChanged() { publishStatus(); }
+
+  void updateFromMowerState(bool docked, bool active_work, const std::string& area_id) {
+    bool publish_after = false;
+    std::lock_guard<std::mutex> lk(mutex_);
+
+    if (state_ == "running" && docked && mode_ != "manual" && mode_ != "area_only") {
+      stopLocked();
+      publish_after = true;
+    } else if (armed_ && pid_ <= 0 && last_config.satellite_logging_enabled) {
+      const bool left_dock = has_last_docked_ && last_docked_ && !docked;
+      const bool area_match = !target_area_id_.empty() && area_id == target_area_id_;
+      const bool should_start =
+          (trigger_ == "next_cycle" && mode_ == "from_docking_to_docking" && left_dock) ||
+          (trigger_ == "next_cycle" && mode_ == "from_start_to_docking" && !docked && active_work) ||
+          (trigger_ == "area_id" && area_match && !docked && active_work);
+      if (should_start) {
+        startLocked();
+        publish_after = true;
+      }
+    }
+
+    last_docked_ = docked;
+    has_last_docked_ = true;
+    if (publish_after) publishStatusLocked();
+  }
+
+ private:
+  static bool triggerSupported(const std::string& trigger) {
+    return trigger == "next_cycle" || trigger == "ad_hoc" || trigger == "area_id";
+  }
+
+  static bool modeSupported(const std::string& mode) {
+    return mode == "from_start_to_docking" || mode == "from_docking_to_docking" ||
+           mode == "until_docking" || mode == "manual" || mode == "area_only" || mode == "area_to_docking";
+  }
+
+  static std::vector<std::string> expectedFiles(const std::string& session_id) {
+    return {"gps_satellite_list_" + session_id + ".log",
+            "gps_position_" + session_id + ".log",
+            "gps_accuracy_" + session_id + ".log",
+            "gps_rtcm_hz_" + session_id + ".log",
+            "satellite_logging_" + session_id + ".meta.json"};
+  }
+
+  void startLocked() {
+    if (pid_ > 0 || state_ == "running") return;
+    if (!last_config.satellite_logging_enabled) {
+      state_ = "idle";
+      armed_ = false;
+      error_ = "satellite_logging_enabled is false";
+      return;
+    }
+
+    session_id_ = mower_logic_now_compact();
+    started_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
+    finished_at_.clear();
+    error_.clear();
+    files_ = expectedFiles(session_id_);
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+      state_ = "error";
+      error_ = "fork failed";
+      return;
+    }
+    if (pid == 0) {
+      setsid();
+      execl(last_config.satellite_logging_script_path.c_str(), last_config.satellite_logging_script_path.c_str(),
+            "--session-id", session_id_.c_str(),
+            "--ram-path", last_config.satellite_logging_ram_path.c_str(),
+            "--output-path", last_config.satellite_logging_output_path.c_str(),
+            "--container-name", last_config.satellite_logging_container_name.c_str(),
+            static_cast<char*>(nullptr));
+      _exit(127);
+    }
+    pid_ = pid;
+    state_ = "running";
+    armed_ = false;
+  }
+
+  void stopLocked() {
+    if (pid_ <= 0) return;
+    kill(-pid_, SIGTERM);
+    bool exited = false;
+    int status = 0;
+    for (int i = 0; i < 50; ++i) {
+      const pid_t result = waitpid(pid_, &status, WNOHANG);
+      if (result == pid_) { exited = true; break; }
+      usleep(100000);
+    }
+    if (!exited) {
+      kill(-pid_, SIGKILL);
+      waitpid(pid_, &status, 0);
+    }
+    pid_ = -1;
+    finished_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
+    state_ = exited ? "finished" : "error";
+    if (!exited) error_ = "logger did not stop after SIGTERM and was killed";
+  }
+
+  void controlCallback(const std_msgs::String::ConstPtr& msg) {
+    json payload;
+    bool publish_after = true;
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      try {
+        payload = json::parse(msg->data);
+      } catch (const json::exception& e) {
+        state_ = "error";
+        error_ = std::string("Error decoding JSON: ") + e.what();
+        publishStatusLocked();
+        return;
+      }
+      if (!payload.is_object()) {
+        state_ = "error";
+        error_ = "payload must be a JSON object";
+        publishStatusLocked();
+        return;
+      }
+
+      const std::string command = payload.value("command", std::string("start"));
+      if (command == "stop") {
+        stopLocked();
+        armed_ = false;
+      } else if (command == "cancel") {
+        if (pid_ > 0) stopLocked();
+        armed_ = false;
+        state_ = "idle";
+        error_.clear();
+      } else if (command == "start") {
+        const std::string requested_trigger = payload.value("trigger", last_config.satellite_logging_default_trigger);
+        const std::string requested_mode = payload.value("mode", requested_trigger == "ad_hoc" ?
+                                                        std::string("until_docking") :
+                                                        last_config.satellite_logging_default_mode);
+        std::string requested_area;
+        if (payload.contains("area_id")) {
+          if (payload["area_id"].is_string()) {
+            requested_area = payload["area_id"].get<std::string>();
+          } else if (payload["area_id"].is_number_integer()) {
+            requested_area = std::to_string(payload["area_id"].get<long long>());
+          }
+        }
+        if (!last_config.satellite_logging_enabled) {
+          state_ = "idle";
+          error_ = "satellite_logging_enabled is false";
+        } else if (!triggerSupported(requested_trigger)) {
+          state_ = "error";
+          error_ = "unsupported trigger: " + requested_trigger;
+        } else if (!modeSupported(requested_mode)) {
+          state_ = "error";
+          error_ = "unsupported mode: " + requested_mode;
+        } else if (requested_trigger == "area_id" && requested_area.empty()) {
+          state_ = "error";
+          error_ = "area_id trigger requires area_id";
+        } else {
+          trigger_ = requested_trigger;
+          mode_ = requested_mode;
+          target_area_id_ = requested_area;
+          started_at_.clear();
+          finished_at_.clear();
+          session_id_.clear();
+          error_.clear();
+          files_.clear();
+          if (trigger_ == "ad_hoc") {
+            startLocked();
+          } else {
+            state_ = "armed";
+            armed_ = true;
+          }
+        }
+      } else {
+        state_ = "error";
+        error_ = "unsupported command: " + command;
+      }
+    }
+    if (publish_after) publishStatus();
+  }
+
+  void renewCallback(const std_msgs::Empty::ConstPtr&) { publishStatus(); }
+
+  void publishStatus() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    publishStatusLocked();
+  }
+
+  void publishStatusLocked() {
+    if (state_ == "idle" && !armed_ && pid_ <= 0) {
+      trigger_ = last_config.satellite_logging_default_trigger;
+      mode_ = last_config.satellite_logging_default_mode;
+    }
+    json payload = json::object();
+    payload["enabled"] = last_config.satellite_logging_enabled;
+    payload["state"] = state_;
+    payload["trigger"] = trigger_;
+    payload["mode"] = mode_;
+    payload["target_area_id"] = target_area_id_.empty() ? json(nullptr) : json(target_area_id_);
+    payload["armed"] = armed_;
+    payload["running"] = pid_ > 0;
+    payload["pid"] = pid_ > 0 ? json(pid_) : json(nullptr);
+    payload["started_at"] = started_at_.empty() ? json(nullptr) : json(started_at_);
+    payload["finished_at"] = finished_at_.empty() ? json(nullptr) : json(finished_at_);
+    payload["session_id"] = session_id_.empty() ? json(nullptr) : json(session_id_);
+    payload["files"] = files_;
+    payload["ram_path"] = last_config.satellite_logging_ram_path;
+    payload["output_path"] = last_config.satellite_logging_output_path;
+    payload["script_path"] = last_config.satellite_logging_script_path;
+    payload["error"] = error_.empty() ? json(nullptr) : json(error_);
+    std_msgs::String out;
+    out.data = payload.dump();
+    status_pub_.publish(out);
+  }
+
+  ros::NodeHandle& nh_;
+  ros::Publisher status_pub_;
+  ros::Subscriber control_sub_;
+  ros::Subscriber renew_sub_;
+  std::mutex mutex_;
+  std::string state_ = "idle";
+  std::string trigger_ = "next_cycle";
+  std::string mode_ = "from_start_to_docking";
+  std::string target_area_id_;
+  bool armed_ = false;
+  pid_t pid_ = -1;
+  std::string session_id_;
+  std::string started_at_;
+  std::string finished_at_;
+  std::vector<std::string> files_;
+  std::string error_;
+  bool last_docked_ = true;
+  bool has_last_docked_ = false;
+};
+
 void updateUI(const ros::TimerEvent& timer_event) {
   if (currentBehavior == &MowingBehavior::INSTANCE) {
     try {
@@ -390,6 +665,13 @@ void updateUI(const ros::TimerEvent& timer_event) {
     high_level_status.sub_state_name = "";
     high_level_status.state = mower_msgs::HighLevelStatus::HIGH_LEVEL_STATE_NULL;
   }
+
+  if (satellite_logging_controller != nullptr) {
+    const bool docked = high_level_status.is_charging || currentBehavior == &IdleBehavior::DOCKED_INSTANCE;
+    const bool active_work = currentBehavior == &MowingBehavior::INSTANCE;
+    satellite_logging_controller->updateFromMowerState(docked, active_work, high_level_status.current_area_id);
+  }
+
   high_level_state_publisher.publish(high_level_status);
 }
 
@@ -745,6 +1027,13 @@ class MowerLogicSettingsBridge {
 
   std::string labelForKey(const std::string& key) const {
     if (key == "mow_motor_direction_mode") return "Mähmotor-Drehrichtungsmodus";
+    if (key == "satellite_logging_enabled") return "Satelliten-Logging aktiv";
+    if (key == "satellite_logging_default_trigger") return "Satelliten-Logging Standard-Startart";
+    if (key == "satellite_logging_default_mode") return "Satelliten-Logging Standard-Modus";
+    if (key == "satellite_logging_script_path") return "Satelliten-Logging Skriptpfad";
+    if (key == "satellite_logging_ram_path") return "Satelliten-Logging RAM-Pfad";
+    if (key == "satellite_logging_output_path") return "Satelliten-Logging Zielpfad";
+    if (key == "satellite_logging_container_name") return "Satelliten-Logging Containername";
     return key;
   }
 
@@ -760,11 +1049,14 @@ class MowerLogicSettingsBridge {
 
   std::string groupForKey(const std::string& key) const {
     if (key.find("path_order_optimizer_") == 0) return "path_order_optimizer";
+    if (key.find("satellite_logging_") == 0) return "satellite_logging";
     return kNamespace;
   }
 
   bool expertForKey(const std::string& key) const {
     if (key.find("path_order_optimizer_") == 0 && key != "path_order_optimizer_enabled") return true;
+    if (key == "satellite_logging_script_path" || key == "satellite_logging_ram_path" ||
+        key == "satellite_logging_output_path" || key == "satellite_logging_container_name") return true;
     return false;
   }
 
@@ -1152,6 +1444,9 @@ void reconfigureCB(mower_logic::MowerLogicConfig& c, uint32_t level) {
   if (mower_logic_settings_bridge != nullptr) {
     mower_logic_settings_bridge->notifyConfigChanged();
   }
+  if (satellite_logging_controller != nullptr) {
+    satellite_logging_controller->notifyConfigChanged();
+  }
 }
 
 bool highLevelCommand(mower_msgs::HighLevelControlSrvRequest& req, mower_msgs::HighLevelControlSrvResponse& res) {
@@ -1245,6 +1540,7 @@ int main(int argc, char** argv) {
   reconfigServer = new dynamic_reconfigure::Server<mower_logic::MowerLogicConfig>(mutex, *paramNh);
   reconfigServer->setCallback(reconfigureCB);
   mower_logic_settings_bridge = new MowerLogicSettingsBridge(*n, *paramNh);
+  satellite_logging_controller = new SatelliteLoggingController(*n);
 
   last_power_config = ll::PowerConfig::__getDefault__();
   last_power_config.__fromServer__(powerNodeHandle);
@@ -1503,6 +1799,7 @@ int main(int argc, char** argv) {
   }
 
   delete (n);
+  delete (satellite_logging_controller);
   delete (paramNh);
   delete (reconfigServer);
   delete (mbfClient);

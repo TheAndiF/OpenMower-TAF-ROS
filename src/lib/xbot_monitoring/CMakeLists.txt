@@ -68,7 +68,3 @@ add_executable(heatmap_generator
 add_dependencies(heatmap_generator ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
 target_link_libraries(heatmap_generator ${catkin_LIBRARIES})
 
-install(PROGRAMS
-        scripts/record_satellites.sh
-        DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
