@@ -451,9 +451,13 @@ bool MowingBehavior::execute_mowing_plan() {
             return true;
           }
           if (skip_path) {
+            ROS_INFO_STREAM("MowingBehavior: (FIRST POINT) SKIP PATH was requested.");
+            mbfClient->cancelAllGoals();
+            mowerEnabled = false;
             skip_path = false;
             currentMowingPath++;
             currentMowingPathIndex = 0;
+            checkpoint();
             publish_mowing_progress(true);
             return false;
           }
@@ -567,9 +571,13 @@ bool MowingBehavior::execute_mowing_plan() {
             return true;
           }
           if (skip_path) {
+            ROS_INFO_STREAM("MowingBehavior: (MOW) SKIP PATH was requested.");
+            mbfClientExePath->cancelAllGoals();
+            mowerEnabled = false;
             skip_path = false;
             currentMowingPath++;
             currentMowingPathIndex = 0;
+            checkpoint();
             publish_mowing_progress(true);
             return false;
           }
