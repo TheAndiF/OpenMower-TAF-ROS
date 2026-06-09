@@ -1,32 +1,78 @@
-MQTT Satellite Logger
-=====================
+MQTT Satellite Logging
+======================
 
-Neue MQTT Topics:
+Current implementation
+----------------------
+Satellite logging is now integrated under mower_logic.
 
-- satellite_logger/set/record_next/json
-  Payload-Beispiel:
-  {"mode":"from_start_to_docking"}
-  oder:
-  {"mode":"from_docking_to_docking"}
+Use these topics for normal operation:
 
-- satellite_logger/set/cancel
-  Stoppt einen laufenden Mitschnitt oder nimmt die Vormerkung zurück.
+- settings/mower_logic/json
+- settings/mower_logic/set/session/json
+- settings/mower_logic/set/persistent/json
+- settings/mower_logic/set/renew/json
+- mower_logic/satellite_logging/json
+- mower_logic/satellite_logging/set/control/json
+- mower_logic/satellite_logging/set/renew/json
 
-- satellite_logger/set/renew/json
-  Fordert den aktuellen retained Status erneut an.
+The old satellite_logger/... topics are not the canonical interface anymore.
 
-- satellite_logger/status/json
-  Retained Status mit state, mode, started_at, finished_at, session_id, files, path, ram_path und error.
+Normal operation through the enable switch
+------------------------------------------
+The usual app/MQTT workflow is:
 
-Arbeitsweise:
+1. Configure the desired defaults through settings/mower_logic:
 
-Der Logger wird per MQTT für den nächsten Zyklus vorgemerkt. Beim Start wird scripts/record_satellites.sh gestartet. Das Skript schreibt laufende Daten zuerst in den Arbeitsspeicher unter /dev/shm/openmower_satellite_logs/<session_id>. Erst beim Stoppen, typischerweise beim erneuten Docking/Laden, werden die Logdateien nach /home/openmower/recordings/logs kopiert.
+   satellite_logging_default_trigger
+   satellite_logging_default_mode
+   satellite_logging_default_area_id
 
-Parameter:
+2. Set:
 
-- xbot_monitoring/satellite_logger_script
-- xbot_monitoring/satellite_logger_output_dir
-- xbot_monitoring/satellite_logger_ram_dir
-- xbot_monitoring/satellite_logger_container_name
+   {"satellite_logging_enabled":{"value":true}}
 
-Im normalen ROS-Containerbetrieb bleibt satellite_logger_container_name leer, sodass rostopic direkt im laufenden Container ausgeführt wird. Für manuelle Host-Nutzung kann SAT_LOG_CONTAINER=ros-1 gesetzt werden.
+   on:
+
+   settings/mower_logic/set/session/json
+
+mower_logic then checks the script path, makes the script executable if needed, and starts or arms the logger according to the configured values.
+
+Switching satellite_logging_enabled back to false stops a running log and cancels an armed request.
+
+When the configured end condition is reached, mower_logic stops logging and automatically sets satellite_logging_enabled back to false so the app shows Off again.
+
+Start variants
+--------------
+- ad_hoc: start immediately
+- next_cycle: arm for the next matching mowing cycle
+- area_id: arm for satellite_logging_default_area_id
+
+End/mode variants
+-----------------
+- until_docking: stop at docking
+- from_start_to_docking: start with active mowing work and stop at docking
+- from_docking_to_docking: start after leaving docking and stop at the next docking
+
+Container handling
+------------------
+satellite_logging_container_name is optional. Leave it empty for automatic detection.
+
+If the script is already running in the ROS container, rostopic is executed directly. If the script is running on the host and Docker is available, the script tries to find a ROS container automatically, preferring names such as:
+
+- openmower-open_mower_ros-1
+- OpenMowerROS
+- names containing open_mower_ros
+
+Advanced runtime control
+------------------------
+The control endpoint remains available:
+
+  mower_logic/satellite_logging/set/control/json
+
+Examples:
+
+  {"command":"start","trigger":"next_cycle","mode":"from_start_to_docking"}
+  {"command":"start","trigger":"ad_hoc","mode":"until_docking"}
+  {"command":"start","trigger":"area_id","mode":"until_docking","area_id":"3"}
+  {"command":"stop"}
+  {"command":"cancel"}

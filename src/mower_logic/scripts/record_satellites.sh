@@ -51,10 +51,51 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+
+running_inside_container() {
+  [ -f /.dockerenv ] && return 0
+  grep -qaE '/docker/|/kubepods/|/containerd/' /proc/1/cgroup 2>/dev/null
+}
+
+pick_first_matching_container() {
+  local pattern="$1"
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -E "$pattern" | head -n 1
+}
+
+auto_detect_container() {
+  if [ -n "${CONTAINER_NAME}" ]; then
+    return
+  fi
+  if running_inside_container; then
+    return
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    return
+  fi
+
+  local candidate=""
+  candidate="$(pick_first_matching_container '^openmower-open_mower_ros-1$')"
+  if [ -z "${candidate}" ]; then
+    candidate="$(pick_first_matching_container '^OpenMowerROS$')"
+  fi
+  if [ -z "${candidate}" ]; then
+    candidate="$(pick_first_matching_container '(^|[-_])open_?mower_?ros($|[-_])')"
+  fi
+  if [ -z "${candidate}" ]; then
+    candidate="$(pick_first_matching_container 'openmower.*ros|ros.*openmower')"
+  fi
+
+  if [ -n "${candidate}" ]; then
+    CONTAINER_NAME="${candidate}"
+  fi
+}
+
 if [ -z "${SESSION_ID}" ] || [ -z "${RAM_BASE}" ] || [ -z "${OUTPUT_DIR}" ]; then
   echo "session-id, ram-path and output-path must not be empty" >&2
   exit 2
 fi
+
+auto_detect_container
 
 SESSION_RAM_DIR="${RAM_BASE}/${SESSION_ID}"
 mkdir -p "${SESSION_RAM_DIR}"
@@ -140,6 +181,11 @@ log_info "Starte GPS-/RTK-Mitschnitt in den Arbeitsspeicher"
 log_info "Session: ${SESSION_ID}"
 log_info "RAM-Verzeichnis: ${SESSION_RAM_DIR}"
 log_info "Persistentes Ziel beim Stoppen: ${OUTPUT_DIR}"
+if [ -n "${CONTAINER_NAME}" ]; then
+  log_info "ROS-Container: ${CONTAINER_NAME}"
+else
+  log_info "ROS-Container: keiner/direkt"
+fi
 log_info "Dateien:"
 log_info "  ${SAT_FILE}"
 log_info "  ${POS_FILE}"
