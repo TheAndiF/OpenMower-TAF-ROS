@@ -51,8 +51,10 @@ jobs:
       startsWith(github.event.head_commit.message, 'BS_') ||
       startsWith(github.event.head_commit.message, 'BL_')
 
-    # Der Build läuft auf einem GitHub-Server mit Ubuntu.
-    runs-on: ubuntu-latest
+    # Der Build läuft auf einem nativen ARM64-GitHub-Runner.
+    # Das vermeidet die sehr langsame QEMU-Emulation für linux/arm64 und verhindert,
+    # dass komplette BL_-Builds wegen Laufzeit/Runner-Abbruch hängen bleiben.
+    runs-on: ubuntu-24.04-arm
 
     steps:
       # Repository auschecken.
@@ -71,11 +73,9 @@ jobs:
         shell: bash
         run: echo "BUILD_DATE=$(date -u +'%Y-%m-%d-%H%M')" >> $GITHUB_ENV
 
-      # QEMU wird benötigt, damit auf dem GitHub-Server
-      # ein ARM64-Image gebaut werden kann.
-      # Der Mower benötigt linux/arm64.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      # QEMU ist hier nicht nötig, weil der Job bereits auf einem nativen
+      # ARM64-Runner läuft. Dadurch ist der ROS/Catkin-Build deutlich schneller
+      # und weniger anfällig für Runner-Abbrüche.
 
       # Docker Buildx wird für moderne Docker-Builds verwendet,
       # besonders für Plattformen wie linux/arm64.

@@ -1,0 +1,28 @@
+Analyse des fehlgeschlagenen Builds 2026-06-09
+=============================================
+
+Aus den bereitgestellten GitHub-Actions-Logs ergab sich kein C++-/Catkin-Compilerfehler.
+Der Build lief im Schritt "Build and push Docker image without cache" noch aktiv und stand bei ca. 74%.
+Danach wurde der Runner beendet:
+
+  The runner has received a shutdown signal.
+  The operation was canceled.
+
+Auffällig war, dass der TAF-Build-Workflow build-container.yml auf ubuntu-latest lief und für linux/arm64 über QEMU emulierte. Ein kompletter BL_-Build ohne Cache ist unter QEMU sehr langsam und wurde vor Abschluss abgebrochen.
+
+Verbesserung in diesem Paket
+----------------------------
+
+.github/workflows/build-container.yml wurde angepasst:
+
+- runs-on: ubuntu-24.04-arm
+- QEMU-Setup entfernt, weil der Build nun nativ auf ARM64 läuft
+- linux/arm64 bleibt als Zielplattform erhalten
+
+Damit sollte besonders der komplette BL_-Neubuild deutlich schneller und robuster laufen.
+
+Hinweis
+-------
+
+Für kleine Codeänderungen bleibt BS_ weiterhin die empfohlene Commit-Präfix-Variante, weil sie den Build-Cache verwendet.
+BL_ bleibt für echte vollständige Neubuilds gedacht.
