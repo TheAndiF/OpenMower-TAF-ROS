@@ -24,6 +24,7 @@
 #include "std_msgs/Empty.h"
 #include "std_msgs/String.h"
 #include <nlohmann/json.hpp>
+#include <cstdint>
 
 class MowingBehavior : public Behavior {
  private:
@@ -35,9 +36,54 @@ class MowingBehavior : public Behavior {
 
   bool execute_mowing_plan();
 
+ public:
+  static constexpr uint8_t MOW_STATUS_DONE = 0;         // 00 = fertig bearbeitet
+  static constexpr uint8_t MOW_STATUS_IN_PROGRESS = 10; // 10 = in Arbeit
+  static constexpr uint8_t MOW_STATUS_OPEN = 20;        // 20 = noch nicht bearbeitet
+
+  static constexpr uint8_t PATH_DIRECTION_FORWARD = 0;  // wie vom Slicer geliefert
+  static constexpr uint8_t PATH_DIRECTION_REVERSE = 1;  // rückwärts abfahren, Rohdaten bleiben unverändert
+
+  struct MowingPathSlicerSource {
+    slic3r_coverage_planner::Path path;
+    uint32_t path_index = 0;
+  };
+
+  struct MowingPathExecutionItem {
+    std::string area_id;
+    std::string area_digest;
+    std::string plan_id;
+    std::string path_id;
+
+    uint32_t order = 0;
+    uint8_t path_direction = PATH_DIRECTION_FORWARD;
+
+    // Mähstatus dieses Pfades:
+    //   20 = noch nicht bearbeitet
+    //   10 = in Arbeit
+    //   00 = fertig bearbeitet
+    uint8_t mow_status = MOW_STATUS_OPEN;
+
+    uint32_t current_pose_index = 0;
+    MowingPathSlicerSource slicer_source;
+  };
+
+  struct MowingExecutionPlan {
+    std::string area_id;
+    std::string area_digest;
+    std::string plan_id;
+
+    uint32_t current_order = 0;
+    std::string current_path_id;
+    std::string plan_file;
+
+    std::vector<MowingPathExecutionItem> paths;
+  };
+
+ private:
   // Progress
   bool mowerEnabled = false;
-  std::vector<slic3r_coverage_planner::Path> currentMowingPaths;
+  MowingExecutionPlan currentMowingPlan;
 
   ros::Time last_checkpoint;
   int currentMowingPath;
@@ -47,6 +93,21 @@ class MowingBehavior : public Behavior {
   int currentMowingPathIndex;
   std::string currentMowingPlanDigest;
   double currentMowingAngleIncrementSum;
+
+  void clear_current_mowing_plan();
+  void build_current_mowing_plan(const std::vector<slic3r_coverage_planner::Path>& slicer_paths,
+                                 const std::string& area_id,
+                                 const std::string& area_digest);
+  bool optimize_current_mowing_plan(const geometry_msgs::PoseStamped& current_pose);
+  void normalize_current_mowing_plan_orders();
+  void update_current_mowing_plan_progress();
+  void finish_current_mowing_plan_path();
+  void start_current_mowing_plan_path();
+  bool save_current_mowing_plan() const;
+  bool load_current_mowing_plan_snapshot(const std::string& plan_file,
+                                         const std::string& expected_area_id,
+                                         const std::string& expected_area_digest);
+  std::string make_plan_file_path(const std::string& plan_id) const;
 
   ros::Publisher mowing_progress_pub;
   ros::Publisher mowing_progress_status_pub;

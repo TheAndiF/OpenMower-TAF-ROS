@@ -62,6 +62,12 @@ void reversePath(slic3r_coverage_planner::Path& path) {
   recomputeOrientations(path);
 }
 
+struct OptimizerPath {
+  slic3r_coverage_planner::Path path;
+  int32_t source_index = 0;
+  bool reversed = false;
+};
+
 struct CandidateCost {
   std::size_t index = 0;
   bool reverse = false;
@@ -76,6 +82,12 @@ class PathOrderOptimizer {
   bool handle(mowing_path_order_optimizer::OptimizePaths::Request& req,
               mowing_path_order_optimizer::OptimizePaths::Response& res) {
     res.paths = req.paths;
+    res.path_indices.clear();
+    res.path_reversed.clear();
+    for (std::size_t i = 0; i < req.paths.size(); ++i) {
+      res.path_indices.push_back((req.path_indices.size() == req.paths.size()) ? req.path_indices[i] : static_cast<int32_t>(i));
+      res.path_reversed.push_back(false);
+    }
     res.success = true;
     res.used_optimization = false;
     res.used_fallback = false;
@@ -91,19 +103,28 @@ class PathOrderOptimizer {
     }
 
     try {
-      std::vector<slic3r_coverage_planner::Path> area_outlines;
-      std::vector<slic3r_coverage_planner::Path> fill_paths;
-      std::vector<slic3r_coverage_planner::Path> obstacle_outlines;
-      std::vector<slic3r_coverage_planner::Path> unknown_paths;
+      std::vector<OptimizerPath> input_paths;
+      input_paths.reserve(req.paths.size());
+      for (std::size_t i = 0; i < req.paths.size(); ++i) {
+        OptimizerPath item;
+        item.path = req.paths[i];
+        item.source_index = (req.path_indices.size() == req.paths.size()) ? req.path_indices[i] : static_cast<int32_t>(i);
+        input_paths.push_back(item);
+      }
 
-      splitPaths(req.paths, area_outlines, fill_paths, obstacle_outlines, unknown_paths);
+      std::vector<OptimizerPath> area_outlines;
+      std::vector<OptimizerPath> fill_paths;
+      std::vector<OptimizerPath> obstacle_outlines;
+      std::vector<OptimizerPath> unknown_paths;
+
+      splitPaths(input_paths, area_outlines, fill_paths, obstacle_outlines, unknown_paths);
 
       if (!unknown_paths.empty()) {
         ROS_WARN_STREAM("PathOrderOptimizer: " << unknown_paths.size()
                                                 << " paths have unknown path_type; preserving them before fills.");
       }
 
-      std::vector<slic3r_coverage_planner::Path> ordered;
+      std::vector<OptimizerPath> ordered;
       appendAll(ordered, area_outlines);
       appendAll(ordered, unknown_paths);
       if (!req.move_obstacles_to_end) {
@@ -111,7 +132,7 @@ class PathOrderOptimizer {
         appendAll(ordered, obstacle_outlines);
       }
 
-      std::vector<slic3r_coverage_planner::Path> ordered_fill_paths = fill_paths;
+      std::vector<OptimizerPath> ordered_fill_paths = fill_paths;
       if (req.optimize_fill_order && fill_paths.size() > 1) {
         if (req.max_fill_paths > 0 && fill_paths.size() > req.max_fill_paths) {
           ROS_WARN_STREAM("PathOrderOptimizer: fill path count " << fill_paths.size()
@@ -120,7 +141,7 @@ class PathOrderOptimizer {
           res.used_fallback = true;
         } else {
           geometry_msgs::PoseStamped current = req.current_pose;
-          if (!ordered.empty() && hasUsablePath(ordered.back())) current = lastPose(ordered.back());
+          if (!ordered.empty() && hasUsablePath(ordered.back().path)) current = lastPose(ordered.back().path);
           bool used_fallback = res.used_fallback;
           ordered_fill_paths = optimizeFillPaths(fill_paths, current, req, used_fallback);
           res.used_fallback = used_fallback;
@@ -133,7 +154,14 @@ class PathOrderOptimizer {
         appendAll(ordered, obstacle_outlines);
       }
 
-      res.paths = ordered;
+      res.paths.clear();
+      res.path_indices.clear();
+      res.path_reversed.clear();
+      for (const auto& item : ordered) {
+        res.paths.push_back(item.path);
+        res.path_indices.push_back(item.source_index);
+        res.path_reversed.push_back(item.reversed);
+      }
       std::ostringstream msg;
       msg << "optimized path order: area_outlines=" << area_outlines.size() << ", fill_paths=" << fill_paths.size()
           << ", obstacle_outlines=" << obstacle_outlines.size() << ", unknown=" << unknown_paths.size();
@@ -143,6 +171,12 @@ class PathOrderOptimizer {
     } catch (const std::exception& e) {
       ROS_ERROR_STREAM("PathOrderOptimizer: optimization failed: " << e.what());
       res.paths = req.paths;
+      res.path_indices.clear();
+      res.path_reversed.clear();
+      for (std::size_t i = 0; i < req.paths.size(); ++i) {
+        res.path_indices.push_back((req.path_indices.size() == req.paths.size()) ? req.path_indices[i] : static_cast<int32_t>(i));
+        res.path_reversed.push_back(false);
+      }
       res.success = req.fail_open;
       res.used_optimization = false;
       res.used_fallback = true;
@@ -156,54 +190,54 @@ class PathOrderOptimizer {
   std::string planner_action_name_;
   std::unique_ptr<actionlib::SimpleActionClient<mbf_msgs::GetPathAction>> get_path_client_;
 
-  void appendAll(std::vector<slic3r_coverage_planner::Path>& target,
-                 const std::vector<slic3r_coverage_planner::Path>& source) const {
+  void appendAll(std::vector<OptimizerPath>& target,
+                 const std::vector<OptimizerPath>& source) const {
     target.insert(target.end(), source.begin(), source.end());
   }
 
-  void splitPaths(const std::vector<slic3r_coverage_planner::Path>& paths,
-                  std::vector<slic3r_coverage_planner::Path>& area_outlines,
-                  std::vector<slic3r_coverage_planner::Path>& fill_paths,
-                  std::vector<slic3r_coverage_planner::Path>& obstacle_outlines,
-                  std::vector<slic3r_coverage_planner::Path>& unknown_paths) const {
-    for (const auto& path : paths) {
-      switch (path.path_type) {
+  void splitPaths(const std::vector<OptimizerPath>& paths,
+                  std::vector<OptimizerPath>& area_outlines,
+                  std::vector<OptimizerPath>& fill_paths,
+                  std::vector<OptimizerPath>& obstacle_outlines,
+                  std::vector<OptimizerPath>& unknown_paths) const {
+    for (const auto& item : paths) {
+      switch (item.path.path_type) {
         case slic3r_coverage_planner::Path::TYPE_FILL:
-          fill_paths.push_back(path);
+          fill_paths.push_back(item);
           break;
         case slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE:
-          area_outlines.push_back(path);
+          area_outlines.push_back(item);
           break;
         case slic3r_coverage_planner::Path::TYPE_OBSTACLE_OUTLINE:
-          obstacle_outlines.push_back(path);
+          obstacle_outlines.push_back(item);
           break;
         default:
           // Backward compatibility fallback for paths produced by older code.
-          if (path.is_outline) {
-            unknown_paths.push_back(path);
+          if (item.path.is_outline) {
+            unknown_paths.push_back(item);
           } else {
-            fill_paths.push_back(path);
+            fill_paths.push_back(item);
           }
           break;
       }
     }
   }
 
-  std::vector<slic3r_coverage_planner::Path> optimizeFillPaths(
-      const std::vector<slic3r_coverage_planner::Path>& fill_paths,
+  std::vector<OptimizerPath> optimizeFillPaths(
+      const std::vector<OptimizerPath>& fill_paths,
       geometry_msgs::PoseStamped current,
       const mowing_path_order_optimizer::OptimizePaths::Request& req,
       bool& used_fallback) {
-    std::vector<slic3r_coverage_planner::Path> remaining;
+    std::vector<OptimizerPath> remaining;
     for (const auto& p : fill_paths) {
-      if (hasUsablePath(p)) {
+      if (hasUsablePath(p.path)) {
         remaining.push_back(p);
       } else {
         used_fallback = true;
       }
     }
 
-    std::vector<slic3r_coverage_planner::Path> ordered;
+    std::vector<OptimizerPath> ordered;
     ordered.reserve(fill_paths.size());
 
     while (!remaining.empty()) {
@@ -221,20 +255,23 @@ class PathOrderOptimizer {
       }
 
       auto selected = remaining[best.index];
-      if (best.reverse && req.allow_reverse) reversePath(selected);
-      current = lastPose(selected);
+      if (best.reverse && req.allow_reverse) {
+        reversePath(selected.path);
+        selected.reversed = !selected.reversed;
+      }
+      current = lastPose(selected.path);
       ordered.push_back(selected);
       remaining.erase(remaining.begin() + best.index);
     }
 
     // Preserve empty paths in original order at the end, if any existed.
     for (const auto& p : fill_paths) {
-      if (!hasUsablePath(p)) ordered.push_back(p);
+      if (!hasUsablePath(p.path)) ordered.push_back(p);
     }
     return ordered;
   }
 
-  CandidateCost chooseBestCandidate(const std::vector<slic3r_coverage_planner::Path>& remaining,
+  CandidateCost chooseBestCandidate(const std::vector<OptimizerPath>& remaining,
                                     const geometry_msgs::PoseStamped& current,
                                     const mowing_path_order_optimizer::OptimizePaths::Request& req,
                                     bool& used_fallback) {
@@ -244,14 +281,14 @@ class PathOrderOptimizer {
       CandidateCost start;
       start.index = i;
       start.reverse = false;
-      start.cost = dist2d(current, firstPose(remaining[i]));
+      start.cost = dist2d(current, firstPose(remaining[i].path));
       euclidean_candidates.push_back(start);
 
       if (req.allow_reverse) {
         CandidateCost end;
         end.index = i;
         end.reverse = true;
-        end.cost = dist2d(current, lastPose(remaining[i]));
+        end.cost = dist2d(current, lastPose(remaining[i].path));
         euclidean_candidates.push_back(end);
       }
     }
@@ -271,7 +308,7 @@ class PathOrderOptimizer {
     CandidateCost best;
     for (std::size_t i = 0; i < check_count; ++i) {
       CandidateCost candidate = euclidean_candidates[i];
-      const auto& path = remaining[candidate.index];
+      const auto& path = remaining[candidate.index].path;
       const auto goal = candidate.reverse ? lastPose(path) : firstPose(path);
       double planner_cost = std::numeric_limits<double>::infinity();
       if (getPlannerCost(current, goal, req, planner_cost)) {

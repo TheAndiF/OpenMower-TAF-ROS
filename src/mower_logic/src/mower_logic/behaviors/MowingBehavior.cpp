@@ -22,8 +22,13 @@
 #include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
 #include <algorithm>
+#include <cstdio>
+#include <ctime>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
 
@@ -55,20 +60,96 @@ MowingBehavior MowingBehavior::INSTANCE;
 using json = nlohmann::json;
 
 namespace {
-std::string make_path_id(const std::string& area_id, int path_index) {
+std::string make_path_id(int path_index) {
   std::ostringstream ss;
-  ss << area_id << "_path_" << std::setw(3) << std::setfill('0') << path_index;
+  ss << "pa_" << std::setw(6) << std::setfill('0') << path_index;
   return ss.str();
 }
 
-json path_points_to_json(const std::vector<geometry_msgs::PoseStamped>& poses, std::size_t begin, std::size_t end) {
+std::string make_plan_id() {
+  const std::time_t now = std::time(nullptr);
+  std::tm tm{};
+  localtime_r(&now, &tm);
+  std::ostringstream ss;
+  ss << "mp_" << std::put_time(&tm, "%Y%m%d_%H%M%S");
+  return ss.str();
+}
+
+void ensure_directory(const std::string& path) {
+  mkdir(path.c_str(), 0755);
+}
+
+void update_hash_with_polygon(CryptoPP::SHA256& hash, const geometry_msgs::Polygon& polygon) {
+  for (const auto& point : polygon.points) {
+    hash.Update(reinterpret_cast<const byte*>(&point.x), sizeof(point.x));
+    hash.Update(reinterpret_cast<const byte*>(&point.y), sizeof(point.y));
+    hash.Update(reinterpret_cast<const byte*>(&point.z), sizeof(point.z));
+  }
+}
+
+std::string compute_area_digest(const mower_map::MapArea& area) {
+  CryptoPP::SHA256 hash;
+  byte digest[CryptoPP::SHA256::DIGESTSIZE];
+  update_hash_with_polygon(hash, area.area);
+  for (const auto& obstacle : area.obstacles) update_hash_with_polygon(hash, obstacle);
+  hash.Final(digest);
+
+  std::string result;
+  CryptoPP::HexEncoder encoder;
+  encoder.Attach(new CryptoPP::StringSink(result));
+  encoder.Put(digest, sizeof(digest));
+  encoder.MessageEnd();
+  return "ad_" + result.substr(0, 16);
+}
+
+std::size_t execution_pose_index(const MowingBehavior::MowingPathExecutionItem& item, std::size_t execution_index) {
+  const auto& poses = item.slicer_source.path.path.poses;
+  if (poses.empty()) return 0;
+  execution_index = std::min(execution_index, poses.size() - 1);
+  if (item.path_direction == MowingBehavior::PATH_DIRECTION_REVERSE) {
+    return poses.size() - 1 - execution_index;
+  }
+  return execution_index;
+}
+
+const geometry_msgs::PoseStamped& execution_pose(const MowingBehavior::MowingPathExecutionItem& item,
+                                                 std::size_t execution_index) {
+  return item.slicer_source.path.path.poses[execution_pose_index(item, execution_index)];
+}
+
+nav_msgs::Path execution_path_from_index(const MowingBehavior::MowingPathExecutionItem& item,
+                                         std::size_t execution_start_index) {
+  nav_msgs::Path path;
+  const auto& source = item.slicer_source.path.path;
+  path.header = source.header;
+  const std::size_t size = source.poses.size();
+  execution_start_index = std::min(execution_start_index, size);
+  for (std::size_t i = execution_start_index; i < size; ++i) {
+    path.poses.push_back(execution_pose(item, i));
+  }
+  return path;
+}
+
+json path_points_to_json(const MowingBehavior::MowingPathExecutionItem& item, std::size_t begin, std::size_t end) {
   json points = json::array();
+  const auto& poses = item.slicer_source.path.path.poses;
   end = std::min(end, poses.size());
   begin = std::min(begin, end);
   for (std::size_t i = begin; i < end; ++i) {
-    points.push_back({{"x", poses[i].pose.position.x}, {"y", poses[i].pose.position.y}});
+    const auto& pose = execution_pose(item, i);
+    points.push_back({{"x", pose.pose.position.x}, {"y", pose.pose.position.y}});
   }
   return points;
+}
+
+json pose_to_json(const geometry_msgs::PoseStamped& pose) {
+  return {{"x", pose.pose.position.x},
+          {"y", pose.pose.position.y},
+          {"z", pose.pose.position.z},
+          {"qx", pose.pose.orientation.x},
+          {"qy", pose.pose.orientation.y},
+          {"qz", pose.pose.orientation.z},
+          {"qw", pose.pose.orientation.w}};
 }
 }
 
@@ -79,11 +160,313 @@ std::string MowingBehavior::state_name() {
   return "MOWING";
 }
 
+
+void MowingBehavior::clear_current_mowing_plan() {
+  currentMowingPlan.paths.clear();
+  currentMowingPlan.area_id.clear();
+  currentMowingPlan.area_digest.clear();
+  currentMowingPlan.plan_id.clear();
+  currentMowingPlan.current_order = 0;
+  currentMowingPlan.current_path_id.clear();
+  currentMowingPlan.plan_file.clear();
+}
+
+std::string MowingBehavior::make_plan_file_path(const std::string& plan_id) const {
+  return std::string("/home/openmower/mowing_plans/") + plan_id + ".json";
+}
+
+void MowingBehavior::normalize_current_mowing_plan_orders() {
+  for (std::size_t i = 0; i < currentMowingPlan.paths.size(); ++i) {
+    currentMowingPlan.paths[i].order = static_cast<uint32_t>(i);
+  }
+}
+
+void MowingBehavior::start_current_mowing_plan_path() {
+  if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPlan.paths.size())) {
+    auto& item = currentMowingPlan.paths[currentMowingPath];
+    item.mow_status = MOW_STATUS_IN_PROGRESS;
+    item.current_pose_index = static_cast<uint32_t>(std::max(currentMowingPathIndex, 0));
+    currentMowingPlan.current_order = item.order;
+    currentMowingPlan.current_path_id = item.path_id;
+  } else {
+    currentMowingPlan.current_order = static_cast<uint32_t>(std::max(currentMowingPath, 0));
+    currentMowingPlan.current_path_id.clear();
+  }
+}
+
+void MowingBehavior::update_current_mowing_plan_progress() {
+  if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPlan.paths.size())) {
+    auto& item = currentMowingPlan.paths[currentMowingPath];
+    item.mow_status = MOW_STATUS_IN_PROGRESS;
+    item.current_pose_index = static_cast<uint32_t>(std::max(currentMowingPathIndex, 0));
+    currentMowingPlan.current_order = item.order;
+    currentMowingPlan.current_path_id = item.path_id;
+  }
+}
+
+void MowingBehavior::finish_current_mowing_plan_path() {
+  if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPlan.paths.size())) {
+    auto& item = currentMowingPlan.paths[currentMowingPath];
+    item.mow_status = MOW_STATUS_DONE;
+    const auto pose_count = item.slicer_source.path.path.poses.size();
+    item.current_pose_index = pose_count == 0 ? 0 : static_cast<uint32_t>(pose_count - 1);
+  }
+}
+
+void MowingBehavior::build_current_mowing_plan(
+    const std::vector<slic3r_coverage_planner::Path>& slicer_paths,
+    const std::string& area_id,
+    const std::string& area_digest) {
+  clear_current_mowing_plan();
+  currentMowingPlan.area_id = area_id;
+  currentMowingPlan.area_digest = area_digest;
+  currentMowingPlan.plan_id = make_plan_id();
+  currentMowingPlan.plan_file = make_plan_file_path(currentMowingPlan.plan_id);
+
+  currentMowingPlan.paths.reserve(slicer_paths.size());
+  for (std::size_t i = 0; i < slicer_paths.size(); ++i) {
+    MowingPathExecutionItem item;
+    item.area_id = currentMowingPlan.area_id;
+    item.area_digest = currentMowingPlan.area_digest;
+    item.plan_id = currentMowingPlan.plan_id;
+    item.path_id = make_path_id(static_cast<int>(i));
+    item.order = static_cast<uint32_t>(i);
+    item.path_direction = PATH_DIRECTION_FORWARD;
+    // Mow status:
+    //   20 = noch nicht bearbeitet
+    //   10 = in Arbeit
+    //   00 = fertig bearbeitet
+    item.mow_status = MOW_STATUS_OPEN;
+    item.current_pose_index = 0;
+    item.slicer_source.path = slicer_paths[i];
+    item.slicer_source.path_index = static_cast<uint32_t>(i);
+    currentMowingPlan.paths.push_back(item);
+  }
+
+  currentMowingPath = 0;
+  currentMowingPathIndex = 0;
+  start_current_mowing_plan_path();
+}
+
+bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamped& current_pose) {
+  if (currentMowingPlan.paths.empty()) return true;
+
+  mowing_path_order_optimizer::OptimizePaths optimizeSrv;
+  for (const auto& item : currentMowingPlan.paths) {
+    optimizeSrv.request.paths.push_back(item.slicer_source.path);
+    optimizeSrv.request.path_indices.push_back(static_cast<int32_t>(item.slicer_source.path_index));
+  }
+  optimizeSrv.request.enabled = config.path_order_optimizer_enabled;
+  optimizeSrv.request.optimize_fill_order = config.path_order_optimizer_optimize_fill_order;
+  optimizeSrv.request.move_obstacles_to_end = config.path_order_optimizer_move_obstacles_to_end;
+  optimizeSrv.request.allow_reverse = config.path_order_optimizer_allow_reverse;
+  optimizeSrv.request.cost_mode = config.path_order_optimizer_cost_mode;
+  optimizeSrv.request.max_fill_paths = config.path_order_optimizer_max_fill_paths;
+  optimizeSrv.request.candidate_limit = config.path_order_optimizer_candidate_limit;
+  optimizeSrv.request.planner_timeout = config.path_order_optimizer_planner_timeout;
+  optimizeSrv.request.fallback_to_euclidean = config.path_order_optimizer_fallback_to_euclidean;
+  optimizeSrv.request.fallback_to_slicer_order = config.path_order_optimizer_fallback_to_slicer_order;
+  optimizeSrv.request.fail_open = config.path_order_optimizer_fail_open;
+  optimizeSrv.request.planner_action = config.path_order_optimizer_planner_action;
+  optimizeSrv.request.planner_name = config.path_order_optimizer_planner_name;
+  optimizeSrv.request.current_pose = current_pose;
+
+  if (pathOrderOptimizerClient.call(optimizeSrv)) {
+    if (!optimizeSrv.response.success) {
+      if (config.path_order_optimizer_fail_open) {
+        ROS_WARN_STREAM("MowingBehavior: path order optimizer returned failure, using slicer order: "
+                        << optimizeSrv.response.message);
+        return true;
+      }
+      ROS_ERROR_STREAM("MowingBehavior: path order optimizer returned failure: " << optimizeSrv.response.message);
+      return false;
+    }
+
+    std::vector<MowingPathExecutionItem> reordered;
+    reordered.reserve(currentMowingPlan.paths.size());
+    for (std::size_t i = 0; i < optimizeSrv.response.path_indices.size(); ++i) {
+      const int32_t source_index = optimizeSrv.response.path_indices[i];
+      auto it = std::find_if(currentMowingPlan.paths.begin(), currentMowingPlan.paths.end(),
+                             [source_index](const MowingPathExecutionItem& item) {
+                               return static_cast<int32_t>(item.slicer_source.path_index) == source_index;
+                             });
+      if (it == currentMowingPlan.paths.end()) {
+        ROS_WARN_STREAM("MowingBehavior: optimizer returned unknown slicer path index " << source_index
+                        << "; keeping slicer order");
+        return true;
+      }
+      MowingPathExecutionItem item = *it;
+      item.path_direction = (i < optimizeSrv.response.path_reversed.size() && optimizeSrv.response.path_reversed[i])
+                                ? PATH_DIRECTION_REVERSE
+                                : PATH_DIRECTION_FORWARD;
+      item.mow_status = MOW_STATUS_OPEN;
+      item.current_pose_index = 0;
+      reordered.push_back(item);
+    }
+
+    if (reordered.size() == currentMowingPlan.paths.size()) {
+      currentMowingPlan.paths = reordered;
+      normalize_current_mowing_plan_orders();
+      currentMowingPath = 0;
+      currentMowingPathIndex = 0;
+      start_current_mowing_plan_path();
+    }
+    ROS_INFO_STREAM("MowingBehavior: path order optimizer response: " << optimizeSrv.response.message);
+    return true;
+  }
+
+  if (config.path_order_optimizer_enabled && !config.path_order_optimizer_fail_open) {
+    ROS_ERROR_STREAM("MowingBehavior: path order optimizer unavailable and fail-open is disabled");
+    return false;
+  }
+  if (config.path_order_optimizer_enabled) {
+    ROS_WARN_STREAM("MowingBehavior: path order optimizer unavailable, using slicer order");
+  }
+  return true;
+}
+
+bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_file,
+                                                        const std::string& expected_area_id,
+                                                        const std::string& expected_area_digest) {
+  std::ifstream in(plan_file);
+  if (!in.good()) return false;
+
+  json root;
+  try {
+    in >> root;
+  } catch (const std::exception& e) {
+    ROS_WARN_STREAM("MowingBehavior: Could not parse mowing plan snapshot " << plan_file << ": " << e.what());
+    return false;
+  }
+
+  if (root.value("area_id", std::string()) != expected_area_id ||
+      root.value("area_digest", std::string()) != expected_area_digest) {
+    ROS_INFO_STREAM("MowingBehavior: Saved mowing plan snapshot does not match current area/digest; ignoring "
+                    << plan_file);
+    return false;
+  }
+
+  MowingExecutionPlan loaded;
+  loaded.area_id = root.value("area_id", std::string());
+  loaded.area_digest = root.value("area_digest", std::string());
+  loaded.plan_id = root.value("plan_id", std::string());
+  loaded.plan_file = plan_file;
+  loaded.current_order = root.value("current_order", 0);
+  loaded.current_path_id = root.value("current_path_id", std::string());
+
+  if (!root.contains("paths") || !root["paths"].is_array()) return false;
+
+  for (const auto& path_json : root["paths"]) {
+    MowingPathExecutionItem item;
+    item.area_id = path_json.value("area_id", loaded.area_id);
+    item.area_digest = path_json.value("area_digest", loaded.area_digest);
+    item.plan_id = path_json.value("plan_id", loaded.plan_id);
+    item.path_id = path_json.value("path_id", std::string());
+    item.order = path_json.value("order", 0);
+    item.path_direction = path_json.value("path_direction", PATH_DIRECTION_FORWARD);
+    item.mow_status = MOW_STATUS_OPEN;
+    item.current_pose_index = 0;
+
+    const auto& source = path_json["slicer_source"];
+    item.slicer_source.path_index = source.value("path_index", 0);
+    item.slicer_source.path.path_type = source.value("path_type", 0);
+    item.slicer_source.path.is_outline = source.value("is_outline", 0);
+    item.slicer_source.path.path.header.frame_id = source.value("frame_id", std::string("map"));
+
+    if (source.contains("poses") && source["poses"].is_array()) {
+      for (const auto& pose_json : source["poses"]) {
+        geometry_msgs::PoseStamped pose;
+        pose.header = item.slicer_source.path.path.header;
+        pose.pose.position.x = pose_json.value("x", 0.0);
+        pose.pose.position.y = pose_json.value("y", 0.0);
+        pose.pose.position.z = pose_json.value("z", 0.0);
+        pose.pose.orientation.x = pose_json.value("qx", 0.0);
+        pose.pose.orientation.y = pose_json.value("qy", 0.0);
+        pose.pose.orientation.z = pose_json.value("qz", 0.0);
+        pose.pose.orientation.w = pose_json.value("qw", 1.0);
+        item.slicer_source.path.path.poses.push_back(pose);
+      }
+    }
+    loaded.paths.push_back(item);
+  }
+
+  if (loaded.paths.empty()) return false;
+  currentMowingPlan = loaded;
+
+  for (std::size_t i = 0; i < currentMowingPlan.paths.size(); ++i) {
+    auto& item = currentMowingPlan.paths[i];
+    if (static_cast<int>(i) < currentMowingPath) {
+      item.mow_status = MOW_STATUS_DONE;
+      const auto pose_count = item.slicer_source.path.path.poses.size();
+      item.current_pose_index = pose_count == 0 ? 0 : static_cast<uint32_t>(pose_count - 1);
+    } else if (static_cast<int>(i) == currentMowingPath) {
+      item.mow_status = MOW_STATUS_IN_PROGRESS;
+      item.current_pose_index = static_cast<uint32_t>(std::max(currentMowingPathIndex, 0));
+    } else {
+      item.mow_status = MOW_STATUS_OPEN;
+      item.current_pose_index = 0;
+    }
+  }
+  start_current_mowing_plan_path();
+  ROS_INFO_STREAM("MowingBehavior: Loaded mowing plan snapshot: " << plan_file);
+  return true;
+}
+
+bool MowingBehavior::save_current_mowing_plan() const {
+  if (currentMowingPlan.plan_id.empty() || currentMowingPlan.plan_file.empty()) return false;
+  ensure_directory("/home/openmower");
+  ensure_directory("/home/openmower/mowing_plans");
+
+  json root;
+  root["area_id"] = currentMowingPlan.area_id;
+  root["area_digest"] = currentMowingPlan.area_digest;
+  root["plan_id"] = currentMowingPlan.plan_id;
+  root["current_order"] = currentMowingPlan.current_order;
+  root["current_path_id"] = currentMowingPlan.current_path_id;
+  root["paths"] = json::array();
+
+  for (const auto& item : currentMowingPlan.paths) {
+    json path_json;
+    path_json["area_id"] = item.area_id;
+    path_json["area_digest"] = item.area_digest;
+    path_json["plan_id"] = item.plan_id;
+    path_json["path_id"] = item.path_id;
+    path_json["order"] = item.order;
+    path_json["path_direction"] = static_cast<int>(item.path_direction);
+    path_json["mow_status"] = static_cast<int>(item.mow_status);
+    path_json["current_pose_index"] = item.current_pose_index;
+    path_json["slicer_source"]["path_index"] = item.slicer_source.path_index;
+    path_json["slicer_source"]["path_type"] = static_cast<int>(item.slicer_source.path.path_type);
+    path_json["slicer_source"]["is_outline"] = static_cast<int>(item.slicer_source.path.is_outline);
+    path_json["slicer_source"]["frame_id"] = item.slicer_source.path.path.header.frame_id;
+    path_json["slicer_source"]["poses"] = json::array();
+    for (const auto& pose : item.slicer_source.path.path.poses) {
+      path_json["slicer_source"]["poses"].push_back(pose_to_json(pose));
+    }
+    root["paths"].push_back(path_json);
+  }
+
+  const std::string tmp = currentMowingPlan.plan_file + ".tmp";
+  std::ofstream out(tmp);
+  if (!out.good()) {
+    ROS_WARN_STREAM("MowingBehavior: Could not open mowing plan snapshot for writing: " << tmp);
+    return false;
+  }
+  out << root.dump(2);
+  out.close();
+  if (std::rename(tmp.c_str(), currentMowingPlan.plan_file.c_str()) != 0) {
+    ROS_WARN_STREAM("MowingBehavior: Could not finalize mowing plan snapshot: " << currentMowingPlan.plan_file);
+    return false;
+  }
+  ROS_INFO_STREAM("MowingBehavior: Saved mowing plan snapshot: " << currentMowingPlan.plan_file);
+  return true;
+}
+
 Behavior* MowingBehavior::execute() {
   shared_state->active_semiautomatic_task = true;
 
   while (ros::ok() && !aborted) {
-    if (currentMowingPaths.empty() && !create_mowing_plan(currentMowingArea)) {
+    if (currentMowingPlan.paths.empty() && !create_mowing_plan(currentMowingArea)) {
       ROS_INFO_STREAM("MowingBehavior: Could not create mowing plan, docking");
       // Start again from first area next time.
       reset();
@@ -92,7 +475,7 @@ Behavior* MowingBehavior::execute() {
     }
 
     // No plan will be created if the area is skipped
-    if (currentMowingPaths.empty()) {
+    if (currentMowingPlan.paths.empty()) {
       currentMowingArea++;
       currentMowingPath = 0;
       currentMowingPathIndex = 0;
@@ -106,7 +489,7 @@ Behavior* MowingBehavior::execute() {
       // skip to next area if current
       ROS_INFO_STREAM("MowingBehavior: Executing mowing plan - finished");
       currentMowingArea++;
-      currentMowingPaths.clear();
+      clear_current_mowing_plan();
       currentMowingPath = 0;
       currentMowingPathIndex = 0;
     }
@@ -140,7 +523,7 @@ void MowingBehavior::exit() {
 }
 
 void MowingBehavior::reset() {
-  currentMowingPaths.clear();
+  clear_current_mowing_plan();
   currentMowingArea = 0;
   currentAreaId.clear();
   checkpointAreaId.clear();
@@ -179,11 +562,23 @@ void MowingBehavior::update_actions() {
 
 bool MowingBehavior::create_mowing_plan(int area_index) {
   ROS_INFO_STREAM("MowingBehavior: Creating mowing plan for area: " << area_index);
+  // Preserve checkpoint resume metadata before clearing any stale in-RAM path list.
+  const std::string checkpoint_plan_file = currentMowingPlan.plan_file;
+  const std::string checkpoint_plan_id = currentMowingPlan.plan_id;
+  const std::string checkpoint_plan_area_id = currentMowingPlan.area_id;
+  const std::string checkpoint_plan_area_digest = currentMowingPlan.area_digest;
+  const int checkpoint_current_path = currentMowingPath;
+  const int checkpoint_current_path_index = currentMowingPathIndex;
+
   // Delete old plan and progress.
-  currentMowingPaths.clear();
+  clear_current_mowing_plan();
+  currentMowingPlan.plan_file = checkpoint_plan_file;
+  currentMowingPlan.plan_id = checkpoint_plan_id;
+  currentMowingPlan.area_id = checkpoint_plan_area_id;
+  currentMowingPlan.area_digest = checkpoint_plan_area_digest;
   currentAreaId.clear();
-  currentMowingPath = 0;
-  currentMowingPathIndex = 0;
+  currentMowingPath = checkpoint_current_path;
+  currentMowingPathIndex = checkpoint_current_path_index;
   publish_mowing_progress(true);
 
   // get the mowing area
@@ -202,6 +597,17 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
     currentAreaId.clear();
     checkpointAreaId.clear();
     ROS_INFO_STREAM("MowingBehavior: Skipping inactive mowing area");
+    return true;
+  }
+
+  const std::string area_digest = compute_area_digest(mapSrv.response.area);
+
+  // If checkpoint.bag points to a saved currentMowingPlan snapshot for this unchanged area,
+  // load it directly into RAM and avoid re-slicing.
+  if (!checkpoint_plan_file.empty() && checkpoint_plan_area_id == currentAreaId &&
+      checkpoint_plan_area_digest == area_digest &&
+      load_current_mowing_plan_snapshot(checkpoint_plan_file, currentAreaId, area_digest)) {
+    publish_mowing_progress(true);
     return true;
   }
 
@@ -265,46 +671,24 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
     return false;
   }
 
-  currentMowingPaths = pathSrv.response.paths;
+  build_current_mowing_plan(pathSrv.response.paths, currentAreaId, area_digest);
 
-  // Optional stage-3 path order optimization. The optimizer is deliberately fail-open:
-  // if it is disabled, unavailable or fails, the original slicer order remains active.
-  mowing_path_order_optimizer::OptimizePaths optimizeSrv;
-  optimizeSrv.request.paths = pathSrv.response.paths;
-  optimizeSrv.request.enabled = config.path_order_optimizer_enabled;
-  optimizeSrv.request.optimize_fill_order = config.path_order_optimizer_optimize_fill_order;
-  optimizeSrv.request.move_obstacles_to_end = config.path_order_optimizer_move_obstacles_to_end;
-  optimizeSrv.request.allow_reverse = config.path_order_optimizer_allow_reverse;
-  optimizeSrv.request.cost_mode = config.path_order_optimizer_cost_mode;
-  optimizeSrv.request.max_fill_paths = config.path_order_optimizer_max_fill_paths;
-  optimizeSrv.request.candidate_limit = config.path_order_optimizer_candidate_limit;
-  optimizeSrv.request.planner_timeout = config.path_order_optimizer_planner_timeout;
-  optimizeSrv.request.fallback_to_euclidean = config.path_order_optimizer_fallback_to_euclidean;
-  optimizeSrv.request.fallback_to_slicer_order = config.path_order_optimizer_fallback_to_slicer_order;
-  optimizeSrv.request.fail_open = config.path_order_optimizer_fail_open;
-  optimizeSrv.request.planner_action = config.path_order_optimizer_planner_action;
-  optimizeSrv.request.planner_name = config.path_order_optimizer_planner_name;
-  optimizeSrv.request.current_pose.header.frame_id = "map";
-  optimizeSrv.request.current_pose.header.stamp = ros::Time::now();
-  optimizeSrv.request.current_pose.pose = getPose().pose.pose;
+  geometry_msgs::PoseStamped current_pose;
+  current_pose.header.frame_id = "map";
+  current_pose.header.stamp = ros::Time::now();
+  current_pose.pose = getPose().pose.pose;
 
-  if (pathOrderOptimizerClient.call(optimizeSrv)) {
-    if (optimizeSrv.response.success) {
-      currentMowingPaths = optimizeSrv.response.paths;
-      ROS_INFO_STREAM("MowingBehavior: path order optimizer response: " << optimizeSrv.response.message);
-    } else if (config.path_order_optimizer_fail_open) {
-      ROS_WARN_STREAM("MowingBehavior: path order optimizer returned failure, using slicer order: "
-                      << optimizeSrv.response.message);
-    } else {
-      ROS_ERROR_STREAM("MowingBehavior: path order optimizer returned failure: " << optimizeSrv.response.message);
-      return false;
-    }
-  } else if (config.path_order_optimizer_enabled && !config.path_order_optimizer_fail_open) {
-    ROS_ERROR_STREAM("MowingBehavior: path order optimizer unavailable and fail-open is disabled");
+  // Optional path order optimization now operates on the currentMowingPlan identity layer.
+  // It may change order/path_direction, but slicer_source.path stays unchanged.
+  if (!optimize_current_mowing_plan(current_pose)) {
     return false;
-  } else if (config.path_order_optimizer_enabled) {
-    ROS_WARN_STREAM("MowingBehavior: path order optimizer unavailable, using slicer order");
   }
+
+  save_current_mowing_plan();
+
+  // Re-apply the checkpoint position after build/optional POO reset the plan to the first path.
+  currentMowingPath = checkpoint_current_path;
+  currentMowingPathIndex = checkpoint_current_path_index;
 
   publish_mowing_progress(true);
 
@@ -312,8 +696,10 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   // TODO: move to slic3r_coverage_planner
   CryptoPP::SHA256 hash;
   byte digest[CryptoPP::SHA256::DIGESTSIZE];
-  for (const auto& path : currentMowingPaths) {
-    for (const auto& pose_stamped : path.path.poses) {
+  for (const auto& item : currentMowingPlan.paths) {
+    hash.Update(reinterpret_cast<const byte*>(&item.slicer_source.path_index), sizeof(item.slicer_source.path_index));
+    hash.Update(reinterpret_cast<const byte*>(&item.path_direction), sizeof(item.path_direction));
+    for (const auto& pose_stamped : item.slicer_source.path.path.poses) {
       hash.Update(reinterpret_cast<const byte*>(&pose_stamped.pose), sizeof(geometry_msgs::Pose));
     }
   }
@@ -336,6 +722,22 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
     currentMowingPath = 0;
     currentMowingPathIndex = 0;
   }
+
+  for (std::size_t i = 0; i < currentMowingPlan.paths.size(); ++i) {
+    auto& item = currentMowingPlan.paths[i];
+    if (static_cast<int>(i) < currentMowingPath) {
+      item.mow_status = MOW_STATUS_DONE;
+      const auto pose_count = item.slicer_source.path.path.poses.size();
+      item.current_pose_index = pose_count == 0 ? 0 : static_cast<uint32_t>(pose_count - 1);
+    } else if (static_cast<int>(i) == currentMowingPath) {
+      item.mow_status = MOW_STATUS_IN_PROGRESS;
+      item.current_pose_index = static_cast<uint32_t>(std::max(currentMowingPathIndex, 0));
+    } else {
+      item.mow_status = MOW_STATUS_OPEN;
+      item.current_pose_index = 0;
+    }
+  }
+  start_current_mowing_plan_path();
 
   publish_mowing_progress(true);
   return true;
@@ -372,7 +774,7 @@ bool MowingBehavior::execute_mowing_plan() {
   ros::Time paused_time(0.0);
 
   // loop through all mowingPaths to execute the plan fully.
-  while (currentMowingPath < currentMowingPaths.size() && ros::ok() && !aborted) {
+  while (currentMowingPath < currentMowingPlan.paths.size() && ros::ok() && !aborted) {
     ////////////////////////////////////////////////
     // PAUSE HANDLING
     ////////////////////////////////////////////////
@@ -417,14 +819,18 @@ bool MowingBehavior::execute_mowing_plan() {
       update_actions();
     }
 
-    auto& path = currentMowingPaths[currentMowingPath];
+    auto& item = currentMowingPlan.paths[currentMowingPath];
+    auto& path = item.slicer_source.path;
+    start_current_mowing_plan_path();
     ROS_INFO_STREAM("MowingBehavior: Path segment length: " << path.path.poses.size() << " poses.");
 
     // Check if path is empty. If so, directly skip it
-    if (currentMowingPathIndex >= path.path.poses.size()) {
+    if (currentMowingPathIndex >= static_cast<int>(path.path.poses.size())) {
       ROS_INFO_STREAM("MowingBehavior: Skipping empty path.");
+      finish_current_mowing_plan_path();
       currentMowingPath++;
       currentMowingPathIndex = 0;
+      start_current_mowing_plan_path();
       continue;
     }
 
@@ -439,13 +845,13 @@ bool MowingBehavior::execute_mowing_plan() {
       ROS_INFO_STREAM("MowingBehavior: (FIRST POINT)  Moving to path segment starting point");
       if (path.is_outline && getConfig().add_fake_obstacle) {
         mower_map::SetNavPointSrv set_nav_point_srv;
-        set_nav_point_srv.request.nav_pose = path.path.poses[currentMowingPathIndex].pose;
+        set_nav_point_srv.request.nav_pose = execution_pose(item, currentMowingPathIndex).pose;
         setNavPointClient.call(set_nav_point_srv);
         sleep(1);
       }
 
       mbf_msgs::MoveBaseGoal moveBaseGoal;
-      moveBaseGoal.target_pose = path.path.poses[currentMowingPathIndex];
+      moveBaseGoal.target_pose = execution_pose(item, currentMowingPathIndex);
       moveBaseGoal.controller = "FTCPlanner";
       mbfClient->sendGoal(moveBaseGoal);
       sleep(1);
@@ -464,7 +870,7 @@ bool MowingBehavior::execute_mowing_plan() {
             // remove all paths in current area and return true
             mowerEnabled = false;
             mbfClientExePath->cancelAllGoals();
-            currentMowingPaths.clear();
+            clear_current_mowing_plan();
             skip_area = false;
             return true;
           }
@@ -473,8 +879,10 @@ bool MowingBehavior::execute_mowing_plan() {
             mbfClient->cancelAllGoals();
             mowerEnabled = false;
             skip_path = false;
+            finish_current_mowing_plan_path();
             currentMowingPath++;
             currentMowingPathIndex = 0;
+            start_current_mowing_plan_path();
             checkpoint();
             publish_mowing_progress(true);
             return false;
@@ -556,9 +964,7 @@ bool MowingBehavior::execute_mowing_plan() {
 
       mbf_msgs::ExePathGoal exePathGoal;
       nav_msgs::Path exePath;
-      exePath.header = path.path.header;
-      exePath.poses = std::vector<geometry_msgs::PoseStamped>(path.path.poses.begin() + currentMowingPathIndex,
-                                                              path.path.poses.end());
+      exePath = execution_path_from_index(item, currentMowingPathIndex);
       int exePathStartIndex = currentMowingPathIndex;
       exePathGoal.path = exePath;
       exePathGoal.angle_tolerance = 5.0 * (M_PI / 180.0);
@@ -584,7 +990,7 @@ bool MowingBehavior::execute_mowing_plan() {
             ROS_INFO_STREAM("MowingBehavior: (MOW) SKIP AREA was requested.");
             // remove all paths in current area and return true
             mowerEnabled = false;
-            currentMowingPaths.clear();
+            clear_current_mowing_plan();
             skip_area = false;
             return true;
           }
@@ -593,8 +999,10 @@ bool MowingBehavior::execute_mowing_plan() {
             mbfClientExePath->cancelAllGoals();
             mowerEnabled = false;
             skip_path = false;
+            finish_current_mowing_plan_path();
             currentMowingPath++;
             currentMowingPathIndex = 0;
+            start_current_mowing_plan_path();
             checkpoint();
             publish_mowing_progress(true);
             return false;
@@ -616,6 +1024,7 @@ bool MowingBehavior::execute_mowing_plan() {
             int currentIndex = getCurrentMowPathIndex();
             if (currentIndex != -1) {
               currentMowingPathIndex = exePathStartIndex + currentIndex;
+              update_current_mowing_plan_progress();
               // Keep live pose updates prioritized: publish only the small status payload regularly,
               // and throttle the heavy path geometry payload aggressively.
               publish_mowing_progress_status(false);
@@ -648,8 +1057,10 @@ bool MowingBehavior::execute_mowing_plan() {
             (path.path.poses.size() - currentMowingPathIndex) < 5)  // fully mowed the path ?
         {
           ROS_INFO_STREAM("MowingBehavior: (MOW) Mow path finished, skipping to next mow path.");
+          finish_current_mowing_plan_path();
           currentMowingPath++;
           currentMowingPathIndex = 0;
+          start_current_mowing_plan_path();
           publish_mowing_progress(true);
           // continue with next segment
         } else {
@@ -660,6 +1071,7 @@ bool MowingBehavior::execute_mowing_plan() {
 
           // currentMowingPathIndex might be 0 if we never consumed one of the points, we advance at least 1 point
           if (currentMowingPathIndex == 0) currentMowingPathIndex++;
+          update_current_mowing_plan_progress();
           publish_mowing_progress(true);
           if (!requested_pause_flag) {
             ROS_INFO_STREAM("MowingBehavior: (MOW) PAUSED due to MBF Error at " << currentMowingPathIndex);
@@ -675,7 +1087,7 @@ bool MowingBehavior::execute_mowing_plan() {
   publish_mowing_progress(true);
 
   // true, if we have executed all paths
-  return currentMowingPath >= currentMowingPaths.size();
+  return currentMowingPath >= currentMowingPlan.paths.size();
 }
 
 
@@ -712,8 +1124,8 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
   if (!currentAreaId.empty()) {
     json area;
     area["area_id"] = currentAreaId;
-    area["state"] = currentMowingPaths.empty() ? "pending" :
-        (currentMowingPath >= static_cast<int>(currentMowingPaths.size()) ? "done" : (paused ? "paused" : "mowing"));
+    area["state"] = currentMowingPlan.paths.empty() ? "pending" :
+        (currentMowingPath >= static_cast<int>(currentMowingPlan.paths.size()) ? "done" : (paused ? "paused" : "mowing"));
 
     if (include_paths) {
       area["planned_paths"] = json::array();
@@ -723,24 +1135,25 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
     std::size_t total_points = 0;
     std::size_t completed_points = 0;
 
-    for (std::size_t path_index = 0; path_index < currentMowingPaths.size(); ++path_index) {
-      const auto& poses = currentMowingPaths[path_index].path.poses;
-      const std::string path_id = make_path_id(currentAreaId, static_cast<int>(path_index));
+    for (std::size_t path_index = 0; path_index < currentMowingPlan.paths.size(); ++path_index) {
+      const auto& item = currentMowingPlan.paths[path_index];
+      const auto& poses = item.slicer_source.path.path.poses;
+      const std::string path_id = item.path_id;
       total_points += poses.size();
 
-      if (include_paths) {
+      if (include_paths && item.mow_status == MOW_STATUS_OPEN) {
         json planned_path;
         planned_path["path_id"] = path_id;
         planned_path["index"] = static_cast<int>(path_index);
-        planned_path["points"] = path_points_to_json(poses, 0, poses.size());
+        planned_path["points"] = path_points_to_json(item, 0, poses.size());
         area["planned_paths"].push_back(planned_path);
       }
 
       std::size_t completed_for_path = 0;
-      if (static_cast<int>(path_index) < currentMowingPath) {
+      if (item.mow_status == MOW_STATUS_DONE) {
         completed_for_path = poses.size();
-      } else if (static_cast<int>(path_index) == currentMowingPath) {
-        completed_for_path = std::min<std::size_t>(std::max(currentMowingPathIndex, 0), poses.size());
+      } else if (item.mow_status == MOW_STATUS_IN_PROGRESS) {
+        completed_for_path = std::min<std::size_t>(item.current_pose_index, poses.size());
       }
 
       completed_points += completed_for_path;
@@ -750,7 +1163,7 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
         mowed_path["index"] = static_cast<int>(path_index);
         mowed_path["completed_percent"] = poses.empty() ? 0.0 :
             std::min(100.0, 100.0 * static_cast<double>(completed_for_path) / static_cast<double>(poses.size()));
-        mowed_path["points"] = path_points_to_json(poses, 0, completed_for_path);
+        mowed_path["points"] = path_points_to_json(item, 0, completed_for_path);
         area["mowed_paths"].push_back(mowed_path);
       }
     }
@@ -759,8 +1172,8 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
         std::min(100.0, 100.0 * static_cast<double>(completed_points) / static_cast<double>(total_points));
     area["current_path"] = currentMowingPath;
     area["current_path_index"] = currentMowingPathIndex;
-    if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPaths.size())) {
-      area["current_path_id"] = make_path_id(currentAreaId, currentMowingPath);
+    if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPlan.paths.size())) {
+      area["current_path_id"] = currentMowingPlan.paths[currentMowingPath].path_id;
     } else {
       area["current_path_id"] = "";
     }
@@ -962,6 +1375,15 @@ void MowingBehavior::checkpoint() {
   cp.currentMowingPlanDigest = currentMowingPlanDigest;
   cp.currentMowingAngleIncrementSum = currentMowingAngleIncrementSum;
   cp.currentMowingAreaId = currentAreaId;
+  cp.area_id = currentMowingPlan.area_id;
+  cp.area_digest = currentMowingPlan.area_digest;
+  cp.plan_id = currentMowingPlan.plan_id;
+  cp.plan_file = currentMowingPlan.plan_file;
+  cp.current_path_id = currentMowingPlan.current_path_id;
+  cp.current_order = static_cast<int32_t>(currentMowingPlan.current_order);
+  cp.current_pose_index = currentMowingPathIndex;
+  cp.last_completed_order = currentMowingPath > 0 ? currentMowingPath - 1 : -1;
+  cp.saved_at = ros::Time::now();
   checkpointAreaId = currentAreaId;
   bag.open("checkpoint.bag", rosbag::bagmode::Write);
   bag.write("checkpoint", ros::Time::now(), cp);
@@ -973,6 +1395,7 @@ bool MowingBehavior::restore_checkpoint() {
   // Default to a clean start. This also makes old/incompatible checkpoint.bag files safe
   // after CheckPoint.msg changes: if no compatible message can be instantiated, these
   // values remain in effect.
+  clear_current_mowing_plan();
   currentMowingArea = 0;
   currentAreaId.clear();
   checkpointAreaId.clear();
@@ -998,6 +1421,8 @@ bool MowingBehavior::restore_checkpoint() {
                         << " area: " << cp->currentMowingArea
                         << " area_id: " << cp->currentMowingAreaId << " path: " << cp->currentMowingPath
                         << " index: " << cp->currentMowingPathIndex
+                        << " plan_id: " << cp->plan_id
+                        << " current_path_id: " << cp->current_path_id
                         << " angle increment sum: " << cp->currentMowingAngleIncrementSum);
         currentMowingPath = cp->currentMowingPath;
         currentMowingArea = cp->currentMowingArea;
@@ -1005,6 +1430,12 @@ bool MowingBehavior::restore_checkpoint() {
         currentMowingPathIndex = cp->currentMowingPathIndex;
         currentMowingPlanDigest = cp->currentMowingPlanDigest;
         currentMowingAngleIncrementSum = cp->currentMowingAngleIncrementSum;
+        currentMowingPlan.area_id = cp->area_id;
+        currentMowingPlan.area_digest = cp->area_digest;
+        currentMowingPlan.plan_id = cp->plan_id;
+        currentMowingPlan.plan_file = cp->plan_file;
+        currentMowingPlan.current_path_id = cp->current_path_id;
+        currentMowingPlan.current_order = cp->current_order >= 0 ? static_cast<uint32_t>(cp->current_order) : 0;
         found = true;
         break;
       }
