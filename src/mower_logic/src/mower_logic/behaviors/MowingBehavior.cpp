@@ -1147,18 +1147,6 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
       const std::string path_id = item.path_id;
       total_points += poses.size();
 
-      // The app draws the active dotted path by looking up current_path_id/current_path
-      // inside planned_paths. Therefore the in-progress path must stay in planned_paths
-      // until it is fully done. mowed_paths only contains the already completed segment.
-      if (include_paths &&
-          (item.mow_status == MOW_STATUS_OPEN || item.mow_status == MOW_STATUS_IN_PROGRESS)) {
-        json planned_path;
-        planned_path["path_id"] = path_id;
-        planned_path["index"] = static_cast<int>(path_index);
-        planned_path["points"] = path_points_to_json(item, 0, poses.size());
-        area["planned_paths"].push_back(planned_path);
-      }
-
       std::size_t completed_for_path = 0;
       if (item.mow_status == MOW_STATUS_DONE) {
         completed_for_path = poses.size();
@@ -1166,14 +1154,31 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
         completed_for_path = std::min<std::size_t>(item.current_pose_index, poses.size());
       }
 
+      const double completed_percent = poses.empty() ? 0.0 :
+          std::min(100.0, 100.0 * static_cast<double>(completed_for_path) / static_cast<double>(poses.size()));
+
+      // planned_paths is the complete reference set for the app.
+      // Do not remove paths from this list when they become active or done, otherwise
+      // the app can no longer render them as current/dotted/completed.
+      if (include_paths) {
+        json planned_path;
+        planned_path["path_id"] = path_id;
+        planned_path["index"] = static_cast<int>(path_index);
+        planned_path["completed_percent"] = completed_percent;
+        planned_path["points"] = path_points_to_json(item, 0, poses.size());
+        area["planned_paths"].push_back(planned_path);
+      }
+
       completed_points += completed_for_path;
-      if (include_paths && completed_for_path > 0) {
+
+      // mowed_paths contains only fully completed paths. The app uses membership in
+      // mowed_paths as the authoritative signal for the dotted/completed state.
+      if (include_paths && item.mow_status == MOW_STATUS_DONE) {
         json mowed_path;
         mowed_path["path_id"] = path_id;
         mowed_path["index"] = static_cast<int>(path_index);
-        mowed_path["completed_percent"] = poses.empty() ? 0.0 :
-            std::min(100.0, 100.0 * static_cast<double>(completed_for_path) / static_cast<double>(poses.size()));
-        mowed_path["points"] = path_points_to_json(item, 0, completed_for_path);
+        mowed_path["completed_percent"] = 100.0;
+        mowed_path["points"] = path_points_to_json(item, 0, poses.size());
         area["mowed_paths"].push_back(mowed_path);
       }
     }
