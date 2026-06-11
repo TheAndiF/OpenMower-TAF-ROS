@@ -57,6 +57,12 @@ extern void registerActions(std::string prefix, const std::vector<xbot_msgs::Act
 
 MowingBehavior MowingBehavior::INSTANCE;
 
+constexpr uint8_t MowingBehavior::MOW_STATUS_DONE;
+constexpr uint8_t MowingBehavior::MOW_STATUS_IN_PROGRESS;
+constexpr uint8_t MowingBehavior::MOW_STATUS_OPEN;
+constexpr uint8_t MowingBehavior::PATH_DIRECTION_FORWARD;
+constexpr uint8_t MowingBehavior::PATH_DIRECTION_REVERSE;
+
 using json = nlohmann::json;
 
 namespace {
