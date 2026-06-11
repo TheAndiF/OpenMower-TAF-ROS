@@ -1147,7 +1147,11 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
       const std::string path_id = item.path_id;
       total_points += poses.size();
 
-      if (include_paths && item.mow_status == MOW_STATUS_OPEN) {
+      // The app draws the active dotted path by looking up current_path_id/current_path
+      // inside planned_paths. Therefore the in-progress path must stay in planned_paths
+      // until it is fully done. mowed_paths only contains the already completed segment.
+      if (include_paths &&
+          (item.mow_status == MOW_STATUS_OPEN || item.mow_status == MOW_STATUS_IN_PROGRESS)) {
         json planned_path;
         planned_path["path_id"] = path_id;
         planned_path["index"] = static_cast<int>(path_index);
