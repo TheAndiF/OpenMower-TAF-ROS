@@ -8,7 +8,6 @@
 #include <map>
 #include <memory>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <sys/statvfs.h>
 
@@ -17,16 +16,59 @@
 #include "xbot_msgs/SensorDataString.h"
 #include "xbot_msgs/SensorInfo.h"
 
-struct DoubleSensor {
-  xbot_msgs::SensorInfo info;
-  ros::Publisher info_pub;
-  ros::Publisher data_pub;
+struct SystemSensorConfig {
+  std::string sensor_name;
+  std::string unit;
+  uint8_t value_description;
+  uint8_t value_type;
+
+  bool has_min_max = false;
+  double min_value = 0.0;
+  double max_value = 0.0;
+
+  bool has_critical_low = false;
+  double lower_critical_value = 0.0;
+
+  bool has_critical_high = false;
+  double upper_critical_value = 0.0;
+
+  xbot_msgs::SensorInfo sensor_info;
+  ros::Publisher sensor_info_pub;
+  ros::Publisher sensor_data_pub;
 };
 
-struct StringSensor {
-  xbot_msgs::SensorInfo info;
-  ros::Publisher info_pub;
-  ros::Publisher data_pub;
+static std::map<std::string, SystemSensorConfig> sensor_configs = {
+    {"om_system_wifi_signal_dbm",
+     {"System WLAN Signal", "dBm", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_DOUBLE, true, -100.0, -30.0, true, -80.0}},
+
+    {"om_system_wifi_signal_percent",
+     {"System WLAN Signal", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT,
+      xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 100.0, true, 25.0}},
+
+    {"om_system_disk_free_percent",
+     {"System Free Disk", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT,
+      xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 100.0, true, 10.0}},
+
+    {"om_system_disk_free_gb",
+     {"System Free Disk", "GB", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_DOUBLE}},
+
+    {"om_system_time",
+     {"System Time", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
+
+    {"om_system_date",
+     {"System Date", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
+
+    {"om_system_last_reboot",
+     {"System Last Reboot", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
+
+    {"om_system_uptime_hours",
+     {"System Host Uptime", "h", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_DOUBLE}},
 };
 
 static std::string exec_command(const std::string& command) {
@@ -59,7 +101,7 @@ static bool read_wifi_signal_dbm(const std::string& interface, double& signal_db
 }
 
 static double wifi_dbm_to_percent(double dbm) {
-  // Simple and common RSSI mapping:
+  // Simple RSSI mapping for dashboard display:
   // -100 dBm = 0 %, -50 dBm = 100 %, values outside are clamped.
   const double percent = 2.0 * (dbm + 100.0);
   return std::max(0.0, std::min(100.0, percent));
@@ -111,47 +153,69 @@ static std::string last_reboot_string() {
   return format_time(boot_time, "%Y-%m-%d %H:%M:%S");
 }
 
-static xbot_msgs::SensorInfo make_info(const std::string& id,
-                                       const std::string& name,
-                                       uint8_t type,
-                                       uint8_t description,
-                                       const std::string& unit,
-                                       bool has_min_max = false,
-                                       double min_value = 0.0,
-                                       double max_value = 0.0,
-                                       bool has_critical_low = false,
-                                       double critical_low = 0.0) {
-  xbot_msgs::SensorInfo info;
-  info.sensor_id = id;
-  info.sensor_name = name;
-  info.value_type = type;
-  info.value_description = description;
-  info.unit = unit;
+static void register_system_sensors(ros::NodeHandle& nh) {
+  // Same xbot_monitoring contract as mower_logic/src/monitoring/monitoring.cpp:
+  // every sensor publishes a latched SensorInfo topic and a matching data topic.
+  // xbot_monitoring discovers /xbot_monitoring/sensors/.*/info and builds
+  // sensor_infos/json, sensor_infos/bson and sensors/<sensor_id>/data on MQTT.
+  for (auto& sc_pair : sensor_configs) {
+    const std::string& sensor_id = sc_pair.first;
+    SystemSensorConfig& config = sc_pair.second;
 
-  info.has_min_max = has_min_max;
-  info.min_value = min_value;
-  info.max_value = max_value;
+    config.sensor_info.sensor_id = sensor_id;
+    config.sensor_info.sensor_name = config.sensor_name;
+    config.sensor_info.unit = config.unit;
+    config.sensor_info.value_type = config.value_type;
+    config.sensor_info.value_description = config.value_description;
 
-  info.has_critical_low = has_critical_low;
-  info.lower_critical_value = critical_low;
-  info.has_critical_high = false;
-  info.upper_critical_value = 0.0;
+    config.sensor_info.has_min_max = config.has_min_max;
+    config.sensor_info.min_value = config.min_value;
+    config.sensor_info.max_value = config.max_value;
 
-  return info;
+    config.sensor_info.has_critical_low = config.has_critical_low;
+    config.sensor_info.lower_critical_value = config.lower_critical_value;
+
+    config.sensor_info.has_critical_high = config.has_critical_high;
+    config.sensor_info.upper_critical_value = config.upper_critical_value;
+
+    const std::string base_topic = "xbot_monitoring/sensors/" + sensor_id;
+    config.sensor_info_pub = nh.advertise<xbot_msgs::SensorInfo>(base_topic + "/info", 1, true);
+
+    switch (config.value_type) {
+      case xbot_msgs::SensorInfo::TYPE_DOUBLE:
+        config.sensor_data_pub = nh.advertise<xbot_msgs::SensorDataDouble>(base_topic + "/data", 10);
+        break;
+      case xbot_msgs::SensorInfo::TYPE_STRING:
+        config.sensor_data_pub = nh.advertise<xbot_msgs::SensorDataString>(base_topic + "/data", 10);
+        break;
+      default:
+        ROS_ERROR_STREAM("Invalid system sensor data type for " << sensor_id << ": "
+                         << static_cast<int>(config.value_type));
+        break;
+    }
+
+    config.sensor_info_pub.publish(config.sensor_info);
+  }
 }
 
-static void publish_double(DoubleSensor& sensor, double value) {
+static void publish_double(const std::string& sensor_id, double value) {
+  auto it = sensor_configs.find(sensor_id);
+  if (it == sensor_configs.end()) return;
+
   xbot_msgs::SensorDataDouble data;
   data.stamp = ros::Time::now();
   data.data = value;
-  sensor.data_pub.publish(data);
+  it->second.sensor_data_pub.publish(data);
 }
 
-static void publish_string(StringSensor& sensor, const std::string& value) {
+static void publish_string(const std::string& sensor_id, const std::string& value) {
+  auto it = sensor_configs.find(sensor_id);
+  if (it == sensor_configs.end()) return;
+
   xbot_msgs::SensorDataString data;
   data.stamp = ros::Time::now();
   data.data = value;
-  sensor.data_pub.publish(data);
+  it->second.sensor_data_pub.publish(data);
 }
 
 int main(int argc, char** argv) {
@@ -173,54 +237,7 @@ int main(int argc, char** argv) {
     publish_rate_hz = 0.033333;
   }
 
-  std::map<std::string, DoubleSensor> double_sensors;
-  std::map<std::string, StringSensor> string_sensors;
-
-  double_sensors["om_system_wifi_signal_dbm"].info = make_info(
-      "om_system_wifi_signal_dbm", "WLAN Signal", xbot_msgs::SensorInfo::TYPE_DOUBLE,
-      xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "dBm", true, -100.0, -30.0, true, -80.0);
-
-  double_sensors["om_system_wifi_signal_percent"].info = make_info(
-      "om_system_wifi_signal_percent", "WLAN Signal", xbot_msgs::SensorInfo::TYPE_DOUBLE,
-      xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT, "%", true, 0.0, 100.0, true, 25.0);
-
-  double_sensors["om_system_disk_free_percent"].info = make_info(
-      "om_system_disk_free_percent", "Free Disk Space", xbot_msgs::SensorInfo::TYPE_DOUBLE,
-      xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT, "%", true, 0.0, 100.0, true, 10.0);
-
-  double_sensors["om_system_disk_free_gb"].info = make_info(
-      "om_system_disk_free_gb", "Free Disk Space", xbot_msgs::SensorInfo::TYPE_DOUBLE,
-      xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "GB", false);
-
-  double_sensors["om_system_uptime_hours"].info = make_info(
-      "om_system_uptime_hours", "Host Uptime", xbot_msgs::SensorInfo::TYPE_DOUBLE,
-      xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "h", false);
-
-  string_sensors["om_system_time"].info = make_info(
-      "om_system_time", "System Time", xbot_msgs::SensorInfo::TYPE_STRING,
-      xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "");
-
-  string_sensors["om_system_date"].info = make_info(
-      "om_system_date", "System Date", xbot_msgs::SensorInfo::TYPE_STRING,
-      xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "");
-
-  string_sensors["om_system_last_reboot"].info = make_info(
-      "om_system_last_reboot", "Last Reboot", xbot_msgs::SensorInfo::TYPE_STRING,
-      xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "");
-
-  for (auto& item : double_sensors) {
-    const std::string base = "xbot_monitoring/sensors/" + item.first;
-    item.second.info_pub = nh.advertise<xbot_msgs::SensorInfo>(base + "/info", 1, true);
-    item.second.data_pub = nh.advertise<xbot_msgs::SensorDataDouble>(base + "/data", 10);
-    item.second.info_pub.publish(item.second.info);
-  }
-
-  for (auto& item : string_sensors) {
-    const std::string base = "xbot_monitoring/sensors/" + item.first;
-    item.second.info_pub = nh.advertise<xbot_msgs::SensorInfo>(base + "/info", 1, true);
-    item.second.data_pub = nh.advertise<xbot_msgs::SensorDataString>(base + "/data", 10);
-    item.second.info_pub.publish(item.second.info);
-  }
+  register_system_sensors(nh);
 
   ROS_INFO_STREAM("system_monitor_node started. wifi_interface=" << wifi_interface
                   << ", disk_path=" << disk_path
@@ -230,8 +247,8 @@ int main(int argc, char** argv) {
   while (ros::ok()) {
     double wifi_dbm = 0.0;
     if (read_wifi_signal_dbm(wifi_interface, wifi_dbm)) {
-      publish_double(double_sensors["om_system_wifi_signal_dbm"], wifi_dbm);
-      publish_double(double_sensors["om_system_wifi_signal_percent"], wifi_dbm_to_percent(wifi_dbm));
+      publish_double("om_system_wifi_signal_dbm", wifi_dbm);
+      publish_double("om_system_wifi_signal_percent", wifi_dbm_to_percent(wifi_dbm));
     } else {
       ROS_WARN_THROTTLE(60.0, "Could not read WLAN signal from interface '%s'", wifi_interface.c_str());
     }
@@ -239,16 +256,16 @@ int main(int argc, char** argv) {
     double disk_free_gb = 0.0;
     double disk_free_percent = 0.0;
     if (read_disk_usage(disk_path, disk_free_gb, disk_free_percent)) {
-      publish_double(double_sensors["om_system_disk_free_gb"], disk_free_gb);
-      publish_double(double_sensors["om_system_disk_free_percent"], disk_free_percent);
+      publish_double("om_system_disk_free_gb", disk_free_gb);
+      publish_double("om_system_disk_free_percent", disk_free_percent);
     } else {
       ROS_WARN_THROTTLE(60.0, "Could not read disk usage for path '%s'", disk_path.c_str());
     }
 
-    publish_string(string_sensors["om_system_time"], current_time_string());
-    publish_string(string_sensors["om_system_date"], current_date_string());
-    publish_string(string_sensors["om_system_last_reboot"], last_reboot_string());
-    publish_double(double_sensors["om_system_uptime_hours"], read_uptime_hours());
+    publish_string("om_system_time", current_time_string());
+    publish_string("om_system_date", current_date_string());
+    publish_string("om_system_last_reboot", last_reboot_string());
+    publish_double("om_system_uptime_hours", read_uptime_hours());
 
     ros::spinOnce();
     rate.sleep();
