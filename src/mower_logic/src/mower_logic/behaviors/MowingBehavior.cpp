@@ -173,6 +173,28 @@ json pose_to_json(const geometry_msgs::PoseStamped& pose) {
           {"qz", pose.pose.orientation.z},
           {"qw", pose.pose.orientation.w}};
 }
+
+std::string mow_status_to_json_string(uint8_t status) {
+  switch (status) {
+    case MowingBehavior::MOW_STATUS_DONE:
+      return "mowed";
+    case MowingBehavior::MOW_STATUS_IN_PROGRESS:
+      return "mowing";
+    case MowingBehavior::MOW_STATUS_OPEN:
+    default:
+      return "unmowed";
+  }
+}
+
+std::string path_direction_to_json_string(uint8_t direction) {
+  switch (direction) {
+    case MowingBehavior::PATH_DIRECTION_REVERSE:
+      return "reverse";
+    case MowingBehavior::PATH_DIRECTION_FORWARD:
+    default:
+      return "forward";
+  }
+}
 }
 
 std::string MowingBehavior::state_name() {
@@ -1156,10 +1178,10 @@ bool MowingBehavior::execute_mowing_plan() {
 void MowingBehavior::ensure_mowing_progress_interface() {
   if (mowing_progress_interface_initialized || n == nullptr) return;
 
-  // Heavy retained payload for map overlays. Contains planned_paths and mowed_paths and can be large.
+  // Heavy retained geometry snapshot for map overlays. Contains all path geometries, but no mow_status.
   mowing_progress_pub = n->advertise<std_msgs::String>("/mower_logic/map/mowing_progress/json", 1, true);
 
-  // Lightweight retained payload for frequent UI progress updates. Does NOT contain path geometry.
+  // Lightweight retained status snapshot for frequent UI progress updates. Contains all path states, but no geometry.
   // This prevents large mowing-progress MQTT messages from delaying robot_state/json pose updates.
   mowing_progress_status_pub = n->advertise<std_msgs::String>("/mower_logic/map/mowing_progress/status/json", 1, true);
 
@@ -1189,10 +1211,7 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
     area["state"] = currentMowingPlan.paths.empty() ? "pending" :
         (currentMowingPath >= static_cast<int>(currentMowingPlan.paths.size()) ? "done" : (paused ? "paused" : "mowing"));
 
-    if (include_paths) {
-      area["planned_paths"] = json::array();
-      area["mowed_paths"] = json::array();
-    }
+    area["paths"] = json::array();
 
     std::size_t total_points = 0;
     std::size_t completed_points = 0;
@@ -1200,7 +1219,6 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
     for (std::size_t path_index = 0; path_index < currentMowingPlan.paths.size(); ++path_index) {
       const auto& item = currentMowingPlan.paths[path_index];
       const auto& poses = item.execution.path.path.poses;
-      const std::string path_id = item.path_id;
       total_points += poses.size();
 
       std::size_t completed_for_path = 0;
@@ -1213,40 +1231,41 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
       const double completed_percent = poses.empty() ? 0.0 :
           std::min(100.0, 100.0 * static_cast<double>(completed_for_path) / static_cast<double>(poses.size()));
 
-      // planned_paths is the complete reference set for the app.
-      // Do not remove paths from this list when they become active or done, otherwise
-      // the app can no longer render them as current/dotted/completed.
-      if (include_paths) {
-        json planned_path;
-        planned_path["path_id"] = path_id;
-        planned_path["index"] = static_cast<int>(path_index);
-        planned_path["completed_percent"] = completed_percent;
-        planned_path["points"] = path_points_to_json(item, 0, poses.size());
-        area["planned_paths"].push_back(planned_path);
-      }
-
       completed_points += completed_for_path;
 
-      // mowed_paths contains only fully completed paths. The app uses membership in
-      // mowed_paths as the authoritative signal for the dotted/completed state.
-      if (include_paths && item.mow_status == MOW_STATUS_DONE) {
-        json mowed_path;
-        mowed_path["path_id"] = path_id;
-        mowed_path["index"] = static_cast<int>(path_index);
-        mowed_path["completed_percent"] = 100.0;
-        mowed_path["points"] = path_points_to_json(item, 0, poses.size());
-        area["mowed_paths"].push_back(mowed_path);
+      json path;
+      path["path_id"] = item.path_id;
+
+      if (include_paths) {
+        // Heavy retained geometry snapshot: stable path identity and geometry only.
+        // The app should store this as the geometry reference and wait for the
+        // small status snapshot before drawing path state.
+        path["order"] = item.order;
+        path["slicer_source"]["path_id"] = item.slicer_source.path_id;
+        path["path_direction"] = path_direction_to_json_string(item.path_direction);
+        path["points"] = path_points_to_json(item, 0, poses.size());
+      } else {
+        // Lightweight retained status snapshot: all path states, no heavy geometry.
+        // The app can join this with map/mowing_progress/json via area_id + path_id.
+        path["mow_status"] = mow_status_to_json_string(item.mow_status);
+        path["current_pose_index"] = item.current_pose_index;
+        path["completed_percent"] = completed_percent;
       }
+
+      area["paths"].push_back(path);
     }
 
     area["percent"] = total_points == 0 ? 0.0 :
         std::min(100.0, 100.0 * static_cast<double>(completed_points) / static_cast<double>(total_points));
-    area["current_path"] = currentMowingPath;
-    area["current_path_index"] = currentMowingPathIndex;
-    if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPlan.paths.size())) {
-      area["current_path_id"] = currentMowingPlan.paths[currentMowingPath].path_id;
-    } else {
-      area["current_path_id"] = "";
+
+    if (!include_paths) {
+      area["current_path"] = currentMowingPath;
+      area["current_path_index"] = currentMowingPathIndex;
+      if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPlan.paths.size())) {
+        area["current_path_id"] = currentMowingPlan.paths[currentMowingPath].path_id;
+      } else {
+        area["current_path_id"] = "";
+      }
     }
 
     payload["areas"][currentAreaId] = area;
