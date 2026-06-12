@@ -45,8 +45,17 @@ class MowingBehavior : public Behavior {
   static constexpr uint8_t PATH_DIRECTION_REVERSE = 1;  // rückwärts abfahren, Rohdaten bleiben unverändert
 
   struct MowingPathSlicerSource {
+    // Originale Slicer-Quelle. path_id entspricht der urspruenglichen Reihenfolge/ID
+    // aus der Slicer-Datei und bleibt auch nach POO-Optimierung unveraendert.
     slic3r_coverage_planner::Path path;
-    uint32_t path_index = 0;
+    uint32_t path_id = 0;
+  };
+
+  struct MowingPathExecution {
+    // Fertiger realer Fahrpfad. Die Mower-Logic faehrt ausschliesslich diesen Pfad.
+    // Bei FORWARD ist er eine Kopie von slicer_source.path, bei REVERSE die vom POO
+    // gedrehte und neu orientierte Kopie.
+    slic3r_coverage_planner::Path path;
   };
 
   struct MowingPathExecutionItem {
@@ -66,6 +75,7 @@ class MowingBehavior : public Behavior {
 
     uint32_t current_pose_index = 0;
     MowingPathSlicerSource slicer_source;
+    MowingPathExecution execution;
   };
 
   struct MowingExecutionPlan {

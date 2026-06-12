@@ -22,6 +22,7 @@
 #include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
@@ -108,41 +109,56 @@ std::string compute_area_digest(const mower_map::MapArea& area) {
   return "ad_" + result.substr(0, 16);
 }
 
-std::size_t execution_pose_index(const MowingBehavior::MowingPathExecutionItem& item, std::size_t execution_index) {
-  const auto& poses = item.slicer_source.path.path.poses;
-  if (poses.empty()) return 0;
-  execution_index = std::min(execution_index, poses.size() - 1);
-  if (item.path_direction == MowingBehavior::PATH_DIRECTION_REVERSE) {
-    return poses.size() - 1 - execution_index;
+void recompute_execution_orientations(slic3r_coverage_planner::Path& path) {
+  auto& poses = path.path.poses;
+  if (poses.size() < 2) return;
+  for (std::size_t i = 0; i + 1 < poses.size(); ++i) {
+    const auto& current = poses[i].pose.position;
+    const auto& next = poses[i + 1].pose.position;
+    const double yaw = std::atan2(next.y - current.y, next.x - current.x);
+    poses[i].pose.orientation.x = 0.0;
+    poses[i].pose.orientation.y = 0.0;
+    poses[i].pose.orientation.z = std::sin(yaw * 0.5);
+    poses[i].pose.orientation.w = std::cos(yaw * 0.5);
   }
-  return execution_index;
+  poses.back().pose.orientation = poses[poses.size() - 2].pose.orientation;
+}
+
+slic3r_coverage_planner::Path make_execution_path_from_slicer(
+    const slic3r_coverage_planner::Path& source, uint8_t path_direction) {
+  slic3r_coverage_planner::Path execution = source;
+  if (path_direction == MowingBehavior::PATH_DIRECTION_REVERSE) {
+    std::reverse(execution.path.poses.begin(), execution.path.poses.end());
+    recompute_execution_orientations(execution);
+  }
+  return execution;
 }
 
 const geometry_msgs::PoseStamped& execution_pose(const MowingBehavior::MowingPathExecutionItem& item,
                                                  std::size_t execution_index) {
-  return item.slicer_source.path.path.poses[execution_pose_index(item, execution_index)];
+  const auto& poses = item.execution.path.path.poses;
+  execution_index = std::min(execution_index, poses.size() - 1);
+  return poses[execution_index];
 }
 
 nav_msgs::Path execution_path_from_index(const MowingBehavior::MowingPathExecutionItem& item,
                                          std::size_t execution_start_index) {
   nav_msgs::Path path;
-  const auto& source = item.slicer_source.path.path;
+  const auto& source = item.execution.path.path;
   path.header = source.header;
   const std::size_t size = source.poses.size();
   execution_start_index = std::min(execution_start_index, size);
-  for (std::size_t i = execution_start_index; i < size; ++i) {
-    path.poses.push_back(execution_pose(item, i));
-  }
+  path.poses.insert(path.poses.end(), source.poses.begin() + execution_start_index, source.poses.end());
   return path;
 }
 
 json path_points_to_json(const MowingBehavior::MowingPathExecutionItem& item, std::size_t begin, std::size_t end) {
   json points = json::array();
-  const auto& poses = item.slicer_source.path.path.poses;
+  const auto& poses = item.execution.path.path.poses;
   end = std::min(end, poses.size());
   begin = std::min(begin, end);
   for (std::size_t i = begin; i < end; ++i) {
-    const auto& pose = execution_pose(item, i);
+    const auto& pose = poses[i];
     points.push_back({{"x", pose.pose.position.x}, {"y", pose.pose.position.y}});
   }
   return points;
@@ -214,7 +230,7 @@ void MowingBehavior::finish_current_mowing_plan_path() {
   if (currentMowingPath >= 0 && currentMowingPath < static_cast<int>(currentMowingPlan.paths.size())) {
     auto& item = currentMowingPlan.paths[currentMowingPath];
     item.mow_status = MOW_STATUS_DONE;
-    const auto pose_count = item.slicer_source.path.path.poses.size();
+    const auto pose_count = item.execution.path.path.poses.size();
     item.current_pose_index = pose_count == 0 ? 0 : static_cast<uint32_t>(pose_count - 1);
   }
 }
@@ -245,7 +261,8 @@ void MowingBehavior::build_current_mowing_plan(
     item.mow_status = MOW_STATUS_OPEN;
     item.current_pose_index = 0;
     item.slicer_source.path = slicer_paths[i];
-    item.slicer_source.path_index = static_cast<uint32_t>(i);
+    item.slicer_source.path_id = static_cast<uint32_t>(i);
+    item.execution.path = make_execution_path_from_slicer(item.slicer_source.path, item.path_direction);
     currentMowingPlan.paths.push_back(item);
   }
 
@@ -260,7 +277,7 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
   mowing_path_order_optimizer::OptimizePaths optimizeSrv;
   for (const auto& item : currentMowingPlan.paths) {
     optimizeSrv.request.paths.push_back(item.slicer_source.path);
-    optimizeSrv.request.path_indices.push_back(static_cast<int32_t>(item.slicer_source.path_index));
+    optimizeSrv.request.path_indices.push_back(static_cast<int32_t>(item.slicer_source.path_id));
   }
   optimizeSrv.request.enabled = config.path_order_optimizer_enabled;
   optimizeSrv.request.optimize_fill_order = config.path_order_optimizer_optimize_fill_order;
@@ -294,7 +311,7 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
       const int32_t source_index = optimizeSrv.response.path_indices[i];
       auto it = std::find_if(currentMowingPlan.paths.begin(), currentMowingPlan.paths.end(),
                              [source_index](const MowingPathExecutionItem& item) {
-                               return static_cast<int32_t>(item.slicer_source.path_index) == source_index;
+                               return static_cast<int32_t>(item.slicer_source.path_id) == source_index;
                              });
       if (it == currentMowingPlan.paths.end()) {
         ROS_WARN_STREAM("MowingBehavior: optimizer returned unknown slicer path index " << source_index
@@ -305,6 +322,14 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
       item.path_direction = (i < optimizeSrv.response.path_reversed.size() && optimizeSrv.response.path_reversed[i])
                                 ? PATH_DIRECTION_REVERSE
                                 : PATH_DIRECTION_FORWARD;
+      if (i < optimizeSrv.response.paths.size()) {
+        // The POO response path is the finished execution geometry. If reversed,
+        // it is already reversed and re-oriented by the optimizer.
+        item.execution.path = optimizeSrv.response.paths[i];
+      } else {
+        // Defensive fallback for older optimizer responses.
+        item.execution.path = make_execution_path_from_slicer(item.slicer_source.path, item.path_direction);
+      }
       item.mow_status = MOW_STATUS_OPEN;
       item.current_pose_index = 0;
       reordered.push_back(item);
@@ -374,7 +399,7 @@ bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_f
     item.current_pose_index = 0;
 
     const auto& source = path_json["slicer_source"];
-    item.slicer_source.path_index = source.value("path_index", 0);
+    item.slicer_source.path_id = source.value("path_id", source.value("path_index", 0));
     item.slicer_source.path.path_type = source.value("path_type", 0);
     item.slicer_source.path.is_outline = source.value("is_outline", 0);
     item.slicer_source.path.path.header.frame_id = source.value("frame_id", std::string("map"));
@@ -393,6 +418,32 @@ bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_f
         item.slicer_source.path.path.poses.push_back(pose);
       }
     }
+
+    if (path_json.contains("execution") && path_json["execution"].contains("path")) {
+      const auto& execution = path_json["execution"]["path"];
+      item.execution.path.path_type = item.slicer_source.path.path_type;
+      item.execution.path.is_outline = item.slicer_source.path.is_outline;
+      item.execution.path.path.header.frame_id = execution.value("frame_id", source.value("frame_id", std::string("map")));
+      if (execution.contains("poses") && execution["poses"].is_array()) {
+        for (const auto& pose_json : execution["poses"]) {
+          geometry_msgs::PoseStamped pose;
+          pose.header = item.execution.path.path.header;
+          pose.pose.position.x = pose_json.value("x", 0.0);
+          pose.pose.position.y = pose_json.value("y", 0.0);
+          pose.pose.position.z = pose_json.value("z", 0.0);
+          pose.pose.orientation.x = pose_json.value("qx", 0.0);
+          pose.pose.orientation.y = pose_json.value("qy", 0.0);
+          pose.pose.orientation.z = pose_json.value("qz", 0.0);
+          pose.pose.orientation.w = pose_json.value("qw", 1.0);
+          item.execution.path.path.poses.push_back(pose);
+        }
+      }
+    }
+
+    if (item.execution.path.path.poses.empty()) {
+      item.execution.path = make_execution_path_from_slicer(item.slicer_source.path, item.path_direction);
+    }
+
     loaded.paths.push_back(item);
   }
 
@@ -403,7 +454,7 @@ bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_f
     auto& item = currentMowingPlan.paths[i];
     if (static_cast<int>(i) < currentMowingPath) {
       item.mow_status = MOW_STATUS_DONE;
-      const auto pose_count = item.slicer_source.path.path.poses.size();
+      const auto pose_count = item.execution.path.path.poses.size();
       item.current_pose_index = pose_count == 0 ? 0 : static_cast<uint32_t>(pose_count - 1);
     } else if (static_cast<int>(i) == currentMowingPath) {
       item.mow_status = MOW_STATUS_IN_PROGRESS;
@@ -441,13 +492,18 @@ bool MowingBehavior::save_current_mowing_plan() const {
     path_json["path_direction"] = static_cast<int>(item.path_direction);
     path_json["mow_status"] = static_cast<int>(item.mow_status);
     path_json["current_pose_index"] = item.current_pose_index;
-    path_json["slicer_source"]["path_index"] = item.slicer_source.path_index;
+    path_json["slicer_source"]["path_id"] = item.slicer_source.path_id;
     path_json["slicer_source"]["path_type"] = static_cast<int>(item.slicer_source.path.path_type);
     path_json["slicer_source"]["is_outline"] = static_cast<int>(item.slicer_source.path.is_outline);
     path_json["slicer_source"]["frame_id"] = item.slicer_source.path.path.header.frame_id;
     path_json["slicer_source"]["poses"] = json::array();
     for (const auto& pose : item.slicer_source.path.path.poses) {
       path_json["slicer_source"]["poses"].push_back(pose_to_json(pose));
+    }
+    path_json["execution"]["path"]["frame_id"] = item.execution.path.path.header.frame_id;
+    path_json["execution"]["path"]["poses"] = json::array();
+    for (const auto& pose : item.execution.path.path.poses) {
+      path_json["execution"]["path"]["poses"].push_back(pose_to_json(pose));
     }
     root["paths"].push_back(path_json);
   }
@@ -703,9 +759,9 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   CryptoPP::SHA256 hash;
   byte digest[CryptoPP::SHA256::DIGESTSIZE];
   for (const auto& item : currentMowingPlan.paths) {
-    hash.Update(reinterpret_cast<const byte*>(&item.slicer_source.path_index), sizeof(item.slicer_source.path_index));
+    hash.Update(reinterpret_cast<const byte*>(&item.slicer_source.path_id), sizeof(item.slicer_source.path_id));
     hash.Update(reinterpret_cast<const byte*>(&item.path_direction), sizeof(item.path_direction));
-    for (const auto& pose_stamped : item.slicer_source.path.path.poses) {
+    for (const auto& pose_stamped : item.execution.path.path.poses) {
       hash.Update(reinterpret_cast<const byte*>(&pose_stamped.pose), sizeof(geometry_msgs::Pose));
     }
   }
@@ -733,7 +789,7 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
     auto& item = currentMowingPlan.paths[i];
     if (static_cast<int>(i) < currentMowingPath) {
       item.mow_status = MOW_STATUS_DONE;
-      const auto pose_count = item.slicer_source.path.path.poses.size();
+      const auto pose_count = item.execution.path.path.poses.size();
       item.current_pose_index = pose_count == 0 ? 0 : static_cast<uint32_t>(pose_count - 1);
     } else if (static_cast<int>(i) == currentMowingPath) {
       item.mow_status = MOW_STATUS_IN_PROGRESS;
@@ -826,7 +882,7 @@ bool MowingBehavior::execute_mowing_plan() {
     }
 
     auto& item = currentMowingPlan.paths[currentMowingPath];
-    auto& path = item.slicer_source.path;
+    auto& path = item.execution.path;
     start_current_mowing_plan_path();
     ROS_INFO_STREAM("MowingBehavior: Path segment length: " << path.path.poses.size() << " poses.");
 
@@ -1143,7 +1199,7 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
 
     for (std::size_t path_index = 0; path_index < currentMowingPlan.paths.size(); ++path_index) {
       const auto& item = currentMowingPlan.paths[path_index];
-      const auto& poses = item.slicer_source.path.path.poses;
+      const auto& poses = item.execution.path.path.poses;
       const std::string path_id = item.path_id;
       total_points += poses.size();
 
