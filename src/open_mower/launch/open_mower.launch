@@ -1,5 +1,6 @@
 <launch>
     <arg name="enable_path_order_optimizer_node" default="true"/>
+    <arg name="enable_system_monitor_node" default="true"/>
     <include file="$(find open_mower)/launch/include/_comms.launch"/>
     <include file="$(find open_mower)/launch/include/_move_base.launch"/>
     <include file="$(find open_mower)/launch/include/_localization.launch"/>
@@ -29,6 +30,8 @@
           respawn_delay="10">
         <remap from="/xbot_monitoring/remote_cmd_vel" to="/joy_vel"/>
     </node>
+
+    <include if="$(arg enable_system_monitor_node)" file="$(find openmower_system_monitor)/launch/system_monitor.launch"/>
 
     <node pkg="xbot_monitoring" type="heatmap_generator" name="heatmap_generator" output="screen" respawn="true"
           respawn_delay="10" unless="$(eval optenv('OM_HEATMAP_SENSOR_IDS', 'UNSET') == 'UNSET')">

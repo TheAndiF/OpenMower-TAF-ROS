@@ -2,7 +2,9 @@
   <node pkg="openmower_system_monitor"
         type="system_monitor_node"
         name="system_monitor_node"
-        output="screen">
+        output="screen"
+        respawn="true"
+        respawn_delay="10">
 
     <!-- WLAN interface on most OpenMower/Raspberry Pi setups -->
     <param name="wifi_interface" value="wlan0" />

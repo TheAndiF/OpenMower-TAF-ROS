@@ -166,46 +166,46 @@ int main(int argc, char** argv) {
 
   pnh.param<std::string>("wifi_interface", wifi_interface, "wlan0");
   pnh.param<std::string>("disk_path", disk_path, "/");
-  pnh.param<double>("publish_rate_hz", publish_rate_hz, 0.2);
+  pnh.param<double>("publish_rate_hz", publish_rate_hz, 0.033333);
 
   if (publish_rate_hz <= 0.0) {
-    ROS_WARN("publish_rate_hz <= 0, using 0.2 Hz");
-    publish_rate_hz = 0.2;
+    ROS_WARN("publish_rate_hz <= 0, using 0.033333 Hz");
+    publish_rate_hz = 0.033333;
   }
 
   std::map<std::string, DoubleSensor> double_sensors;
   std::map<std::string, StringSensor> string_sensors;
 
-  double_sensors["wifi_signal_dbm"].info = make_info(
-      "wifi_signal_dbm", "WLAN Signal", xbot_msgs::SensorInfo::TYPE_DOUBLE,
+  double_sensors["om_system_wifi_signal_dbm"].info = make_info(
+      "om_system_wifi_signal_dbm", "WLAN Signal", xbot_msgs::SensorInfo::TYPE_DOUBLE,
       xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "dBm", true, -100.0, -30.0, true, -80.0);
 
-  double_sensors["wifi_signal_percent"].info = make_info(
-      "wifi_signal_percent", "WLAN Signal", xbot_msgs::SensorInfo::TYPE_DOUBLE,
+  double_sensors["om_system_wifi_signal_percent"].info = make_info(
+      "om_system_wifi_signal_percent", "WLAN Signal", xbot_msgs::SensorInfo::TYPE_DOUBLE,
       xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT, "%", true, 0.0, 100.0, true, 25.0);
 
-  double_sensors["disk_free_percent"].info = make_info(
-      "disk_free_percent", "Free Disk Space", xbot_msgs::SensorInfo::TYPE_DOUBLE,
+  double_sensors["om_system_disk_free_percent"].info = make_info(
+      "om_system_disk_free_percent", "Free Disk Space", xbot_msgs::SensorInfo::TYPE_DOUBLE,
       xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT, "%", true, 0.0, 100.0, true, 10.0);
 
-  double_sensors["disk_free_gb"].info = make_info(
-      "disk_free_gb", "Free Disk Space", xbot_msgs::SensorInfo::TYPE_DOUBLE,
+  double_sensors["om_system_disk_free_gb"].info = make_info(
+      "om_system_disk_free_gb", "Free Disk Space", xbot_msgs::SensorInfo::TYPE_DOUBLE,
       xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "GB", false);
 
-  double_sensors["uptime_hours"].info = make_info(
-      "uptime_hours", "Uptime", xbot_msgs::SensorInfo::TYPE_DOUBLE,
+  double_sensors["om_system_uptime_hours"].info = make_info(
+      "om_system_uptime_hours", "Host Uptime", xbot_msgs::SensorInfo::TYPE_DOUBLE,
       xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "h", false);
 
-  string_sensors["system_time"].info = make_info(
-      "system_time", "System Time", xbot_msgs::SensorInfo::TYPE_STRING,
+  string_sensors["om_system_time"].info = make_info(
+      "om_system_time", "System Time", xbot_msgs::SensorInfo::TYPE_STRING,
       xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "");
 
-  string_sensors["system_date"].info = make_info(
-      "system_date", "System Date", xbot_msgs::SensorInfo::TYPE_STRING,
+  string_sensors["om_system_date"].info = make_info(
+      "om_system_date", "System Date", xbot_msgs::SensorInfo::TYPE_STRING,
       xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "");
 
-  string_sensors["last_reboot"].info = make_info(
-      "last_reboot", "Last Reboot", xbot_msgs::SensorInfo::TYPE_STRING,
+  string_sensors["om_system_last_reboot"].info = make_info(
+      "om_system_last_reboot", "Last Reboot", xbot_msgs::SensorInfo::TYPE_STRING,
       xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, "");
 
   for (auto& item : double_sensors) {
@@ -230,8 +230,8 @@ int main(int argc, char** argv) {
   while (ros::ok()) {
     double wifi_dbm = 0.0;
     if (read_wifi_signal_dbm(wifi_interface, wifi_dbm)) {
-      publish_double(double_sensors["wifi_signal_dbm"], wifi_dbm);
-      publish_double(double_sensors["wifi_signal_percent"], wifi_dbm_to_percent(wifi_dbm));
+      publish_double(double_sensors["om_system_wifi_signal_dbm"], wifi_dbm);
+      publish_double(double_sensors["om_system_wifi_signal_percent"], wifi_dbm_to_percent(wifi_dbm));
     } else {
       ROS_WARN_THROTTLE(60.0, "Could not read WLAN signal from interface '%s'", wifi_interface.c_str());
     }
@@ -239,16 +239,16 @@ int main(int argc, char** argv) {
     double disk_free_gb = 0.0;
     double disk_free_percent = 0.0;
     if (read_disk_usage(disk_path, disk_free_gb, disk_free_percent)) {
-      publish_double(double_sensors["disk_free_gb"], disk_free_gb);
-      publish_double(double_sensors["disk_free_percent"], disk_free_percent);
+      publish_double(double_sensors["om_system_disk_free_gb"], disk_free_gb);
+      publish_double(double_sensors["om_system_disk_free_percent"], disk_free_percent);
     } else {
       ROS_WARN_THROTTLE(60.0, "Could not read disk usage for path '%s'", disk_path.c_str());
     }
 
-    publish_string(string_sensors["system_time"], current_time_string());
-    publish_string(string_sensors["system_date"], current_date_string());
-    publish_string(string_sensors["last_reboot"], last_reboot_string());
-    publish_double(double_sensors["uptime_hours"], read_uptime_hours());
+    publish_string(string_sensors["om_system_time"], current_time_string());
+    publish_string(string_sensors["om_system_date"], current_date_string());
+    publish_string(string_sensors["om_system_last_reboot"], last_reboot_string());
+    publish_double(double_sensors["om_system_uptime_hours"], read_uptime_hours());
 
     ros::spinOnce();
     rate.sleep();
