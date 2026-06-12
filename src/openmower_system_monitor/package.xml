@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>openmower_system_monitor</name>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
   <description>Read-only system monitor for OpenMower using the existing xbot_monitoring sensor info/data path.</description>
 
   <maintainer email="allgemein.fl@tutamail.com">Andreas</maintainer>

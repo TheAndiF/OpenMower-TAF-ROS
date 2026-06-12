@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <ctime>
 #include <iomanip>
@@ -86,7 +87,53 @@ static std::string exec_command(const std::string& command) {
   return result;
 }
 
-static bool read_wifi_signal_dbm(const std::string& interface, double& signal_dbm) {
+static bool read_wifi_signal_dbm_from_proc_wireless(const std::string& interface, double& signal_dbm) {
+  // Prefer /proc/net/wireless because it is available on the OpenMower/Raspberry Pi
+  // setup even when the iw command is not installed in the runtime/container.
+  // Example line:
+  // wlan0: 0000   47.  -63.  -256        0      0      0      20      0        0
+  // Columns after the interface are: status, link, level, noise, ...
+  std::ifstream file("/proc/net/wireless");
+  if (!file.is_open()) {
+    return false;
+  }
+
+  std::string line;
+  while (std::getline(file, line)) {
+    const auto colon_pos = line.find(':');
+    if (colon_pos == std::string::npos) {
+      continue;
+    }
+
+    std::string current_interface = line.substr(0, colon_pos);
+    current_interface.erase(
+        std::remove_if(current_interface.begin(), current_interface.end(),
+                       [](unsigned char c) { return std::isspace(c); }),
+        current_interface.end());
+
+    if (current_interface != interface) {
+      continue;
+    }
+
+    std::istringstream values(line.substr(colon_pos + 1));
+    std::string status;
+    double link_quality = 0.0;
+    double level = 0.0;
+    double noise = 0.0;
+
+    values >> status >> link_quality >> level >> noise;
+    if (values.fail()) {
+      return false;
+    }
+
+    signal_dbm = level;
+    return true;
+  }
+
+  return false;
+}
+
+static bool read_wifi_signal_dbm_from_iw(const std::string& interface, double& signal_dbm) {
   const std::string output = exec_command("iw dev " + interface + " link 2>/dev/null");
   const std::string needle = "signal:";
 
@@ -98,6 +145,15 @@ static bool read_wifi_signal_dbm(const std::string& interface, double& signal_db
   std::istringstream stream(output.substr(pos + needle.size()));
   stream >> signal_dbm;
   return !stream.fail();
+}
+
+static bool read_wifi_signal_dbm(const std::string& interface, double& signal_dbm) {
+  if (read_wifi_signal_dbm_from_proc_wireless(interface, signal_dbm)) {
+    return true;
+  }
+
+  // Fallback for systems where /proc/net/wireless does not expose the link data.
+  return read_wifi_signal_dbm_from_iw(interface, signal_dbm);
 }
 
 static double wifi_dbm_to_percent(double dbm) {
