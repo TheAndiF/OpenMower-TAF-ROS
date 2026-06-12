@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>openmower_system_monitor</name>
+  <version>0.1.0</version>
+  <description>System monitor for OpenMower/xbot_monitoring.</description>
+
+  <maintainer email="allgemein.fl@tutamail.com">Andreas</maintainer>
+  <license>GPLv3</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roscpp</depend>
+  <depend>xbot_msgs</depend>
+</package>

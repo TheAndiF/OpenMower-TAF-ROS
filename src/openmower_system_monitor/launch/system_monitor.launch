@@ -1,0 +1,16 @@
+<launch>
+  <node pkg="openmower_system_monitor"
+        type="system_monitor_node"
+        name="system_monitor_node"
+        output="screen">
+
+    <!-- WLAN interface on most OpenMower/Raspberry Pi setups -->
+    <param name="wifi_interface" value="wlan0" />
+
+    <!-- Filesystem path used for disk_free_* sensors -->
+    <param name="disk_path" value="/" />
+
+    <!-- 0.033333 Hz = every 30 seconds -->
+    <param name="publish_rate_hz" value="0.033333" />
+  </node>
+</launch>
