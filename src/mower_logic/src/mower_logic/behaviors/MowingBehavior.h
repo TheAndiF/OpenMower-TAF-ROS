@@ -94,7 +94,7 @@ class MowingBehavior : public Behavior {
     std::string current_path_id;
     std::string plan_file;
     uint8_t processing_mode = 2;
-    bool optimize_outer_outline_entry = false;
+    uint8_t outline_entry_mode = 0;
 
     std::vector<MowingPathExecutionItem> paths;
   };

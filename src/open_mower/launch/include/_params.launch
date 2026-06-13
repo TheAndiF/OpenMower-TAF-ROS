@@ -129,22 +129,23 @@
         <param name="mower_logic/outline_simplify_safety_factor" value="$(optenv OM_OUTLINE_SIMPLIFY_SAFETY_FACTOR 2.0)"/>
         <param name="mower_logic/outline_simplify_min_distance_factor" value="$(optenv OM_OUTLINE_SIMPLIFY_MIN_DISTANCE_FACTOR 0.5)"/>
         <param name="mower_logic/outline_simplify_affects_next_offset" value="$(optenv OM_OUTLINE_SIMPLIFY_AFFECTS_NEXT_OFFSET True)"/>
+        <param name="mower_logic/obstacle_outline_count" value="$(optenv OM_OBSTACLE_OUTLINE_COUNT -1)"/>
+        <param name="mower_logic/obstacle_outline_overlap_count" value="$(optenv OM_OBSTACLE_OUTLINE_OVERLAP_COUNT -1)"/>
         <param name="mower_logic/mow_angle_offset" value="$(optenv OM_MOWING_ANGLE_OFFSET 0)"/>
         <param name="mower_logic/mow_angle_offset_is_absolute"
                value="$(optenv OM_MOWING_ANGLE_OFFSET_IS_ABSOLUTE False)"/>
         <param name="mower_logic/mow_angle_increment" value="$(optenv OM_MOWING_ANGLE_INCREMENT 0)"/>
         <param name="mower_logic/path_order_optimizer_enabled" value="$(optenv OM_PATH_ORDER_OPTIMIZER_ENABLED False)"/>
-        <param name="mower_logic/path_order_optimizer_optimize_fill_order" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER True)"/>
-        <param name="mower_logic/path_order_optimizer_move_obstacles_to_end" value="$(optenv OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END True)"/>
         <!-- Path Order Optimizer processing mode:
              1 = slicer_order
              2 = ordered_fills_plus_ordered_obstacles
              3 = ordered_obstacles_plus_ordered_fills
              4 = mixed_fills_and_obstacles -->
         <param name="mower_logic/path_order_optimizer_processing_mode" value="$(optenv OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE 2)"/>
-        <param name="mower_logic/path_order_optimizer_optimize_outer_outline_entry" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_OUTER_OUTLINE_ENTRY True)"/>
-        <param name="mower_logic/path_order_optimizer_obstacle_outline_count" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_COUNT -1)"/>
-        <param name="mower_logic/path_order_optimizer_obstacle_outline_overlap_count" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_OVERLAP_COUNT -1)"/>
+        <!-- Path Order Optimizer outline entry mode:
+             0 = slicer_entry
+             1 = nearest_outer_outline_entry -->
+        <param name="mower_logic/path_order_optimizer_outline_entry_mode" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OUTLINE_ENTRY_MODE 1)"/>
         <param name="mower_logic/path_order_optimizer_allow_reverse" value="$(optenv OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE True)"/>
         <param name="mower_logic/path_order_optimizer_cost_mode" value="$(optenv OM_PATH_ORDER_OPTIMIZER_COST_MODE 2)"/>
         <param name="mower_logic/path_order_optimizer_max_fill_paths" value="$(optenv OM_PATH_ORDER_OPTIMIZER_MAX_FILL_PATHS 150)"/>

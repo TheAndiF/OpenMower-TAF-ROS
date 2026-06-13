@@ -1137,9 +1137,9 @@ class MowerLogicSettingsBridge {
 
   std::string labelForKey(const std::string& key) const {
     if (key == "path_order_optimizer_processing_mode") return "POO Abarbeitungsmodus";
-    if (key == "path_order_optimizer_optimize_outer_outline_entry") return "POO äußerer Outline-Einstieg";
-    if (key == "path_order_optimizer_obstacle_outline_count") return "POO innere Outline-Anzahl";
-    if (key == "path_order_optimizer_obstacle_outline_overlap_count") return "POO innere Outline-Überlappung";
+    if (key == "path_order_optimizer_outline_entry_mode") return "POO Outline-Einstiegsmodus";
+    if (key == "obstacle_outline_count") return "Innere Outline-Anzahl";
+    if (key == "obstacle_outline_overlap_count") return "Innere Outline-Überlappung";
     if (key == "outline_simplify_per_loop") return "Outline-Glättung pro Linie";
     if (key == "outline_simplify_max_tolerance") return "Maximale Outline-Glättung";
     if (key == "outline_simplify_safety_factor") return "Outline-Glättung Sicherheitsfaktor";
@@ -1172,14 +1172,16 @@ class MowerLogicSettingsBridge {
 
   std::string groupForKey(const std::string& key) const {
     if (key.find("path_order_optimizer_") == 0) return "path_order_optimizer";
-    if (key.find("outline_simplify_") == 0) return "outline_simplification";
+    if (key.find("outline_simplify_") == 0 || key == "obstacle_outline_count" ||
+        key == "obstacle_outline_overlap_count") return "outline_simplification";
     if (key.find("satellite_logging_") == 0) return "satellite_logging";
     return kNamespace;
   }
 
   bool expertForKey(const std::string& key) const {
     if (key.find("path_order_optimizer_") == 0 && key != "path_order_optimizer_enabled") return true;
-    if (key.find("outline_simplify_") == 0) return true;
+    if (key.find("outline_simplify_") == 0 || key == "obstacle_outline_count" ||
+        key == "obstacle_outline_overlap_count") return true;
     if (key == "satellite_logging_script_path" || key == "satellite_logging_ram_path" ||
         key == "satellite_logging_output_path" || key == "satellite_logging_container_name") return true;
     return false;

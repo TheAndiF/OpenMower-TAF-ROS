@@ -21,10 +21,18 @@ path_order_optimizer_processing_mode:
   4 = mixed_fills_and_obstacles
       Area outlines -> fill paths and obstacle outlines ordered together.
 
-path_order_optimizer_optimize_outer_outline_entry:
-  true/false. When true, the first closed outer area outline is rotated in the
-  executable path so that it starts at the best reachable outline point from the
-  current mower pose. The original slicer path remains unchanged.
+path_order_optimizer_outline_entry_mode:
+  0 = slicer_entry
+      Use the original slicer start point for the outer area outline.
+
+  1 = nearest_outer_outline_entry
+      Rotate the first closed outer area outline in the executable path so that
+      it starts at the best reachable outline point from the current mower pose.
+      The original slicer path remains unchanged.
+
+obstacle_outline_count / obstacle_outline_overlap_count:
+  Outline-/Slicer settings for obstacle/inner outlines. They are independent of
+  the POO and use -1 to inherit outline_count / outline_overlap_count.
 
 Current mowing plan rules
 -------------------------

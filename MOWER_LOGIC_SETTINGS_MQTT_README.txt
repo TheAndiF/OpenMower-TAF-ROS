@@ -112,8 +112,8 @@ Beispiel Session-Set:
   Topic: settings/mower_logic/set/session/json
   Payload: {"mow_load_factor_smoothing_enabled":{"value":true},"mow_load_factor_smoothing_down_alpha":{"value":0.50},"mow_load_factor_smoothing_up_alpha":{"value":0.10}}
 
-Path Order Optimizer / innere Outlines
---------------------------------------
+Path Order Optimizer
+--------------------
 
 Der path-order optimizer wird unter settings/mower_logic geführt. Der Node läuft standardmäßig, aber die Optimierung wird über den Wert gesteuert:
 
@@ -121,20 +121,38 @@ Der path-order optimizer wird unter settings/mower_logic geführt. Der Node läu
     false = Optimizer-Service gibt die Slicer-Reihenfolge unverändert zurück
     true  = Optimizer-Service sortiert die Pfade
 
-Zusätzliche POO-Settings für innere/Obstacle-Outlines:
+  path_order_optimizer_processing_mode
+    1 = slicer_order
+    2 = ordered_fills_plus_ordered_obstacles
+    3 = ordered_obstacles_plus_ordered_fills
+    4 = mixed_fills_and_obstacles
 
-  path_order_optimizer_obstacle_outline_count
-    Anzahl innerer Hindernis-Outlines nur bei path_order_optimizer_enabled=true.
-    -1 = Kompatibilitätsmodus, verwende outline_count.
-
-  path_order_optimizer_obstacle_outline_overlap_count
-    Innerer Hindernis-Overlap für die Fill-Begrenzung nur bei path_order_optimizer_enabled=true.
-    -1 = Kompatibilitätsmodus, verwende outline_overlap_count.
+  path_order_optimizer_outline_entry_mode
+    0 = slicer_entry, äußere Area-Outline startet am originalen Slicer-Punkt
+    1 = nearest_outer_outline_entry, ausführbarer Outline-Pfad wird auf den nächstgünstigen Einstiegspunkt rotiert
 
 Beispiel:
 
   Topic: settings/mower_logic/set/session/json
-  Payload: {"path_order_optimizer_enabled":{"value":true},"path_order_optimizer_obstacle_outline_count":{"value":1},"path_order_optimizer_obstacle_outline_overlap_count":{"value":0}}
+  Payload: {"path_order_optimizer_enabled":{"value":true},"path_order_optimizer_processing_mode":{"value":2},"path_order_optimizer_outline_entry_mode":{"value":1}}
+
+Obstacle-/innere Outlines
+-------------------------
+
+Diese Werte gehören zur Outline-/Slicer-Konfiguration und wirken unabhängig vom POO:
+
+  obstacle_outline_count
+    Anzahl innerer Hindernis-Outlines.
+    -1 = verwende outline_count.
+
+  obstacle_outline_overlap_count
+    Innerer Hindernis-Overlap für die Fill-Begrenzung.
+    -1 = verwende outline_overlap_count.
+
+Beispiel:
+
+  Topic: settings/mower_logic/set/session/json
+  Payload: {"obstacle_outline_count":{"value":1},"obstacle_outline_overlap_count":{"value":0}}
 
 Progressive Outline-Simplification
 ----------------------------------

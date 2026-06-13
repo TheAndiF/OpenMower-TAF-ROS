@@ -145,13 +145,13 @@ class PathOrderOptimizer {
       bool used_fallback = res.used_fallback;
       std::vector<OptimizerPath> ordered;
       geometry_msgs::PoseStamped current = req.current_pose;
-      const uint8_t mode = normalizeProcessingMode(req.processing_mode, req);
+      const uint8_t mode = normalizeProcessingMode(req.processing_mode);
 
       if (mode == mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_SLICER_ORDER) {
         // True slicer mode: keep the request order exactly. The optional outer-outline entry optimization
         // only rotates the prepared execution path of the first area outline; it does not reorder paths.
         ordered = input_paths;
-        if (req.optimize_outer_outline_entry) {
+        if (outlineEntryEnabled(req)) {
           for (auto& item : ordered) {
             if (item.path.path_type == slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE) {
               optimizeOuterOutlineEntry(item, current, req, used_fallback);
@@ -160,12 +160,12 @@ class PathOrderOptimizer {
           }
         }
         res.used_fallback = used_fallback;
-        res.used_optimization = req.optimize_outer_outline_entry;
+        res.used_optimization = outlineEntryEnabled(req);
       } else {
         // The outer area outline stays the first group, but its entry point can be rotated to the
         // best reachable start. slicer_source remains unchanged in mower_logic; this response path
         // is the prepared execution path.
-        if (req.optimize_outer_outline_entry && !area_outlines.empty()) {
+        if (outlineEntryEnabled(req) && !area_outlines.empty()) {
           optimizeOuterOutlineEntry(area_outlines.front(), current, req, used_fallback);
         }
         appendAll(ordered, area_outlines);
@@ -269,8 +269,7 @@ class PathOrderOptimizer {
     target.insert(target.end(), source.begin(), source.end());
   }
 
-  uint8_t normalizeProcessingMode(uint8_t mode,
-                                  const mowing_path_order_optimizer::OptimizePaths::Request& req) const {
+  uint8_t normalizeProcessingMode(uint8_t mode) const {
     switch (mode) {
       case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_SLICER_ORDER:
       case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES:
@@ -278,11 +277,13 @@ class PathOrderOptimizer {
       case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_MIXED_FILLS_AND_OBSTACLES:
         return mode;
       default:
-        // Backward compatibility for older configs that only had optimize_fill_order/move_obstacles_to_end.
-        if (!req.optimize_fill_order) return mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_SLICER_ORDER;
-        if (!req.move_obstacles_to_end) return mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_ORDERED_OBSTACLES_PLUS_ORDERED_FILLS;
         return mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES;
     }
+  }
+
+  bool outlineEntryEnabled(const mowing_path_order_optimizer::OptimizePaths::Request& req) const {
+    return req.outline_entry_mode ==
+        mowing_path_order_optimizer::OptimizePaths::Request::OUTLINE_ENTRY_MODE_NEAREST_OUTER_OUTLINE_ENTRY;
   }
 
   void splitPaths(const std::vector<OptimizerPath>& paths,

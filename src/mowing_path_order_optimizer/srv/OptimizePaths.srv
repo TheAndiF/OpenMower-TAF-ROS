@@ -14,16 +14,19 @@ uint8 PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES=2
 uint8 PROCESSING_MODE_ORDERED_OBSTACLES_PLUS_ORDERED_FILLS=3
 uint8 PROCESSING_MODE_MIXED_FILLS_AND_OBSTACLES=4
 
+uint8 OUTLINE_ENTRY_MODE_SLICER_ENTRY=0
+uint8 OUTLINE_ENTRY_MODE_NEAREST_OUTER_OUTLINE_ENTRY=1
+
 slic3r_coverage_planner/Path[] paths
 # Optional identity channel: same length/order as paths. If empty, optimizer uses 0..n-1.
 int32[] path_indices
 geometry_msgs/PoseStamped current_pose
 bool enabled
-# Deprecated compatibility flags. processing_mode is authoritative when enabled.
-bool optimize_fill_order
-bool move_obstacles_to_end
 uint8 processing_mode
-bool optimize_outer_outline_entry
+# Outline entry modes.
+# 0 = slicer_entry: use the original slicer start point for the outer area outline.
+# 1 = nearest_outer_outline_entry: rotate the executable outer outline to the nearest/best reachable point.
+uint8 outline_entry_mode
 bool allow_reverse
 uint8 cost_mode
 uint32 max_fill_paths

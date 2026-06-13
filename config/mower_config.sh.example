@@ -210,18 +210,15 @@ export OM_MOWING_ANGLE_INCREMENT=0
 
 # Optional path-order optimizer. Disabled by default: original slicer order is kept.
 export OM_PATH_ORDER_OPTIMIZER_ENABLED=False
-export OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER=True
-export OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END=True
 # Path Order Optimizer processing mode:
 # 1=slicer_order, 2=ordered_fills_plus_ordered_obstacles,
 # 3=ordered_obstacles_plus_ordered_fills, 4=mixed_fills_and_obstacles
 export OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE=2
-# Rotate the closed outer area outline execution path to the best reachable entry point.
-export OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_OUTER_OUTLINE_ENTRY=True
-# Used only when OM_PATH_ORDER_OPTIMIZER_ENABLED=True. -1 keeps compatibility with OM_OUTLINE_COUNT.
-export OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_COUNT=-1
-# Used only when OM_PATH_ORDER_OPTIMIZER_ENABLED=True. -1 keeps compatibility with OM_OUTLINE_OVERLAP_COUNT.
-export OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_OVERLAP_COUNT=-1
+# Path Order Optimizer outline entry mode: 0=slicer_entry, 1=nearest_outer_outline_entry
+export OM_PATH_ORDER_OPTIMIZER_OUTLINE_ENTRY_MODE=1
+# Obstacle/inner outline generation is independent of POO. -1 uses OM_OUTLINE_COUNT / OM_OUTLINE_OVERLAP_COUNT.
+export OM_OBSTACLE_OUTLINE_COUNT=-1
+export OM_OBSTACLE_OUTLINE_OVERLAP_COUNT=-1
 export OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE=True
 # 0 = euclidean, 1 = MBF planner, 2 = hybrid
 export OM_PATH_ORDER_OPTIMIZER_COST_MODE=2

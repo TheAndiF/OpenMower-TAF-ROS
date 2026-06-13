@@ -550,18 +550,6 @@
                 "description": "Enable the optional mowing path order optimizer. Default False keeps the original slicer order.",
                 "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_ENABLED"
               },
-              "OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER": {
-                "type": "boolean",
-                "default": true,
-                "description": "Optimize the order of fill paths when the optimizer is enabled.",
-                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER"
-              },
-              "OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END": {
-                "type": "boolean",
-                "default": true,
-                "description": "Deprecated compatibility flag. OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE is authoritative for obstacle/fill ordering.",
-                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END"
-              },
               "OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE": {
                 "type": "number",
                 "default": 2,
@@ -569,12 +557,6 @@
                 "maximum": 4,
                 "description": "Path Order Optimizer processing mode: 1 slicer_order, 2 ordered_fills_plus_ordered_obstacles, 3 ordered_obstacles_plus_ordered_fills, 4 mixed_fills_and_obstacles.",
                 "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE"
-              },
-              "OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_OUTER_OUTLINE_ENTRY": {
-                "type": "boolean",
-                "default": true,
-                "description": "Rotate the closed outer area outline execution path to the best reachable entry point from the current mower pose.",
-                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_OUTER_OUTLINE_ENTRY"
               },
               "OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE": {
                 "type": "boolean",
@@ -693,18 +675,6 @@
                 "description": "Max. charge current before charging get switched off",
                 "x-environment-variable": "OM_CHARGE_CRITICAL_HIGH_CURRENT"
               },
-              "OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_COUNT": {
-                "type": "number",
-                "default": -1,
-                "description": "Obstacle/inner outline count used when the path order optimizer is enabled. -1 keeps compatibility and uses OM_OUTLINE_COUNT.",
-                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_COUNT"
-              },
-              "OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_OVERLAP_COUNT": {
-                "type": "number",
-                "default": -1,
-                "description": "Obstacle/inner outline overlap used for fill clipping when the path order optimizer is enabled. -1 keeps compatibility and uses OM_OUTLINE_OVERLAP_COUNT.",
-                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_OVERLAP_COUNT"
-              },
               "OM_OUTLINE_SIMPLIFY_PER_LOOP": {
                 "type": "number",
                 "default": 0.0,
@@ -734,6 +704,30 @@
                 "default": true,
                 "description": "Use the simplified area outline as the basis for the next area outline.",
                 "x-environment-variable": "OM_OUTLINE_SIMPLIFY_AFFECTS_NEXT_OFFSET"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_OUTLINE_ENTRY_MODE": {
+                "type": "number",
+                "default": 1,
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Path Order Optimizer outline entry mode: 0 slicer_entry, 1 nearest_outer_outline_entry.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OUTLINE_ENTRY_MODE"
+              },
+              "OM_OBSTACLE_OUTLINE_COUNT": {
+                "type": "number",
+                "default": -1,
+                "minimum": -1,
+                "maximum": 255,
+                "description": "Obstacle/inner outline count. -1 uses OM_OUTLINE_COUNT.",
+                "x-environment-variable": "OM_OBSTACLE_OUTLINE_COUNT"
+              },
+              "OM_OBSTACLE_OUTLINE_OVERLAP_COUNT": {
+                "type": "number",
+                "default": -1,
+                "minimum": -1,
+                "maximum": 255,
+                "description": "Obstacle/inner outline overlap count. -1 uses OM_OUTLINE_OVERLAP_COUNT.",
+                "x-environment-variable": "OM_OBSTACLE_OUTLINE_OVERLAP_COUNT"
               }
             }
           }

@@ -230,7 +230,7 @@ void MowingBehavior::clear_current_mowing_plan() {
   currentMowingPlan.current_path_id.clear();
   currentMowingPlan.plan_file.clear();
   currentMowingPlan.processing_mode = 2;
-  currentMowingPlan.optimize_outer_outline_entry = false;
+  currentMowingPlan.outline_entry_mode = 0;
 }
 
 std::string MowingBehavior::make_plan_file_path(const std::string& plan_id) const {
@@ -285,7 +285,7 @@ void MowingBehavior::build_current_mowing_plan(
   currentMowingPlan.plan_id = make_plan_id();
   currentMowingPlan.plan_file = make_plan_file_path(currentMowingPlan.plan_id);
   currentMowingPlan.processing_mode = static_cast<uint8_t>(config.path_order_optimizer_processing_mode);
-  currentMowingPlan.optimize_outer_outline_entry = config.path_order_optimizer_optimize_outer_outline_entry;
+  currentMowingPlan.outline_entry_mode = static_cast<uint8_t>(config.path_order_optimizer_outline_entry_mode);
 
   currentMowingPlan.paths.reserve(slicer_paths.size());
   for (std::size_t i = 0; i < slicer_paths.size(); ++i) {
@@ -324,10 +324,8 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
     optimizeSrv.request.path_indices.push_back(static_cast<int32_t>(item.slicer_source.path_id));
   }
   optimizeSrv.request.enabled = config.path_order_optimizer_enabled;
-  optimizeSrv.request.optimize_fill_order = config.path_order_optimizer_optimize_fill_order;
-  optimizeSrv.request.move_obstacles_to_end = config.path_order_optimizer_move_obstacles_to_end;
   optimizeSrv.request.processing_mode = static_cast<uint8_t>(config.path_order_optimizer_processing_mode);
-  optimizeSrv.request.optimize_outer_outline_entry = config.path_order_optimizer_optimize_outer_outline_entry;
+  optimizeSrv.request.outline_entry_mode = config.path_order_optimizer_outline_entry_mode;
   optimizeSrv.request.allow_reverse = config.path_order_optimizer_allow_reverse;
   optimizeSrv.request.cost_mode = config.path_order_optimizer_cost_mode;
   optimizeSrv.request.max_fill_paths = config.path_order_optimizer_max_fill_paths;
@@ -393,7 +391,7 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
     if (reordered.size() == currentMowingPlan.paths.size()) {
       currentMowingPlan.paths = reordered;
       currentMowingPlan.processing_mode = static_cast<uint8_t>(config.path_order_optimizer_processing_mode);
-      currentMowingPlan.optimize_outer_outline_entry = config.path_order_optimizer_optimize_outer_outline_entry;
+      currentMowingPlan.outline_entry_mode = static_cast<uint8_t>(config.path_order_optimizer_outline_entry_mode);
       normalize_current_mowing_plan_orders();
       currentMowingPath = 0;
       currentMowingPathIndex = 0;
@@ -442,7 +440,7 @@ bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_f
   loaded.current_order = root.value("current_order", 0);
   loaded.current_path_id = root.value("current_path_id", std::string());
   loaded.processing_mode = root.value("processing_mode", 2);
-  loaded.optimize_outer_outline_entry = root.value("optimize_outer_outline_entry", false);
+  loaded.outline_entry_mode = static_cast<uint8_t>(root.value("outline_entry_mode", 0));
 
   if (!root.contains("paths") || !root["paths"].is_array()) return false;
 
@@ -556,7 +554,7 @@ bool MowingBehavior::save_current_mowing_plan() const {
   root["current_order"] = currentMowingPlan.current_order;
   root["current_path_id"] = currentMowingPlan.current_path_id;
   root["processing_mode"] = static_cast<int>(currentMowingPlan.processing_mode);
-  root["optimize_outer_outline_entry"] = currentMowingPlan.optimize_outer_outline_entry;
+  root["outline_entry_mode"] = static_cast<int>(currentMowingPlan.outline_entry_mode);
   root["paths"] = json::array();
 
   for (const auto& item : currentMowingPlan.paths) {
@@ -789,16 +787,8 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   pathSrv.request.angle = angle;
   pathSrv.request.outline_count = config.outline_count;
   pathSrv.request.outline_overlap_count = config.outline_overlap_count;
-  if (config.path_order_optimizer_enabled && config.path_order_optimizer_obstacle_outline_count >= 0) {
-    pathSrv.request.obstacle_outline_count = config.path_order_optimizer_obstacle_outline_count;
-  } else {
-    pathSrv.request.obstacle_outline_count = config.outline_count;
-  }
-  if (config.path_order_optimizer_enabled && config.path_order_optimizer_obstacle_outline_overlap_count >= 0) {
-    pathSrv.request.obstacle_outline_overlap_count = config.path_order_optimizer_obstacle_outline_overlap_count;
-  } else {
-    pathSrv.request.obstacle_outline_overlap_count = config.outline_overlap_count;
-  }
+  pathSrv.request.obstacle_outline_count = config.obstacle_outline_count;
+  pathSrv.request.obstacle_outline_overlap_count = config.obstacle_outline_overlap_count;
   pathSrv.request.outline_simplify_per_loop = config.outline_simplify_per_loop;
   pathSrv.request.outline_simplify_max_tolerance = config.outline_simplify_max_tolerance;
   pathSrv.request.outline_simplify_safety_factor = config.outline_simplify_safety_factor;
@@ -1264,7 +1254,7 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
   payload["frame_id"] = "map";
   payload["current_area_id"] = currentAreaId;
   payload["processing_mode"] = static_cast<int>(currentMowingPlan.processing_mode);
-  payload["optimize_outer_outline_entry"] = currentMowingPlan.optimize_outer_outline_entry;
+  payload["outline_entry_mode"] = static_cast<int>(currentMowingPlan.outline_entry_mode);
   payload["areas"] = json::object();
 
   if (!currentAreaId.empty()) {
