@@ -149,6 +149,12 @@ ros::Publisher ll_power_set_persistent_battery_full_voltage_pub;
 ros::Publisher ll_power_set_persistent_battery_critical_high_voltage_pub;
 ros::Publisher ll_power_set_persistent_charge_critical_high_voltage_pub;
 ros::Publisher ll_power_set_persistent_charge_critical_high_current_pub;
+ros::Publisher ftc_settings_set_speed_fast_pub;
+ros::Publisher ftc_settings_set_speed_slow_pub;
+ros::Publisher ftc_settings_set_speed_fast_threshold_pub;
+ros::Publisher ftc_settings_set_persistent_speed_fast_pub;
+ros::Publisher ftc_settings_set_persistent_speed_slow_pub;
+ros::Publisher ftc_settings_set_persistent_speed_fast_threshold_pub;
 ros::Publisher ll_power_renew_pub;
 
 // properties for external mqtt
@@ -378,7 +384,9 @@ public:
                         {"battery_full_voltage", {&ll_power_set_battery_full_voltage_pub, &ll_power_set_persistent_battery_full_voltage_pub}},
                         {"battery_critical_high_voltage", {&ll_power_set_battery_critical_high_voltage_pub, &ll_power_set_persistent_battery_critical_high_voltage_pub}},
                         {"charge_critical_high_voltage", {&ll_power_set_charge_critical_high_voltage_pub, &ll_power_set_persistent_charge_critical_high_voltage_pub}},
-                        {"charge_critical_high_current", {&ll_power_set_charge_critical_high_current_pub, &ll_power_set_persistent_charge_critical_high_current_pub}}
+                        {"charge_critical_high_current", {&ll_power_set_charge_critical_high_current_pub, &ll_power_set_persistent_charge_critical_high_current_pub}},
+                        {"speed_fast", {&ftc_settings_set_speed_fast_pub, &ftc_settings_set_persistent_speed_fast_pub}},
+                        {"speed_slow", {&ftc_settings_set_speed_slow_pub, &ftc_settings_set_persistent_speed_slow_pub}}
                     };
                     std::map<std::string, double> accepted_values;
                     std::map<std::string, std::map<std::string, open_mower_settings::json>> accepted_metadata;
@@ -1736,6 +1744,12 @@ int main(int argc, char **argv) {
     ll_power_set_persistent_battery_critical_high_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/battery_critical_high_voltage", 10);
     ll_power_set_persistent_charge_critical_high_voltage_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/charge_critical_high_voltage", 10);
     ll_power_set_persistent_charge_critical_high_current_pub = n->advertise<std_msgs::Float64>("/ll/services/power/set_persistent/charge_critical_high_current", 10);
+    ftc_settings_set_speed_fast_pub = n->advertise<std_msgs::Float64>("/ftc_local_planner/settings/set/speed_fast", 10);
+    ftc_settings_set_speed_slow_pub = n->advertise<std_msgs::Float64>("/ftc_local_planner/settings/set/speed_slow", 10);
+    ftc_settings_set_speed_fast_threshold_pub = n->advertise<std_msgs::Float64>("/ftc_local_planner/settings/set/speed_fast_threshold", 10);
+    ftc_settings_set_persistent_speed_fast_pub = n->advertise<std_msgs::Float64>("/ftc_local_planner/settings/set_persistent/speed_fast", 10);
+    ftc_settings_set_persistent_speed_slow_pub = n->advertise<std_msgs::Float64>("/ftc_local_planner/settings/set_persistent/speed_slow", 10);
+    ftc_settings_set_persistent_speed_fast_threshold_pub = n->advertise<std_msgs::Float64>("/ftc_local_planner/settings/set_persistent/speed_fast_threshold", 10);
     ll_power_renew_pub = n->advertise<std_msgs::Empty>("/ll/services/power/renew", 10);
 
     rpc_request_pub = n->advertise<xbot_rpc::RpcRequest>(xbot_rpc::TOPIC_REQUEST, 100);

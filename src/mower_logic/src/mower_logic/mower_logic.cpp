@@ -68,6 +68,7 @@
 #include "slic3r_coverage_planner/PlanPath.h"
 #include "std_msgs/String.h"
 #include "std_msgs/Empty.h"
+#include "std_msgs/Float64.h"
 #include <open_mower/settings_persistence.h>
 #include "utils.h"
 #include "xbot_msgs/AbsolutePose.h"
@@ -988,6 +989,8 @@ class MowerLogicSettingsBridge {
                      std::string("/data/ros/settings_persistent.json"));
     status_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/settings/status_json", 1, true);
     validation_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/settings/validation_json", 1, true);
+    ftc_speed_fast_threshold_pub_ = nh_.advertise<std_msgs::Float64>("/ftc_local_planner/settings/set/speed_fast_threshold", 10);
+    ftc_persistent_speed_fast_threshold_pub_ = nh_.advertise<std_msgs::Float64>("/ftc_local_planner/settings/set_persistent/speed_fast_threshold", 10);
     session_sub_ = nh_.subscribe("/mower_logic/settings/set_session_json", 10,
                                  &MowerLogicSettingsBridge::sessionSetCallback, this);
     persistent_sub_ = nh_.subscribe("/mower_logic/settings/set_persistent_json", 10,
@@ -1015,6 +1018,7 @@ class MowerLogicSettingsBridge {
     json max_value;
     bool has_min = false;
     bool has_max = false;
+    bool external_ftc_planner = false;
     int order = 0;
   };
 
@@ -1148,13 +1152,15 @@ class MowerLogicSettingsBridge {
     if (key == "satellite_logging_ram_path") return "Satelliten-Logging RAM-Pfad";
     if (key == "satellite_logging_output_path") return "Satelliten-Logging Zielpfad";
     if (key == "satellite_logging_container_name") return "Satelliten-Logging Containername";
+    if (key == "speed_fast_threshold") return "Schnell ab Geradeausdistanz";
     return key;
   }
 
   std::string unitForKey(const std::string& key) const {
     if (key.find("temperature") != std::string::npos || key.find("_temp_") != std::string::npos) return "°C";
     if (key.find("distance") != std::string::npos || key == "tool_width" || key == "max_position_accuracy" ||
-        key == "outline_simplify_per_loop" || key == "outline_simplify_max_tolerance") return "m";
+        key == "outline_simplify_per_loop" || key == "outline_simplify_max_tolerance" ||
+        key == "speed_fast_threshold") return "m";
     if (key.find("angle") != std::string::npos || key == "shutdown_esc_max_pitch") return "°";
     if (key.find("minutes") != std::string::npos) return "min";
     if (key.find("seconds") != std::string::npos || key.find("_time") != std::string::npos || key.find("period") != std::string::npos) return "s";
@@ -1221,6 +1227,36 @@ class MowerLogicSettingsBridge {
         seed[meta.name] = entry;
       }
     }
+
+    ParamMeta speed_threshold_meta;
+    speed_threshold_meta.name = "speed_fast_threshold";
+    speed_threshold_meta.type = ValueType::kNumber;
+    speed_threshold_meta.type_name = jsonTypeName(speed_threshold_meta.type);
+    speed_threshold_meta.description = "Ab dieser berechneten Geradeausdistanz vor dem Roboter wird speed_fast verwendet.";
+    speed_threshold_meta.default_value = 1.5;
+    speed_threshold_meta.min_value = 0.0;
+    speed_threshold_meta.max_value = 5.0;
+    speed_threshold_meta.has_min = true;
+    speed_threshold_meta.has_max = true;
+    speed_threshold_meta.external_ftc_planner = true;
+    speed_threshold_meta.order = order;
+    metadata_[speed_threshold_meta.name] = speed_threshold_meta;
+
+    json speed_threshold_entry = json::object();
+    speed_threshold_entry["label"] = labelForKey(speed_threshold_meta.name);
+    speed_threshold_entry["description"] = speed_threshold_meta.description;
+    speed_threshold_entry["group"] = groupForKey(speed_threshold_meta.name);
+    speed_threshold_entry["expert"] = expertForKey(speed_threshold_meta.name);
+    speed_threshold_entry["order"] = speed_threshold_meta.order;
+    speed_threshold_entry["session_apply_supported"] = true;
+    speed_threshold_entry["restart_required"] = false;
+    speed_threshold_entry["default"] = speed_threshold_meta.default_value;
+    speed_threshold_entry["persistent"] = speed_threshold_meta.default_value;
+    speed_threshold_entry["unit"] = unitForKey(speed_threshold_meta.name);
+    speed_threshold_entry["type"] = speed_threshold_meta.type_name;
+    speed_threshold_entry["min"] = speed_threshold_meta.min_value;
+    speed_threshold_entry["max"] = speed_threshold_meta.max_value;
+    seed[speed_threshold_meta.name] = speed_threshold_entry;
     return seed;
   }
 
@@ -1249,7 +1285,7 @@ class MowerLogicSettingsBridge {
         settings_entries_[key]["persistent"] = persistent;
         open_mower_settings::updateEntryField(settings_persistent_path_, kNamespace, key, "persistent", persistent);
       }
-      if (setConfigValue(target_msg, key, meta.type, persistent)) changed = true;
+      if (!meta.external_ftc_planner && setConfigValue(target_msg, key, meta.type, persistent)) changed = true;
       syncParamTree(key, meta, persistent, persistent);
     }
     if (changed) {
@@ -1285,6 +1321,11 @@ class MowerLogicSettingsBridge {
   }
 
   json activeValue(const std::string& key, const ParamMeta& meta) const {
+    if (meta.external_ftc_planner) {
+      double value = meta.default_value.get<double>();
+      ros::param::param<double>(std::string("/settings/") + kNamespace + "/active/" + key, value, value);
+      return value;
+    }
     mower_logic::MowerLogicConfig current = getConfig();
     dynamic_reconfigure::Config current_msg;
     current.__toMessage__(current_msg);
@@ -1436,18 +1477,32 @@ class MowerLogicSettingsBridge {
     mower_logic::MowerLogicConfig active = getConfig();
     dynamic_reconfigure::Config active_msg;
     active.__toMessage__(active_msg);
+    bool has_internal_values = false;
     for (const auto& pair : accepted_values) {
       const auto& meta = metadata_.at(pair.first);
+      if (meta.external_ftc_planner) continue;
       setConfigValue(active_msg, pair.first, meta.type, pair.second);
+      has_internal_values = true;
     }
-    mower_logic::MowerLogicConfig applied = active;
-    if (!applied.__fromMessage__(active_msg)) {
-      validation["rejected"].push_back({{"key", "$"}, {"reason", "dynamic_reconfigure rejected the payload"}});
-      publishValidation(validation);
-      return;
-    }
-    if (!accepted_values.empty()) {
+    if (has_internal_values) {
+      mower_logic::MowerLogicConfig applied = active;
+      if (!applied.__fromMessage__(active_msg)) {
+        validation["rejected"].push_back({{"key", "$"}, {"reason", "dynamic_reconfigure rejected the payload"}});
+        publishValidation(validation);
+        return;
+      }
       setConfig(applied);
+    }
+    for (const auto& pair : accepted_values) {
+      const auto& meta = metadata_.at(pair.first);
+      if (!meta.external_ftc_planner) continue;
+      std_msgs::Float64 msg;
+      msg.data = pair.second.get<double>();
+      if (persistent) {
+        ftc_persistent_speed_fast_threshold_pub_.publish(msg);
+      } else {
+        ftc_speed_fast_threshold_pub_.publish(msg);
+      }
     }
 
     std::map<std::string, std::map<std::string, json>> persistent_updates;
@@ -1547,6 +1602,8 @@ class MowerLogicSettingsBridge {
   ros::NodeHandle& nh_;
   ros::Publisher status_pub_;
   ros::Publisher validation_pub_;
+  ros::Publisher ftc_speed_fast_threshold_pub_;
+  ros::Publisher ftc_persistent_speed_fast_threshold_pub_;
   ros::Subscriber session_sub_;
   ros::Subscriber persistent_sub_;
   ros::Subscriber renew_sub_;

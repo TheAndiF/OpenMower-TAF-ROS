@@ -743,6 +743,16 @@ LlSettingsJson seedLlPowerSettingsFromBootstrap() {
   seed["charge_critical_high_current"] = makeLlPowerNumberEntry(
       "Ladestrom kritisch", "Maximaler Ladestrom vor Abschaltung des Ladens.", 60,
       power_config.charge_critical_high_current, "A");
+  seed["speed_fast"] = makeLlPowerNumberEntry(
+      "Fahrgeschwindigkeit schnell", "Zielgeschwindigkeit auf geraden Pfadabschnitten.", 70,
+      0.5, "m/s");
+  seed["speed_slow"] = makeLlPowerNumberEntry(
+      "Fahrgeschwindigkeit langsam", "Zielgeschwindigkeit in Kurven oder kurzen Geradeausstuecken.", 80,
+      0.2, "m/s");
+  seed["speed_fast"]["min"] = 0.0;
+  seed["speed_fast"]["max"] = 2.0;
+  seed["speed_slow"]["min"] = 0.0;
+  seed["speed_slow"]["max"] = 2.0;
   return seed;
 }
 
@@ -751,6 +761,13 @@ double llPowerEntryNumber(const std::string& key, const std::string& field, doub
     return fallback;
   }
   return open_mower_settings::numberOr(ll_power_settings_entries[key], field, fallback);
+}
+
+double llBoardParamTreeNumber(const std::string& branch, const std::string& key, double fallback) {
+  double value = fallback;
+  ros::param::param<double>(std::string("/settings/") + kLlBoardSettingsNamespace + "/" + branch + "/" + key,
+                            value, fallback);
+  return value;
 }
 
 void syncLlPowerDefaultParamTree() {
@@ -767,6 +784,8 @@ void syncLlPowerDefaultParamTree() {
                   llPowerEntryNumber("charge_critical_high_voltage", "default", power_config.charge_critical_high_voltage));
   ros::param::set(root + "charge_critical_high_current",
                   llPowerEntryNumber("charge_critical_high_current", "default", power_config.charge_critical_high_current));
+  ros::param::set(root + "speed_fast", llPowerEntryNumber("speed_fast", "default", 0.5));
+  ros::param::set(root + "speed_slow", llPowerEntryNumber("speed_slow", "default", 0.2));
 }
 
 void syncLlPowerPersistentParamTree() {
@@ -778,6 +797,8 @@ void syncLlPowerPersistentParamTree() {
   ros::param::set(root + "battery_critical_high_voltage", ll_power_persistent_config.battery_critical_high_voltage);
   ros::param::set(root + "charge_critical_high_voltage", ll_power_persistent_config.charge_critical_high_voltage);
   ros::param::set(root + "charge_critical_high_current", ll_power_persistent_config.charge_critical_high_current);
+  ros::param::set(root + "speed_fast", llPowerEntryNumber("speed_fast", "persistent", llPowerEntryNumber("speed_fast", "default", 0.5)));
+  ros::param::set(root + "speed_slow", llPowerEntryNumber("speed_slow", "persistent", llPowerEntryNumber("speed_slow", "default", 0.2)));
 }
 
 void syncLlPowerActiveParamTree() {
@@ -788,6 +809,10 @@ void syncLlPowerActiveParamTree() {
   ros::param::set(root + "battery_critical_high_voltage", power_config.battery_critical_high_voltage);
   ros::param::set(root + "charge_critical_high_voltage", power_config.charge_critical_high_voltage);
   ros::param::set(root + "charge_critical_high_current", power_config.charge_critical_high_current);
+  ros::param::set(root + "speed_fast", llBoardParamTreeNumber("active", "speed_fast",
+                                                               llPowerEntryNumber("speed_fast", "persistent", 0.5)));
+  ros::param::set(root + "speed_slow", llBoardParamTreeNumber("active", "speed_slow",
+                                                               llPowerEntryNumber("speed_slow", "persistent", 0.2)));
 }
 
 void syncLlPowerLegacyWorkingParams() {
@@ -893,6 +918,14 @@ void publishLlPowerStatusJson() {
   status["settings"]["charge_critical_high_current"] =
       llPowerStatusNumber("charge_critical_high_current", power_config.charge_critical_high_current,
                           ll_power_persistent_config.charge_critical_high_current);
+  status["settings"]["speed_fast"] =
+      llPowerStatusNumber("speed_fast",
+                          llBoardParamTreeNumber("active", "speed_fast", llPowerEntryNumber("speed_fast", "persistent", 0.5)),
+                          llPowerEntryNumber("speed_fast", "persistent", llPowerEntryNumber("speed_fast", "default", 0.5)));
+  status["settings"]["speed_slow"] =
+      llPowerStatusNumber("speed_slow",
+                          llBoardParamTreeNumber("active", "speed_slow", llPowerEntryNumber("speed_slow", "persistent", 0.2)),
+                          llPowerEntryNumber("speed_slow", "persistent", llPowerEntryNumber("speed_slow", "default", 0.2)));
 
   std_msgs::String msg;
   msg.data = status.dump();

@@ -24,6 +24,7 @@ include_directories(
     include
     ${catkin_INCLUDE_DIRS}
 		${Eigen3_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../open_mower/include
     )
 add_definitions(${Eigen3_DEFINITIONS})
 

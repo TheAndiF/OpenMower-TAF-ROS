@@ -23,6 +23,7 @@
 #include <mbf_costmap_core/costmap_controller.h>
 #include <visualization_msgs/Marker.h>
 #include <std_msgs/Float32.h>
+#include <std_msgs/Float64.h>
 
 namespace ftc_local_planner
 {
@@ -85,6 +86,13 @@ namespace ftc_local_planner
          * and a value below 1.0 when the mower should slow down due to load.
          */
         ros::Subscriber mow_load_factor_sub_;
+        ros::Subscriber settings_speed_fast_sub_;
+        ros::Subscriber settings_speed_slow_sub_;
+        ros::Subscriber settings_speed_fast_threshold_sub_;
+        ros::Subscriber settings_persistent_speed_fast_sub_;
+        ros::Subscriber settings_persistent_speed_slow_sub_;
+        ros::Subscriber settings_persistent_speed_fast_threshold_sub_;
+        std::string settings_persistent_path_;
         double mow_load_factor_effective_ = 1.0;
         bool mow_load_factor_received_ = false;
 
@@ -109,6 +117,16 @@ namespace ftc_local_planner
         void update_control_point(double dt);
         void calculate_velocity_commands(double dt, geometry_msgs::TwistStamped &cmd_vel);
         void mowLoadFactorCallback(const std_msgs::Float32::ConstPtr &msg);
+        void speedFastSettingsCallback(const std_msgs::Float64::ConstPtr &msg);
+        void speedSlowSettingsCallback(const std_msgs::Float64::ConstPtr &msg);
+        void speedFastThresholdSettingsCallback(const std_msgs::Float64::ConstPtr &msg);
+        void persistentSpeedFastSettingsCallback(const std_msgs::Float64::ConstPtr &msg);
+        void persistentSpeedSlowSettingsCallback(const std_msgs::Float64::ConstPtr &msg);
+        void persistentSpeedFastThresholdSettingsCallback(const std_msgs::Float64::ConstPtr &msg);
+        void applyExposedSettingsPersistentValues();
+        void applyExposedSetting(const std::string &namespace_name, const std::string &key, double value, bool persistent);
+        void syncExposedSettingParamTree(const std::string &namespace_name, const std::string &key,
+                                         double default_value, double persistent_value, double active_value) const;
         double sanitizedMowLoadFactor() const;
 
         /**

@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <open_mower/settings_persistence.h>
+
 #include <pluginlib/class_list_macros.h>
 #include "mbf_msgs/ExePathAction.h"
 
@@ -46,6 +48,22 @@ namespace ftc_local_planner
                                                                                      _1, _2);
         reconfig_server->setCallback(cb);
 
+        private_nh.param("/settings/persistent_file", settings_persistent_path_,
+                         std::string("/data/ros/settings_persistent.json"));
+        settings_speed_fast_sub_ = private_nh.subscribe("/ftc_local_planner/settings/set/speed_fast", 1,
+                                                        &FTCPlanner::speedFastSettingsCallback, this);
+        settings_speed_slow_sub_ = private_nh.subscribe("/ftc_local_planner/settings/set/speed_slow", 1,
+                                                        &FTCPlanner::speedSlowSettingsCallback, this);
+        settings_speed_fast_threshold_sub_ = private_nh.subscribe("/ftc_local_planner/settings/set/speed_fast_threshold", 1,
+                                                                  &FTCPlanner::speedFastThresholdSettingsCallback, this);
+        settings_persistent_speed_fast_sub_ = private_nh.subscribe("/ftc_local_planner/settings/set_persistent/speed_fast", 1,
+                                                                   &FTCPlanner::persistentSpeedFastSettingsCallback, this);
+        settings_persistent_speed_slow_sub_ = private_nh.subscribe("/ftc_local_planner/settings/set_persistent/speed_slow", 1,
+                                                                   &FTCPlanner::persistentSpeedSlowSettingsCallback, this);
+        settings_persistent_speed_fast_threshold_sub_ = private_nh.subscribe("/ftc_local_planner/settings/set_persistent/speed_fast_threshold", 1,
+                                                                             &FTCPlanner::persistentSpeedFastThresholdSettingsCallback, this);
+        applyExposedSettingsPersistentValues();
+
         current_state = PRE_ROTATE;
 
         // PID Debugging topic
@@ -60,6 +78,154 @@ namespace ftc_local_planner
         ROS_INFO("FTCLocalPlannerROS: Version 2 Init.");
     }
 
+
+
+    void FTCPlanner::syncExposedSettingParamTree(const std::string &namespace_name, const std::string &key,
+                                                 double default_value, double persistent_value, double active_value) const
+    {
+        const std::string base = std::string("/settings/") + namespace_name;
+        ros::param::set(base + "/default/" + key, default_value);
+        ros::param::set(base + "/persistent/" + key, persistent_value);
+        ros::param::set(base + "/active/" + key, active_value);
+    }
+
+    void FTCPlanner::applyExposedSetting(const std::string &namespace_name, const std::string &key,
+                                         double value, bool persistent)
+    {
+        if (!std::isfinite(value))
+        {
+            ROS_WARN_STREAM("FTCLocalPlannerROS: Ignoring non-finite exposed setting " << key);
+            return;
+        }
+
+        FTCPlannerConfig next = config;
+        double min_value = 0.0;
+        double max_value = 0.0;
+        double default_value = 0.0;
+        if (key == "speed_fast")
+        {
+            min_value = FTCPlannerConfig::__getMin__().speed_fast;
+            max_value = FTCPlannerConfig::__getMax__().speed_fast;
+            default_value = FTCPlannerConfig::__getDefault__().speed_fast;
+            next.speed_fast = std::max(min_value, std::min(max_value, value));
+        }
+        else if (key == "speed_slow")
+        {
+            min_value = FTCPlannerConfig::__getMin__().speed_slow;
+            max_value = FTCPlannerConfig::__getMax__().speed_slow;
+            default_value = FTCPlannerConfig::__getDefault__().speed_slow;
+            next.speed_slow = std::max(min_value, std::min(max_value, value));
+        }
+        else if (key == "speed_fast_threshold")
+        {
+            min_value = FTCPlannerConfig::__getMin__().speed_fast_threshold;
+            max_value = FTCPlannerConfig::__getMax__().speed_fast_threshold;
+            default_value = FTCPlannerConfig::__getDefault__().speed_fast_threshold;
+            next.speed_fast_threshold = std::max(min_value, std::min(max_value, value));
+        }
+        else
+        {
+            ROS_WARN_STREAM("FTCLocalPlannerROS: Ignoring unknown exposed setting " << key);
+            return;
+        }
+
+        double active_value = value;
+        if (active_value < min_value || active_value > max_value)
+        {
+            const double clamped = std::max(min_value, std::min(max_value, active_value));
+            ROS_WARN_STREAM("FTCLocalPlannerROS: Clamped exposed setting " << key << " from " << active_value
+                            << " to " << clamped);
+            active_value = clamped;
+        }
+
+        if (reconfig_server != nullptr)
+        {
+            reconfig_server->updateConfig(next);
+        }
+        else
+        {
+            config = next;
+        }
+
+        double persistent_value = active_value;
+        if (!persistent)
+        {
+            const auto entries = open_mower_settings::readNamespace(settings_persistent_path_, namespace_name);
+            if (entries.contains(key) && entries[key].is_object() && entries[key].contains("persistent") &&
+                entries[key]["persistent"].is_number())
+            {
+                persistent_value = entries[key]["persistent"].get<double>();
+            }
+            else
+            {
+                persistent_value = default_value;
+            }
+        }
+        else
+        {
+            open_mower_settings::updateEntryField(settings_persistent_path_, namespace_name, key, "persistent", active_value);
+            persistent_value = active_value;
+        }
+
+        syncExposedSettingParamTree(namespace_name, key, default_value, persistent_value, active_value);
+    }
+
+    void FTCPlanner::applyExposedSettingsPersistentValues()
+    {
+        const auto ll_board_entries = open_mower_settings::readNamespace(settings_persistent_path_, "ll_board");
+        const auto mower_logic_entries = open_mower_settings::readNamespace(settings_persistent_path_, "mower_logic");
+
+        const double speed_fast_persistent =
+            ll_board_entries.contains("speed_fast") && ll_board_entries["speed_fast"].is_object() &&
+                    ll_board_entries["speed_fast"].contains("persistent") && ll_board_entries["speed_fast"]["persistent"].is_number()
+                ? ll_board_entries["speed_fast"]["persistent"].get<double>()
+                : config.speed_fast;
+        const double speed_slow_persistent =
+            ll_board_entries.contains("speed_slow") && ll_board_entries["speed_slow"].is_object() &&
+                    ll_board_entries["speed_slow"].contains("persistent") && ll_board_entries["speed_slow"]["persistent"].is_number()
+                ? ll_board_entries["speed_slow"]["persistent"].get<double>()
+                : config.speed_slow;
+        const double speed_fast_threshold_persistent =
+            mower_logic_entries.contains("speed_fast_threshold") && mower_logic_entries["speed_fast_threshold"].is_object() &&
+                    mower_logic_entries["speed_fast_threshold"].contains("persistent") &&
+                    mower_logic_entries["speed_fast_threshold"]["persistent"].is_number()
+                ? mower_logic_entries["speed_fast_threshold"]["persistent"].get<double>()
+                : config.speed_fast_threshold;
+
+        applyExposedSetting("ll_board", "speed_fast", speed_fast_persistent, false);
+        applyExposedSetting("ll_board", "speed_slow", speed_slow_persistent, false);
+        applyExposedSetting("mower_logic", "speed_fast_threshold", speed_fast_threshold_persistent, false);
+    }
+
+    void FTCPlanner::speedFastSettingsCallback(const std_msgs::Float64::ConstPtr &msg)
+    {
+        applyExposedSetting("ll_board", "speed_fast", msg->data, false);
+    }
+
+    void FTCPlanner::speedSlowSettingsCallback(const std_msgs::Float64::ConstPtr &msg)
+    {
+        applyExposedSetting("ll_board", "speed_slow", msg->data, false);
+    }
+
+    void FTCPlanner::speedFastThresholdSettingsCallback(const std_msgs::Float64::ConstPtr &msg)
+    {
+        applyExposedSetting("mower_logic", "speed_fast_threshold", msg->data, false);
+    }
+
+    void FTCPlanner::persistentSpeedFastSettingsCallback(const std_msgs::Float64::ConstPtr &msg)
+    {
+        applyExposedSetting("ll_board", "speed_fast", msg->data, true);
+    }
+
+    void FTCPlanner::persistentSpeedSlowSettingsCallback(const std_msgs::Float64::ConstPtr &msg)
+    {
+        applyExposedSetting("ll_board", "speed_slow", msg->data, true);
+    }
+
+    void FTCPlanner::persistentSpeedFastThresholdSettingsCallback(const std_msgs::Float64::ConstPtr &msg)
+    {
+        applyExposedSetting("mower_logic", "speed_fast_threshold", msg->data, true);
+    }
 
     void FTCPlanner::mowLoadFactorCallback(const std_msgs::Float32::ConstPtr &msg)
     {
