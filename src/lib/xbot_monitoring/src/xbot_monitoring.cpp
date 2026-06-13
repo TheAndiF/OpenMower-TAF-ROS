@@ -876,7 +876,7 @@ void subscribe_to_sensor(std::string topic, std::vector<ros::Subscriber> &sensor
         case xbot_msgs::SensorInfo::TYPE_DOUBLE: {
             ros::Subscriber s = n->subscribe<xbot_msgs::SensorDataDouble>(data_topic, 10, [info = sensor](
                     const xbot_msgs::SensorDataDouble::ConstPtr &msg) {
-                try_publish("sensors/" + info.sensor_id + "/data", std::to_string(msg->data));
+                try_publish("sensors/" + info.sensor_id + "/data", std::to_string(msg->data), true);
                 {
                     std::lock_guard<std::mutex> lk(latest_double_sensor_values_mutex);
                     latest_double_sensor_values[info.sensor_id] = msg->data;
@@ -885,7 +885,7 @@ void subscribe_to_sensor(std::string topic, std::vector<ros::Subscriber> &sensor
                 json data;
                 data["d"] = msg->data;
                 auto bson = json::to_bson(data);
-                try_publish_binary("sensors/" + info.sensor_id + "/bson", bson.data(), bson.size());
+                try_publish_binary("sensors/" + info.sensor_id + "/bson", bson.data(), bson.size(), true);
             });
             sensor_data_subscribers.push_back(s);
             break;
@@ -893,12 +893,12 @@ void subscribe_to_sensor(std::string topic, std::vector<ros::Subscriber> &sensor
         case xbot_msgs::SensorInfo::TYPE_STRING: {
             ros::Subscriber s = n->subscribe<xbot_msgs::SensorDataString>(data_topic, 10, [info = sensor](
                     const xbot_msgs::SensorDataString::ConstPtr &msg) {
-                try_publish("sensors/" + info.sensor_id + "/data", msg->data);
+                try_publish("sensors/" + info.sensor_id + "/data", msg->data, true);
 
                 json data;
                 data["d"] = msg->data;
                 auto bson = json::to_bson(data);
-                try_publish_binary("sensors/" + info.sensor_id + "/bson", bson.data(), bson.size());
+                try_publish_binary("sensors/" + info.sensor_id + "/bson", bson.data(), bson.size(), true);
             });
             sensor_data_subscribers.push_back(s);
             break;

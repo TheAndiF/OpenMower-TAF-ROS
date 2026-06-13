@@ -47,6 +47,10 @@ static std::map<std::string, SystemSensorConfig> sensor_configs = {
      {"System WLAN Signal", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT,
       xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 100.0, true, 25.0}},
 
+    {"om_system_wifi_ssid",
+     {"System WLAN Name", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
+
     {"om_system_disk_free_percent",
      {"System Free Disk", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT,
       xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 100.0, true, 10.0}},
@@ -154,6 +158,43 @@ static bool read_wifi_signal_dbm(const std::string& interface, double& signal_db
 
   // Fallback for systems where /proc/net/wireless does not expose the link data.
   return read_wifi_signal_dbm_from_iw(interface, signal_dbm);
+}
+
+static std::string trim_copy(const std::string& value) {
+  const auto begin = std::find_if_not(value.begin(), value.end(),
+                                      [](unsigned char c) { return std::isspace(c); });
+  const auto end = std::find_if_not(value.rbegin(), value.rend(),
+                                    [](unsigned char c) { return std::isspace(c); }).base();
+  if (begin >= end) {
+    return "";
+  }
+  return std::string(begin, end);
+}
+
+static bool read_wifi_ssid_from_iwgetid(const std::string& interface, std::string& ssid) {
+  ssid = trim_copy(exec_command("iwgetid -r " + interface + " 2>/dev/null"));
+  return !ssid.empty();
+}
+
+static bool read_wifi_ssid_from_iw(const std::string& interface, std::string& ssid) {
+  const std::string output = exec_command("iw dev " + interface + " link 2>/dev/null");
+  const std::string needle = "SSID:";
+
+  const auto pos = output.find(needle);
+  if (pos == std::string::npos) {
+    return false;
+  }
+
+  const auto line_end = output.find('\n', pos);
+  ssid = trim_copy(output.substr(pos + needle.size(), line_end - (pos + needle.size())));
+  return !ssid.empty();
+}
+
+static bool read_wifi_ssid(const std::string& interface, std::string& ssid) {
+  if (read_wifi_ssid_from_iwgetid(interface, ssid)) {
+    return true;
+  }
+  return read_wifi_ssid_from_iw(interface, ssid);
 }
 
 static double wifi_dbm_to_percent(double dbm) {
@@ -274,6 +315,38 @@ static void publish_string(const std::string& sensor_id, const std::string& valu
   it->second.sensor_data_pub.publish(data);
 }
 
+static void publish_system_sensor_values(const std::string& wifi_interface, const std::string& disk_path) {
+  double wifi_dbm = 0.0;
+  if (read_wifi_signal_dbm(wifi_interface, wifi_dbm)) {
+    publish_double("om_system_wifi_signal_dbm", wifi_dbm);
+    publish_double("om_system_wifi_signal_percent", wifi_dbm_to_percent(wifi_dbm));
+  } else {
+    ROS_WARN_THROTTLE(60.0, "Could not read WLAN signal from interface '%s'", wifi_interface.c_str());
+  }
+
+  std::string wifi_ssid;
+  if (read_wifi_ssid(wifi_interface, wifi_ssid)) {
+    publish_string("om_system_wifi_ssid", wifi_ssid);
+  } else {
+    publish_string("om_system_wifi_ssid", "not connected");
+    ROS_WARN_THROTTLE(60.0, "Could not read WLAN SSID from interface '%s'", wifi_interface.c_str());
+  }
+
+  double disk_free_gb = 0.0;
+  double disk_free_percent = 0.0;
+  if (read_disk_usage(disk_path, disk_free_gb, disk_free_percent)) {
+    publish_double("om_system_disk_free_gb", disk_free_gb);
+    publish_double("om_system_disk_free_percent", disk_free_percent);
+  } else {
+    ROS_WARN_THROTTLE(60.0, "Could not read disk usage for path '%s'", disk_path.c_str());
+  }
+
+  publish_string("om_system_time", current_time_string());
+  publish_string("om_system_date", current_date_string());
+  publish_string("om_system_last_reboot", last_reboot_string());
+  publish_double("om_system_uptime_hours", read_uptime_hours());
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "system_monitor_node");
 
@@ -286,11 +359,11 @@ int main(int argc, char** argv) {
 
   pnh.param<std::string>("wifi_interface", wifi_interface, "wlan0");
   pnh.param<std::string>("disk_path", disk_path, "/");
-  pnh.param<double>("publish_rate_hz", publish_rate_hz, 0.033333);
+  pnh.param<double>("publish_rate_hz", publish_rate_hz, 0.2);
 
   if (publish_rate_hz <= 0.0) {
-    ROS_WARN("publish_rate_hz <= 0, using 0.033333 Hz");
-    publish_rate_hz = 0.033333;
+    ROS_WARN("publish_rate_hz <= 0, using 0.2 Hz");
+    publish_rate_hz = 0.2;
   }
 
   register_system_sensors(nh);
@@ -299,30 +372,17 @@ int main(int argc, char** argv) {
                   << ", disk_path=" << disk_path
                   << ", publish_rate_hz=" << publish_rate_hz);
 
+  // Publish a few initial samples shortly after the latched SensorInfo messages.
+  // This reduces the dashboard window where a known sensor is shown with its default value.
+  for (int i = 0; ros::ok() && i < 3; ++i) {
+    publish_system_sensor_values(wifi_interface, disk_path);
+    ros::spinOnce();
+    ros::Duration(0.5).sleep();
+  }
+
   ros::Rate rate(publish_rate_hz);
   while (ros::ok()) {
-    double wifi_dbm = 0.0;
-    if (read_wifi_signal_dbm(wifi_interface, wifi_dbm)) {
-      publish_double("om_system_wifi_signal_dbm", wifi_dbm);
-      publish_double("om_system_wifi_signal_percent", wifi_dbm_to_percent(wifi_dbm));
-    } else {
-      ROS_WARN_THROTTLE(60.0, "Could not read WLAN signal from interface '%s'", wifi_interface.c_str());
-    }
-
-    double disk_free_gb = 0.0;
-    double disk_free_percent = 0.0;
-    if (read_disk_usage(disk_path, disk_free_gb, disk_free_percent)) {
-      publish_double("om_system_disk_free_gb", disk_free_gb);
-      publish_double("om_system_disk_free_percent", disk_free_percent);
-    } else {
-      ROS_WARN_THROTTLE(60.0, "Could not read disk usage for path '%s'", disk_path.c_str());
-    }
-
-    publish_string("om_system_time", current_time_string());
-    publish_string("om_system_date", current_date_string());
-    publish_string("om_system_last_reboot", last_reboot_string());
-    publish_double("om_system_uptime_hours", read_uptime_hours());
-
+    publish_system_sensor_values(wifi_interface, disk_path);
     ros::spinOnce();
     rate.sleep();
   }

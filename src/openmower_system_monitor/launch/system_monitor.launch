@@ -12,7 +12,7 @@
     <!-- Filesystem path used for disk_free_* sensors -->
     <param name="disk_path" value="/" />
 
-    <!-- 0.033333 Hz = every 30 seconds -->
-    <param name="publish_rate_hz" value="0.033333" />
+    <!-- 0.2 Hz = every 5 seconds -->
+    <param name="publish_rate_hz" value="0.2" />
   </node>
 </launch>

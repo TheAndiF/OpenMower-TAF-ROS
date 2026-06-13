@@ -92351,6 +92351,16 @@ J.fK(f,o,new A.i7(n,l,k,j,i,h,g,m))
 m=r.gl(0)
 q.r=m
 q.ez(m)
+break
+case"STRING":n=o.h(p,"sensor_name")
+m=o.h(p,"unit")
+o=o.h(p,"sensor_id")
+f=r.dx$
+f===$&&A.a()
+J.fK(f,o,new A.i7(n,0,0,0,!1,0,!1,m))
+m=r.gl(0)
+q.r=m
+q.ez(m)
 break}}s=r.gl(0)
 q.r=s
 q.ez(s)},
@@ -94454,6 +94464,14 @@ s.glU().gzs()
 s.glU().b=B.v
 s.r=B.bo
 s=A.kt(new A.ey(B.cC,p,p,s,p),1)
+if(typeof n.b==="string"){r=n.b
+if(r==null||r.length===0)r=o
+q=A.kt(A.aFH(r,1,B.me,p),1)
+n=A.kK(A.b([s,q,A.kt(A.kl(p,p,B.t,p,p,p,p,p,p,p,p,p,p,p),1)],t.p))
+n.slo(12)
+n.d=B.eY
+n.f=B.aV
+return A.kG(!1,B.S,!0,p,n,B.t,p,2,p,p,p,p,p,B.bx)}
 r=n.b
 r=B.c.ab(r,m.toUpperCase()==="M"?3:2)
 if(r==null)r=o
