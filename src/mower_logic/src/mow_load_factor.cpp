@@ -6,6 +6,7 @@
 #include <limits>
 #include <string>
 
+#include <mower_msgs/HighLevelStatus.h>
 #include <mower_msgs/Status.h>
 #include <nlohmann/json.hpp>
 #include <open_mower/settings_persistence.h>
@@ -34,6 +35,7 @@ class MowLoadFactorNode {
     status_json_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/mow_load_factor/status_json", 1, true);
 
     status_sub_ = nh_.subscribe("/ll/mower_status", 10, &MowLoadFactorNode::statusCallback, this);
+    state_sub_ = nh_.subscribe("/mower_logic/current_state", 10, &MowLoadFactorNode::stateCallback, this);
     set_enabled_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/set_enabled", 10,
                                      &MowLoadFactorNode::setEnabledSessionCallback, this);
     set_min_factor_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/set_min_factor", 10,
@@ -253,7 +255,7 @@ class MowLoadFactorNode {
       current_end_ = persistent_current_end_;
       syncActiveParamTree();
       syncLegacyWorkingParams();
-      last_effective_factor_ = enabled_ ? last_computed_factor_ : 1.0;
+      last_effective_factor_ = effectiveFactor();
     }
   }
 
@@ -426,6 +428,20 @@ class MowLoadFactorNode {
     return clampFactor(1.0 - ratio * (1.0 - min_factor_));
   }
 
+  bool isMowingState() const {
+    return current_state_name_ == "MOWING";
+  }
+
+  double effectiveFactor() const {
+    return enabled_ && isMowingState() ? last_computed_factor_ : 1.0;
+  }
+
+  void stateCallback(const mower_msgs::HighLevelStatus::ConstPtr& msg) {
+    current_state_name_ = msg->state_name;
+    last_effective_factor_ = effectiveFactor();
+    publishFactorTopics();
+  }
+
   void statusCallback(const mower_msgs::Status::ConstPtr& msg) {
     refreshRuntimeParametersFromParamTree();
 
@@ -435,7 +451,7 @@ class MowLoadFactorNode {
 
     last_raw_factor_ = std::min({last_factor_current_, last_factor_motor_temp_, last_factor_esc_temp_});
     last_computed_factor_ = smoothing_enabled_ ? applyAsymmetricLowpass(last_raw_factor_) : last_raw_factor_;
-    last_effective_factor_ = enabled_ ? last_computed_factor_ : 1.0;
+    last_effective_factor_ = effectiveFactor();
 
     publishFactorTopics();
   }
@@ -465,7 +481,7 @@ class MowLoadFactorNode {
     }
     syncActiveParamTree();
     syncLegacyWorkingParams();
-    last_effective_factor_ = enabled_ ? last_computed_factor_ : 1.0;
+    last_effective_factor_ = effectiveFactor();
     publishFactorTopics();
     publishStatusJson();
     ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session")
@@ -643,6 +659,7 @@ class MowLoadFactorNode {
   ros::NodeHandle nh_;
 
   ros::Subscriber status_sub_;
+  ros::Subscriber state_sub_;
   ros::Subscriber set_enabled_sub_;
   ros::Subscriber set_min_factor_sub_;
   ros::Subscriber set_current_start_sub_;
@@ -660,6 +677,7 @@ class MowLoadFactorNode {
   mutable ros::Publisher status_json_pub_;
 
   std::string settings_persistent_path_;
+  std::string current_state_name_;
   json settings_entries_;
 
   bool enabled_;
