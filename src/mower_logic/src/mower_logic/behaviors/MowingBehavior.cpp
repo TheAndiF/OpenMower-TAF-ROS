@@ -756,6 +756,18 @@ void MowingBehavior::clear_direct_mowing_area_request() {
 }
 
 void MowingBehavior::request_direct_mowing_area(const std::string& area_id, const std::string& mode) {
+  // A direct area command is an explicit new job.  Do not let a restored
+  // checkpoint/current plan from a previous run influence the selected area.
+  clear_current_mowing_plan();
+  currentMowingArea = 0;
+  currentMowingPath = 0;
+  currentMowingPathIndex = 0;
+  currentMowingPlanDigest.clear();
+  currentMowingAreaQueue.clear();
+  currentMowingAreaQueueDigest.clear();
+  currentAreaId.clear();
+  checkpointAreaId.clear();
+
   requestedMowingAreaId = area_id;
   requestedMowingAreaMode = mode.empty() ? "single" : mode;
   if (requestedMowingAreaMode != "single" && requestedMowingAreaMode != "from_here") {
@@ -821,6 +833,8 @@ bool MowingBehavior::build_mowing_area_queue() {
       currentMowingAreaQueue.clear();
       currentMowingAreaQueue.push_back(selected);
       currentMowingArea = 0;
+      ROS_INFO_STREAM("MowingBehavior: Direct mowing selected single area_id=" << selected.area_id
+                      << " name=" << selected.name << " order=" << selected.mowing_order);
     } else {  // from_here
       const std::size_t start = static_cast<std::size_t>(std::distance(currentMowingAreaQueue.begin(), it));
       std::vector<MowingAreaQueueEntry> trimmed;
