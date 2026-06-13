@@ -61,6 +61,7 @@ find_package(catkin REQUIRED
 add_message_files(
         FILES
         MapArea.msg
+        MowingAreaInfo.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -69,6 +70,8 @@ add_service_files(
         AddMowingAreaSrv.srv
         GetDockingPointSrv.srv
         GetMowingAreaSrv.srv
+        GetMowingAreaListSrv.srv
+        GetMowingAreaByIdSrv.srv
         SetDockingPointSrv.srv
         ClearNavPointSrv.srv
         SetNavPointSrv.srv
@@ -121,7 +124,7 @@ generate_messages(
 catkin_package(
         #  INCLUDE_DIRS include
         #  LIBRARIES mower_map
-        #  CATKIN_DEPENDS other_catkin_pkg
+        CATKIN_DEPENDS message_runtime std_msgs geometry_msgs
         #  DEPENDS system_lib
 )
 

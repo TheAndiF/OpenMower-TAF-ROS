@@ -1,0 +1,6 @@
+string area_id
+---
+bool success
+string message
+mower_map/MapArea area
+string area_id

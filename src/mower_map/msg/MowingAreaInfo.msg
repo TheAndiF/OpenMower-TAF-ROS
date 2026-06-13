@@ -1,0 +1,9 @@
+string area_id
+string name
+string type
+bool active
+bool mowing_enabled
+int32 mowing_order
+uint32 queue_index
+uint32 outline_point_count
+uint32 obstacle_count

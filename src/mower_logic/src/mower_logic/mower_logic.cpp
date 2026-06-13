@@ -57,6 +57,8 @@
 #include "mower_map/ClearNavPointSrv.h"
 #include "mower_map/GetDockingPointSrv.h"
 #include "mower_map/GetMowingAreaSrv.h"
+#include "mower_map/GetMowingAreaByIdSrv.h"
+#include "mower_map/GetMowingAreaListSrv.h"
 #include "mower_map/SetNavPointSrv.h"
 #include "mowing_path_order_optimizer/OptimizePaths.h"
 #include "mower_msgs/EmergencyStopSrv.h"
@@ -76,9 +78,9 @@
 #include "xbot_positioning/GPSControlSrv.h"
 #include "xbot_positioning/SetPoseSrv.h"
 
-ros::ServiceClient pathClient, pathOrderOptimizerClient, mapClient, dockingPointClient, gpsClient, mowClient,
-    emergencyClient, pathProgressClient, setNavPointClient, clearNavPointClient, clearMapClient, positioningClient,
-    actionRegistrationClient;
+ros::ServiceClient pathClient, pathOrderOptimizerClient, mapClient, mapAreaListClient, mapAreaByIdClient,
+    dockingPointClient, gpsClient, mowClient, emergencyClient, pathProgressClient, setNavPointClient,
+    clearNavPointClient, clearMapClient, positioningClient, actionRegistrationClient;
 
 ros::NodeHandle* n;
 ros::NodeHandle* paramNh;
@@ -1731,6 +1733,8 @@ int main(int argc, char** argv) {
   pathOrderOptimizerClient =
       n->serviceClient<mowing_path_order_optimizer::OptimizePaths>("mowing_path_order_optimizer/optimize_paths");
   mapClient = n->serviceClient<mower_map::GetMowingAreaSrv>("mower_map_service/get_mowing_area");
+  mapAreaListClient = n->serviceClient<mower_map::GetMowingAreaListSrv>("mower_map_service/get_mowing_area_list");
+  mapAreaByIdClient = n->serviceClient<mower_map::GetMowingAreaByIdSrv>("mower_map_service/get_mowing_area_by_id");
   clearMapClient = n->serviceClient<mower_map::ClearMapSrv>("mower_map_service/clear_map");
 
   gpsClient = n->serviceClient<xbot_positioning::GPSControlSrv>("xbot_positioning/set_gps_state");

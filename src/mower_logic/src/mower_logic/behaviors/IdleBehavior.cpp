@@ -17,8 +17,11 @@
 #include <mower_logic/PowerConfig.h>
 #include <mower_msgs/Power.h>
 
+#include <algorithm>
+
 #include "../utils.h"
 #include "PerimeterDocking.h"
+#include "MowingBehavior.h"
 
 extern void stopMoving();
 extern void stopBlade();
@@ -199,6 +202,11 @@ IdleBehavior::IdleBehavior(bool stayDocked) {
   start_mowing_action.enabled = false;
   start_mowing_action.action_name = "Start Mowing";
 
+  xbot_msgs::ActionInfo start_mowing_area_action;
+  start_mowing_area_action.action_id = "start_mowing_area";
+  start_mowing_area_action.enabled = false;
+  start_mowing_area_action.action_name = "Start Mowing Area";
+
   xbot_msgs::ActionInfo start_area_recording_action;
   start_area_recording_action.action_id = "start_area_recording";
   start_area_recording_action.enabled = false;
@@ -206,12 +214,29 @@ IdleBehavior::IdleBehavior(bool stayDocked) {
 
   actions.clear();
   actions.push_back(start_mowing_action);
+  actions.push_back(start_mowing_area_action);
   actions.push_back(start_area_recording_action);
 }
 
 void IdleBehavior::handle_action(std::string action) {
   if (action == "mower_logic:idle/start_mowing") {
     ROS_INFO_STREAM("Got start_mowing command");
+    MowingBehavior::INSTANCE.clear_direct_mowing_area_request();
+    command_start();
+  } else if (action.rfind("mower_logic:idle/start_mowing_area/", 0) == 0) {
+    std::string tail = action.substr(std::string("mower_logic:idle/start_mowing_area/").size());
+    std::string mode = "single";
+    const auto slash = tail.find('/');
+    if (slash != std::string::npos) {
+      mode = tail.substr(slash + 1);
+      tail = tail.substr(0, slash);
+    }
+    if (tail.empty()) {
+      ROS_WARN_STREAM("Got start_mowing_area command without area_id");
+      return;
+    }
+    ROS_INFO_STREAM("Got start_mowing_area command area_id=" << tail << " mode=" << mode);
+    MowingBehavior::INSTANCE.request_direct_mowing_area(tail, mode);
     command_start();
   } else if (action == "mower_logic:idle/start_area_recording") {
     ROS_INFO_STREAM("Got start_area_recording command");

@@ -25,6 +25,7 @@
 #include "std_msgs/String.h"
 #include <nlohmann/json.hpp>
 #include <cstdint>
+#include <string>
 
 class MowingBehavior : public Behavior {
  private:
@@ -32,7 +33,27 @@ class MowingBehavior : public Behavior {
 
   bool skip_area;
   bool skip_path;
+
+  struct MowingAreaQueueEntry {
+    uint32_t queue_index = 0;
+    std::string area_id;
+    std::string name;
+    int32_t mowing_order = 0;
+    std::string status = "pending";
+  };
+
+  std::vector<MowingAreaQueueEntry> currentMowingAreaQueue;
+  bool mowingAreaQueueInitialized = false;
+  bool directMowingAreaRequested = false;
+  std::string requestedMowingAreaId;
+  std::string requestedMowingAreaMode = "normal";
+  std::string activeMowingAreaMode = "normal";
+  std::string currentMowingAreaQueueDigest;
+
+  bool build_mowing_area_queue();
   bool create_mowing_plan(int area_index);
+  void mark_current_area_status(const std::string& status);
+  std::string compute_mowing_area_queue_digest() const;
 
   bool execute_mowing_plan();
 
@@ -189,6 +210,10 @@ class MowingBehavior : public Behavior {
   int16_t get_current_path_index();
 
   void handle_action(std::string action) override;
+
+  void request_direct_mowing_area(const std::string& area_id, const std::string& mode = "single");
+
+  void clear_direct_mowing_area_request();
 
   void update_actions();
 

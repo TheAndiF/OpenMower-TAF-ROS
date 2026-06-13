@@ -16,3 +16,8 @@ int32 current_order
 int32 current_pose_index
 int32 last_completed_order
 time saved_at
+
+# Area queue / direct-area mowing metadata.
+string mowing_area_mode
+string area_queue_digest
+int32 current_area_queue_index

@@ -1,0 +1,4 @@
+---
+bool success
+string message
+mower_map/MowingAreaInfo[] areas

@@ -35,6 +35,9 @@
 #include "mower_map/ClearNavPointSrv.h"
 #include "mower_map/GetDockingPointSrv.h"
 #include "mower_map/GetMowingAreaSrv.h"
+#include "mower_map/GetMowingAreaByIdSrv.h"
+#include "mower_map/GetMowingAreaListSrv.h"
+#include "mower_map/MowingAreaInfo.h"
 #include "mower_map/SetDockingPointSrv.h"
 #include "mower_map/SetNavPointSrv.h"
 
@@ -295,6 +298,36 @@ mower_map::MapArea internalMapAreaToMower(const MapArea& area) {
     result.area = internalPolygonToGeometry(area.outline);
   }
   return result;
+}
+
+
+uint32_t countActiveObstacles() {
+  uint32_t count = 0;
+  for (const auto& area : map_data.areas) {
+    if (area.active && area.type == "obstacle") count++;
+  }
+  return count;
+}
+
+void appendActiveObstacles(mower_map::MapArea& area_msg) {
+  for (const auto& area : map_data.areas) {
+    if (!area.active || area.type != "obstacle") continue;
+    area_msg.obstacles.push_back(internalPolygonToGeometry(area.outline));
+  }
+}
+
+mower_map::MowingAreaInfo mowingAreaToInfo(const MapArea& area, uint32_t queue_index) {
+  mower_map::MowingAreaInfo info;
+  info.area_id = area.id;
+  info.name = area.name.empty() ? area.id : area.name;
+  info.type = area.type;
+  info.active = area.active;
+  info.mowing_enabled = area.mowing_enabled;
+  info.mowing_order = area.mowing_order;
+  info.queue_index = queue_index;
+  info.outline_point_count = static_cast<uint32_t>(area.outline.size());
+  info.obstacle_count = countActiveObstacles();
+  return info;
 }
 
 grid_map::Polygon internalPolygonToGridMap(const Polygon& poly) {
@@ -975,13 +1008,50 @@ bool getMowingArea(mower_map::GetMowingAreaSrvRequest& req, mower_map::GetMowing
   res.area = internalMapAreaToMower(selected_area);
   res.area_id = selected_area.id;
 
-  for (const auto& area : map_data.areas) {
-    if (!area.active || area.type != "obstacle") continue;
-    res.area.obstacles.push_back(internalPolygonToGeometry(area.outline));
-  }
+  appendActiveObstacles(res.area);
 
   return true;
 }
+
+
+bool getMowingAreaList(mower_map::GetMowingAreaListSrvRequest& req, mower_map::GetMowingAreaListSrvResponse& res) {
+  ROS_INFO_STREAM("Got getMowingAreaList call");
+
+  auto mowing_areas = map_data.getMowingAreas();
+  uint32_t queue_index = 0;
+  for (const auto& area : mowing_areas) {
+    res.areas.push_back(mowingAreaToInfo(area, queue_index++));
+  }
+
+  res.success = true;
+  res.message = "Loaded valid mowing area list";
+  return true;
+}
+
+bool getMowingAreaById(mower_map::GetMowingAreaByIdSrvRequest& req, mower_map::GetMowingAreaByIdSrvResponse& res) {
+  ROS_INFO_STREAM("Got getMowingAreaById call with area_id: " << req.area_id);
+
+  auto mowing_areas = map_data.getMowingAreas();
+  auto it = std::find_if(mowing_areas.begin(), mowing_areas.end(), [&](const MapArea& area) {
+    return area.id == req.area_id;
+  });
+
+  if (it == mowing_areas.end()) {
+    res.success = false;
+    res.message = "No valid mowing area with area_id: " + req.area_id;
+    res.area_id = req.area_id;
+    ROS_ERROR_STREAM(res.message);
+    return true;
+  }
+
+  res.area = internalMapAreaToMower(*it);
+  res.area_id = it->id;
+  appendActiveObstacles(res.area);
+  res.success = true;
+  res.message = "Loaded mowing area by id";
+  return true;
+}
+
 
 bool setDockingPoint(mower_map::SetDockingPointSrvRequest& req, mower_map::SetDockingPointSrvResponse& res) {
   ROS_INFO_STREAM("Setting Docking Point");
@@ -1169,6 +1239,8 @@ int main(int argc, char** argv) {
 
   ros::ServiceServer add_area_srv = n.advertiseService("mower_map_service/add_mowing_area", addMowingArea);
   ros::ServiceServer get_area_srv = n.advertiseService("mower_map_service/get_mowing_area", getMowingArea);
+  ros::ServiceServer get_area_list_srv = n.advertiseService("mower_map_service/get_mowing_area_list", getMowingAreaList);
+  ros::ServiceServer get_area_by_id_srv = n.advertiseService("mower_map_service/get_mowing_area_by_id", getMowingAreaById);
   ros::ServiceServer set_docking_point_srv = n.advertiseService("mower_map_service/set_docking_point", setDockingPoint);
   ros::ServiceServer get_docking_point_srv = n.advertiseService("mower_map_service/get_docking_point", getDockingPoint);
   ros::ServiceServer set_nav_point_srv = n.advertiseService("mower_map_service/set_nav_point", setNavPoint);
