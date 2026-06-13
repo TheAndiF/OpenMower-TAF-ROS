@@ -1136,6 +1136,8 @@ class MowerLogicSettingsBridge {
   }
 
   std::string labelForKey(const std::string& key) const {
+    if (key == "path_order_optimizer_processing_mode") return "POO Abarbeitungsmodus";
+    if (key == "path_order_optimizer_optimize_outer_outline_entry") return "POO äußerer Outline-Einstieg";
     if (key == "path_order_optimizer_obstacle_outline_count") return "POO innere Outline-Anzahl";
     if (key == "path_order_optimizer_obstacle_outline_overlap_count") return "POO innere Outline-Überlappung";
     if (key == "outline_simplify_per_loop") return "Outline-Glättung pro Linie";

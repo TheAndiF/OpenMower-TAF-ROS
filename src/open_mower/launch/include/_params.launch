@@ -136,6 +136,13 @@
         <param name="mower_logic/path_order_optimizer_enabled" value="$(optenv OM_PATH_ORDER_OPTIMIZER_ENABLED False)"/>
         <param name="mower_logic/path_order_optimizer_optimize_fill_order" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_FILL_ORDER True)"/>
         <param name="mower_logic/path_order_optimizer_move_obstacles_to_end" value="$(optenv OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END True)"/>
+        <!-- Path Order Optimizer processing mode:
+             1 = slicer_order
+             2 = ordered_fills_plus_ordered_obstacles
+             3 = ordered_obstacles_plus_ordered_fills
+             4 = mixed_fills_and_obstacles -->
+        <param name="mower_logic/path_order_optimizer_processing_mode" value="$(optenv OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE 2)"/>
+        <param name="mower_logic/path_order_optimizer_optimize_outer_outline_entry" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_OUTER_OUTLINE_ENTRY True)"/>
         <param name="mower_logic/path_order_optimizer_obstacle_outline_count" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_COUNT -1)"/>
         <param name="mower_logic/path_order_optimizer_obstacle_outline_overlap_count" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OBSTACLE_OUTLINE_OVERLAP_COUNT -1)"/>
         <param name="mower_logic/path_order_optimizer_allow_reverse" value="$(optenv OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE True)"/>

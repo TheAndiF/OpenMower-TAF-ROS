@@ -195,6 +195,22 @@ std::string path_direction_to_json_string(uint8_t direction) {
       return "forward";
   }
 }
+
+json string_vector_to_json(const std::vector<std::string>& values) {
+  json result = json::array();
+  for (const auto& value : values) result.push_back(value);
+  return result;
+}
+
+std::vector<std::string> split_transform_flags(const std::string& flags) {
+  std::vector<std::string> result;
+  std::stringstream ss(flags);
+  std::string item;
+  while (std::getline(ss, item, ',')) {
+    if (!item.empty()) result.push_back(item);
+  }
+  return result;
+}
 }
 
 std::string MowingBehavior::state_name() {
@@ -213,6 +229,8 @@ void MowingBehavior::clear_current_mowing_plan() {
   currentMowingPlan.current_order = 0;
   currentMowingPlan.current_path_id.clear();
   currentMowingPlan.plan_file.clear();
+  currentMowingPlan.processing_mode = 2;
+  currentMowingPlan.optimize_outer_outline_entry = false;
 }
 
 std::string MowingBehavior::make_plan_file_path(const std::string& plan_id) const {
@@ -266,6 +284,8 @@ void MowingBehavior::build_current_mowing_plan(
   currentMowingPlan.area_digest = area_digest;
   currentMowingPlan.plan_id = make_plan_id();
   currentMowingPlan.plan_file = make_plan_file_path(currentMowingPlan.plan_id);
+  currentMowingPlan.processing_mode = static_cast<uint8_t>(config.path_order_optimizer_processing_mode);
+  currentMowingPlan.optimize_outer_outline_entry = config.path_order_optimizer_optimize_outer_outline_entry;
 
   currentMowingPlan.paths.reserve(slicer_paths.size());
   for (std::size_t i = 0; i < slicer_paths.size(); ++i) {
@@ -285,6 +305,8 @@ void MowingBehavior::build_current_mowing_plan(
     item.slicer_source.path = slicer_paths[i];
     item.slicer_source.path_id = static_cast<uint32_t>(i);
     item.execution.path = make_execution_path_from_slicer(item.slicer_source.path, item.path_direction);
+    item.execution.rotation_offset = 0;
+    item.execution.transform_flags.clear();
     currentMowingPlan.paths.push_back(item);
   }
 
@@ -304,6 +326,8 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
   optimizeSrv.request.enabled = config.path_order_optimizer_enabled;
   optimizeSrv.request.optimize_fill_order = config.path_order_optimizer_optimize_fill_order;
   optimizeSrv.request.move_obstacles_to_end = config.path_order_optimizer_move_obstacles_to_end;
+  optimizeSrv.request.processing_mode = static_cast<uint8_t>(config.path_order_optimizer_processing_mode);
+  optimizeSrv.request.optimize_outer_outline_entry = config.path_order_optimizer_optimize_outer_outline_entry;
   optimizeSrv.request.allow_reverse = config.path_order_optimizer_allow_reverse;
   optimizeSrv.request.cost_mode = config.path_order_optimizer_cost_mode;
   optimizeSrv.request.max_fill_paths = config.path_order_optimizer_max_fill_paths;
@@ -345,12 +369,21 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
                                 ? PATH_DIRECTION_REVERSE
                                 : PATH_DIRECTION_FORWARD;
       if (i < optimizeSrv.response.paths.size()) {
-        // The POO response path is the finished execution geometry. If reversed,
-        // it is already reversed and re-oriented by the optimizer.
+        // The POO response path is the finished execution geometry. If reversed or rotated,
+        // it is already prepared and re-oriented by the optimizer.
         item.execution.path = optimizeSrv.response.paths[i];
       } else {
         // Defensive fallback for older optimizer responses.
         item.execution.path = make_execution_path_from_slicer(item.slicer_source.path, item.path_direction);
+      }
+      item.execution.rotation_offset = (i < optimizeSrv.response.rotation_offsets.size())
+                                           ? optimizeSrv.response.rotation_offsets[i]
+                                           : 0;
+      item.execution.transform_flags = (i < optimizeSrv.response.transform_flags.size())
+                                           ? split_transform_flags(optimizeSrv.response.transform_flags[i])
+                                           : std::vector<std::string>();
+      if (item.path_direction == PATH_DIRECTION_REVERSE && item.execution.transform_flags.empty()) {
+        item.execution.transform_flags.push_back("reversed");
       }
       item.mow_status = MOW_STATUS_OPEN;
       item.current_pose_index = 0;
@@ -359,6 +392,8 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
 
     if (reordered.size() == currentMowingPlan.paths.size()) {
       currentMowingPlan.paths = reordered;
+      currentMowingPlan.processing_mode = static_cast<uint8_t>(config.path_order_optimizer_processing_mode);
+      currentMowingPlan.optimize_outer_outline_entry = config.path_order_optimizer_optimize_outer_outline_entry;
       normalize_current_mowing_plan_orders();
       currentMowingPath = 0;
       currentMowingPathIndex = 0;
@@ -406,6 +441,8 @@ bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_f
   loaded.plan_file = plan_file;
   loaded.current_order = root.value("current_order", 0);
   loaded.current_path_id = root.value("current_path_id", std::string());
+  loaded.processing_mode = root.value("processing_mode", 2);
+  loaded.optimize_outer_outline_entry = root.value("optimize_outer_outline_entry", false);
 
   if (!root.contains("paths") || !root["paths"].is_array()) return false;
 
@@ -417,6 +454,8 @@ bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_f
     item.path_id = path_json.value("path_id", std::string());
     item.order = path_json.value("order", 0);
     item.path_direction = path_json.value("path_direction", PATH_DIRECTION_FORWARD);
+    item.execution.rotation_offset = 0;
+    item.execution.transform_flags.clear();
     item.mow_status = MOW_STATUS_OPEN;
     item.current_pose_index = 0;
 
@@ -462,8 +501,22 @@ bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_f
       }
     }
 
+    if (path_json.contains("execution") && path_json["execution"].is_object()) {
+      const auto& execution_meta = path_json["execution"];
+      item.execution.rotation_offset = execution_meta.value("rotation_offset", 0);
+      if (execution_meta.contains("transform_flags") && execution_meta["transform_flags"].is_array()) {
+        item.execution.transform_flags.clear();
+        for (const auto& flag_json : execution_meta["transform_flags"]) {
+          if (flag_json.is_string()) item.execution.transform_flags.push_back(flag_json.get<std::string>());
+        }
+      }
+    }
+
     if (item.execution.path.path.poses.empty()) {
       item.execution.path = make_execution_path_from_slicer(item.slicer_source.path, item.path_direction);
+    }
+    if (item.path_direction == PATH_DIRECTION_REVERSE && item.execution.transform_flags.empty()) {
+      item.execution.transform_flags.push_back("reversed");
     }
 
     loaded.paths.push_back(item);
@@ -502,6 +555,8 @@ bool MowingBehavior::save_current_mowing_plan() const {
   root["plan_id"] = currentMowingPlan.plan_id;
   root["current_order"] = currentMowingPlan.current_order;
   root["current_path_id"] = currentMowingPlan.current_path_id;
+  root["processing_mode"] = static_cast<int>(currentMowingPlan.processing_mode);
+  root["optimize_outer_outline_entry"] = currentMowingPlan.optimize_outer_outline_entry;
   root["paths"] = json::array();
 
   for (const auto& item : currentMowingPlan.paths) {
@@ -522,6 +577,10 @@ bool MowingBehavior::save_current_mowing_plan() const {
     for (const auto& pose : item.slicer_source.path.path.poses) {
       path_json["slicer_source"]["poses"].push_back(pose_to_json(pose));
     }
+    path_json["execution"]["order"] = item.order;
+    path_json["execution"]["path_direction"] = static_cast<int>(item.path_direction);
+    path_json["execution"]["rotation_offset"] = item.execution.rotation_offset;
+    path_json["execution"]["transform_flags"] = string_vector_to_json(item.execution.transform_flags);
     path_json["execution"]["path"]["frame_id"] = item.execution.path.path.header.frame_id;
     path_json["execution"]["path"]["poses"] = json::array();
     for (const auto& pose : item.execution.path.path.poses) {
@@ -783,6 +842,7 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   for (const auto& item : currentMowingPlan.paths) {
     hash.Update(reinterpret_cast<const byte*>(&item.slicer_source.path_id), sizeof(item.slicer_source.path_id));
     hash.Update(reinterpret_cast<const byte*>(&item.path_direction), sizeof(item.path_direction));
+    hash.Update(reinterpret_cast<const byte*>(&item.execution.rotation_offset), sizeof(item.execution.rotation_offset));
     for (const auto& pose_stamped : item.execution.path.path.poses) {
       hash.Update(reinterpret_cast<const byte*>(&pose_stamped.pose), sizeof(geometry_msgs::Pose));
     }
@@ -1203,6 +1263,8 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
   payload["timestamp"] = now.toSec();
   payload["frame_id"] = "map";
   payload["current_area_id"] = currentAreaId;
+  payload["processing_mode"] = static_cast<int>(currentMowingPlan.processing_mode);
+  payload["optimize_outer_outline_entry"] = currentMowingPlan.optimize_outer_outline_entry;
   payload["areas"] = json::object();
 
   if (!currentAreaId.empty()) {
@@ -1243,6 +1305,10 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
         path["order"] = item.order;
         path["slicer_source"]["path_id"] = item.slicer_source.path_id;
         path["path_direction"] = path_direction_to_json_string(item.path_direction);
+        path["execution"]["order"] = item.order;
+        path["execution"]["path_direction"] = path_direction_to_json_string(item.path_direction);
+        path["execution"]["rotation_offset"] = item.execution.rotation_offset;
+        path["execution"]["transform_flags"] = string_vector_to_json(item.execution.transform_flags);
         path["points"] = path_points_to_json(item, 0, poses.size());
       } else {
         // Lightweight retained status snapshot: all path states, no heavy geometry.

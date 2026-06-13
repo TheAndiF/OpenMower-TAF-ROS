@@ -53,9 +53,16 @@ class MowingBehavior : public Behavior {
 
   struct MowingPathExecution {
     // Fertiger realer Fahrpfad. Die Mower-Logic faehrt ausschliesslich diesen Pfad.
-    // Bei FORWARD ist er eine Kopie von slicer_source.path, bei REVERSE die vom POO
-    // gedrehte und neu orientierte Kopie.
+    // Bei FORWARD ist er eine Kopie von slicer_source.path. Bei REVERSE oder Rotation
+    // ist er eine vorbereitete und neu orientierte Ausfuehrungsgeometrie.
     slic3r_coverage_planner::Path path;
+
+    // 0 = keine Rotation. >0 bedeutet: execution.path beginnt bei diesem urspruenglichen
+    // Slicer-Punkt. Wird aktuell fuer den optimierten Einstieg in die aeussere Area-Outline genutzt.
+    uint32_t rotation_offset = 0;
+
+    // Lesbare Debug-/Statusinformation, z.B. "reversed" oder "rotated_outer_outline_entry".
+    std::vector<std::string> transform_flags;
   };
 
   struct MowingPathExecutionItem {
@@ -86,6 +93,8 @@ class MowingBehavior : public Behavior {
     uint32_t current_order = 0;
     std::string current_path_id;
     std::string plan_file;
+    uint8_t processing_mode = 2;
+    bool optimize_outer_outline_entry = false;
 
     std::vector<MowingPathExecutionItem> paths;
   };

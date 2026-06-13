@@ -559,8 +559,22 @@
               "OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END": {
                 "type": "boolean",
                 "default": true,
-                "description": "Move inner obstacle outlines after fill paths.",
+                "description": "Deprecated compatibility flag. OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE is authoritative for obstacle/fill ordering.",
                 "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_MOVE_OBSTACLES_TO_END"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE": {
+                "type": "number",
+                "default": 2,
+                "minimum": 1,
+                "maximum": 4,
+                "description": "Path Order Optimizer processing mode: 1 slicer_order, 2 ordered_fills_plus_ordered_obstacles, 3 ordered_obstacles_plus_ordered_fills, 4 mixed_fills_and_obstacles.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE"
+              },
+              "OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_OUTER_OUTLINE_ENTRY": {
+                "type": "boolean",
+                "default": true,
+                "description": "Rotate the closed outer area outline execution path to the best reachable entry point from the current mower pose.",
+                "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OPTIMIZE_OUTER_OUTLINE_ENTRY"
               },
               "OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE": {
                 "type": "boolean",

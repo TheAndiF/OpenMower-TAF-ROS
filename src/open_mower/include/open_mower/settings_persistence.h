@@ -16,7 +16,7 @@
 #include <nlohmann/json.hpp>
 
 namespace open_mower_settings {
-using json = nlohmann::ordered_json;
+using json = nlohmann::json;
 
 class FileLock {
  public:

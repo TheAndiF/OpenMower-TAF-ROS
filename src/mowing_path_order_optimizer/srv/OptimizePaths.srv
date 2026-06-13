@@ -4,13 +4,26 @@ uint8 COST_EUCLIDEAN=0
 uint8 COST_PLANNER=1
 uint8 COST_HYBRID=2
 
+# Processing modes.
+# 1 = slicer_order: original slicer order, no POO reordering.
+# 2 = ordered_fills_plus_ordered_obstacles: area outlines, ordered fills, ordered obstacles.
+# 3 = ordered_obstacles_plus_ordered_fills: area outlines, ordered obstacles, ordered fills.
+# 4 = mixed_fills_and_obstacles: area outlines, fills and obstacles ordered together.
+uint8 PROCESSING_MODE_SLICER_ORDER=1
+uint8 PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES=2
+uint8 PROCESSING_MODE_ORDERED_OBSTACLES_PLUS_ORDERED_FILLS=3
+uint8 PROCESSING_MODE_MIXED_FILLS_AND_OBSTACLES=4
+
 slic3r_coverage_planner/Path[] paths
 # Optional identity channel: same length/order as paths. If empty, optimizer uses 0..n-1.
 int32[] path_indices
 geometry_msgs/PoseStamped current_pose
 bool enabled
+# Deprecated compatibility flags. processing_mode is authoritative when enabled.
 bool optimize_fill_order
 bool move_obstacles_to_end
+uint8 processing_mode
+bool optimize_outer_outline_entry
 bool allow_reverse
 uint8 cost_mode
 uint32 max_fill_paths
@@ -26,6 +39,10 @@ slic3r_coverage_planner/Path[] paths
 # Identity/direction of each response path relative to the request.
 int32[] path_indices
 bool[] path_reversed
+# Number of source poses the execution path was rotated by. 0 means no rotation.
+uint32[] rotation_offsets
+# Human readable transformations applied to the execution path, e.g. reversed, rotated_outer_outline_entry.
+string[] transform_flags
 bool success
 bool used_optimization
 bool used_fallback
