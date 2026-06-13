@@ -63,7 +63,7 @@ COPY --link --from=slic3r /opt/prebuilt/slic3r_coverage_planner /opt/prebuilt/sl
 # Fetch the list of packages
 COPY --link --from=dependencies /apt-install_list /apt-install_list
 RUN apt-get -o Acquire::Retries=5 --error-on=any update && \
-    apt-get install --no-install-recommends --yes $(cat /apt-install_list) libasio-dev && \
+    apt-get install --no-install-recommends --yes $(cat /apt-install_list) libasio-dev iw wireless-tools iproute2 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --link ./ /opt/open_mower_ros

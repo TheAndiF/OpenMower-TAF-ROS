@@ -12,6 +12,12 @@ uint8 VALUE_DESCRIPTION_PERCENT=6
 uint8 VALUE_DESCRIPTION_DISTANCE=7
 uint8 VALUE_DESCRIPTION_RPM=8
 
+# Origin/source of the sensor value. Useful for dashboards to group host-system
+# telemetry separately from OpenMower/mower telemetry.
+string ORIGIN_UNKNOWN=UNKNOWN
+string ORIGIN_HOST_SYSTEM=HOST_SYSTEM
+string ORIGIN_OPENMOWER=OPENMOWER
+
 # Some flags to describe the GPS fix better
 uint16 FLAG_GPS_RTK=1                   # True, if there are corrections applied
 uint16 FLAG_GPS_RTK_FIXED=2             # True, if we have a fixed solution
@@ -23,6 +29,7 @@ uint16 FLAG_SENSOR_FUSION_DEAD_RECKONING=8          # True, if we have dead reck
 
 string sensor_id
 string sensor_name                      # A human readable name for this sensor
+string sensor_origin                    # Source/origin, e.g. HOST_SYSTEM or OPENMOWER
 uint8 value_type                        # Data type of sensor data to expect. Useful for parsing
 uint8 value_description                 # Description of the value (e.g. Temperature, Speed), may be used to display different kinds of widgets to the user
 string unit                             # Unit of the sensor data (e.g. "V" or "m/s")

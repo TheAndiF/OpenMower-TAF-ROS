@@ -78,7 +78,6 @@ std::map<std::string, SensorConfig> sensor_configs{
   {"om_v_charge", {"V Charge", "V", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_VOLTAGE, xbot_msgs::SensorInfo::TYPE_DOUBLE, nullptr, &set_limits_charge_v}},
   {"om_v_battery", {"V Battery", "V", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_VOLTAGE, xbot_msgs::SensorInfo::TYPE_DOUBLE, nullptr, &set_limits_battery_v}},
   {"om_charge_current", {"Charge Current", "A", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_CURRENT, xbot_msgs::SensorInfo::TYPE_DOUBLE, nullptr, &set_limits_charge_current, "", [](){ return !paramNh->param("/mower_logic/ignore_charging_current", false); }}},
-  {"om_charge_state", {"Charge State", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING, nullptr}},
   {"om_left_esc_temp", {"Left ESC Temp", "deg.C", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_TEMPERATURE, xbot_msgs::SensorInfo::TYPE_DOUBLE, nullptr, &set_limits_esc_temp, "left_xesc"}},
   {"om_right_esc_temp", {"Right ESC Temp", "deg.C", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_TEMPERATURE, xbot_msgs::SensorInfo::TYPE_DOUBLE, nullptr, &set_limits_esc_temp, "right_xesc"}},
   {"om_mow_esc_temp", {"Mow ESC Temp", "deg.C", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_TEMPERATURE, xbot_msgs::SensorInfo::TYPE_DOUBLE, [](StatusPtr msg) { return msg->mower_esc_temperature; }, &set_limits_esc_temp, "mower_xesc"}},
@@ -87,6 +86,7 @@ std::map<std::string, SensorConfig> sensor_configs{
   {"om_mow_motor_rpm", {"Mow Motor Revolutions", "rpm", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_RPM, xbot_msgs::SensorInfo::TYPE_DOUBLE, [](StatusPtr msg) { return msg->mower_motor_rpm; }, &set_limits_mow_motor_rpm, "mower_xesc"}},
   {"om_mow_motor_direction", {"Mow Motor Direction", "-1 reverse / 0 stopped / 1 forward", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_DOUBLE, [](StatusPtr msg) { return static_cast<double>(msg->mower_motor_direction); }}},
   {"om_gps_accuracy", {"GPS Accuracy", "m", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_DISTANCE, xbot_msgs::SensorInfo::TYPE_DOUBLE}},
+  {"om_rain_status", {"Rain Sensor", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 };
 // clang-format on
 
@@ -109,6 +109,14 @@ void status_received(StatusPtr& msg) {
     }
   }
   state.rain_detected = msg->rain_detected;
+
+  xbot_msgs::SensorDataString rain_data;
+  rain_data.stamp = msg->stamp;
+  rain_data.data = msg->rain_detected ? "Rain detected" : "Dry";
+  auto rain_it = sensor_configs.find("om_rain_status");
+  if (rain_it != std::end(sensor_configs)) {
+    rain_it->second.data_pub.publish(rain_data);
+  }
 }
 
 void high_level_status(const mower_msgs::HighLevelStatus::ConstPtr& msg) {
@@ -176,16 +184,6 @@ void power_received(const mower_msgs::Power::ConstPtr& msg) {
     sensor_data.data = msg->charge_current;
 
     auto sc_it = sensor_configs.find("om_charge_current");
-    if (sc_it != std::end(sensor_configs)) {
-      sc_it->second.data_pub.publish(sensor_data);
-    }
-  }
-  {
-    xbot_msgs::SensorDataString sensor_data;
-    sensor_data.stamp = msg->stamp;
-    sensor_data.data = msg->charger_status;
-
-    auto sc_it = sensor_configs.find("om_charge_state");
     if (sc_it != std::end(sensor_configs)) {
       sc_it->second.data_pub.publish(sensor_data);
     }
@@ -271,6 +269,7 @@ void registerSensors() {
 
     sc_pair.second.si.sensor_id = sc_pair.first;
     sc_pair.second.si.sensor_name = sc_pair.second.name;
+    sc_pair.second.si.sensor_origin = xbot_msgs::SensorInfo::ORIGIN_OPENMOWER;
 
     sc_pair.second.si.unit = sc_pair.second.unit;
     sc_pair.second.si.value_type = sc_pair.second.sensor_type;

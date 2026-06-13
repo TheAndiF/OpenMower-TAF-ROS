@@ -33,6 +33,8 @@ struct SystemSensorConfig {
   bool has_critical_high = false;
   double upper_critical_value = 0.0;
 
+  std::string sensor_origin = xbot_msgs::SensorInfo::ORIGIN_HOST_SYSTEM;
+
   xbot_msgs::SensorInfo sensor_info;
   ros::Publisher sensor_info_pub;
   ros::Publisher sensor_data_pub;
@@ -51,13 +53,29 @@ static std::map<std::string, SystemSensorConfig> sensor_configs = {
      {"System WLAN Name", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
       xbot_msgs::SensorInfo::TYPE_STRING}},
 
+    {"om_system_wifi_bssid",
+     {"System WLAN Access Point", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
+
+    {"om_system_wifi_band",
+     {"System WLAN Band", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
+
+    {"om_system_wifi_ip",
+     {"System WLAN IP", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
+
+    {"om_system_wifi_bitrate",
+     {"System WLAN Bitrate", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
+
     {"om_system_disk_free_percent",
      {"System Free Disk", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT,
       xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 100.0, true, 10.0}},
 
     {"om_system_disk_free_gb",
      {"System Free Disk", "GB", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_DOUBLE}},
+      xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 0.0, true, 9.0}},
 
     {"om_system_time",
      {"System Time", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
@@ -72,8 +90,8 @@ static std::map<std::string, SystemSensorConfig> sensor_configs = {
       xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_uptime_hours",
-     {"System Host Uptime", "h", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_DOUBLE}},
+     {"System Host Uptime", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
+      xbot_msgs::SensorInfo::TYPE_STRING}},
 };
 
 static std::string exec_command(const std::string& command) {
@@ -89,6 +107,134 @@ static std::string exec_command(const std::string& command) {
     result += buffer.data();
   }
   return result;
+}
+
+
+static std::string trim_copy(const std::string& value);
+
+struct WifiLinkInfo {
+  bool connected = false;
+  std::string ssid;
+  std::string bssid;
+  double frequency_mhz = 0.0;
+  double signal_dbm = 0.0;
+  bool has_signal_dbm = false;
+  std::string rx_bitrate_mbps;
+  std::string tx_bitrate_mbps;
+};
+
+static bool read_wifi_link_info_now(const std::string& interface, WifiLinkInfo& info) {
+  const std::string output = exec_command("iw dev " + interface + " link 2>/dev/null");
+  if (output.empty() || output.find("Not connected") != std::string::npos) {
+    return false;
+  }
+
+  std::istringstream lines(output);
+  std::string line;
+  while (std::getline(lines, line)) {
+    const std::string trimmed = trim_copy(line);
+
+    if (trimmed.rfind("Connected to ", 0) == 0) {
+      std::istringstream stream(trimmed.substr(std::string("Connected to ").size()));
+      stream >> info.bssid;
+      info.connected = !info.bssid.empty();
+      continue;
+    }
+
+    if (trimmed.rfind("SSID:", 0) == 0) {
+      info.ssid = trim_copy(trimmed.substr(std::string("SSID:").size()));
+      continue;
+    }
+
+    if (trimmed.rfind("freq:", 0) == 0) {
+      std::istringstream stream(trimmed.substr(std::string("freq:").size()));
+      stream >> info.frequency_mhz;
+      continue;
+    }
+
+    if (trimmed.rfind("signal:", 0) == 0) {
+      std::istringstream stream(trimmed.substr(std::string("signal:").size()));
+      stream >> info.signal_dbm;
+      info.has_signal_dbm = !stream.fail();
+      continue;
+    }
+
+    if (trimmed.rfind("rx bitrate:", 0) == 0) {
+      std::istringstream stream(trimmed.substr(std::string("rx bitrate:").size()));
+      stream >> info.rx_bitrate_mbps;
+      continue;
+    }
+
+    if (trimmed.rfind("tx bitrate:", 0) == 0) {
+      std::istringstream stream(trimmed.substr(std::string("tx bitrate:").size()));
+      stream >> info.tx_bitrate_mbps;
+      continue;
+    }
+  }
+
+  return info.connected || !info.ssid.empty();
+}
+
+static bool read_cached_wifi_link_info(const std::string& interface, WifiLinkInfo& info) {
+  static std::string cached_interface;
+  static WifiLinkInfo cached_info;
+  static ros::Time last_update{0};
+
+  const ros::Time now = ros::Time::now();
+  if (cached_interface == interface && !last_update.isZero() && (now - last_update).toSec() < 30.0) {
+    info = cached_info;
+    return info.connected || !info.ssid.empty();
+  }
+
+  WifiLinkInfo fresh_info;
+  const bool ok = read_wifi_link_info_now(interface, fresh_info);
+  cached_interface = interface;
+  cached_info = fresh_info;
+  last_update = now;
+  info = cached_info;
+  return ok;
+}
+
+static std::string wifi_band_from_frequency(double frequency_mhz) {
+  if (frequency_mhz >= 2400.0 && frequency_mhz < 2500.0) return "2.4 GHz";
+  if (frequency_mhz >= 4900.0 && frequency_mhz < 5900.0) return "5 GHz";
+  if (frequency_mhz >= 5925.0 && frequency_mhz < 7125.0) return "6 GHz";
+  return "unknown";
+}
+
+static std::string format_wifi_bitrate(const WifiLinkInfo& info) {
+  if (info.rx_bitrate_mbps.empty() && info.tx_bitrate_mbps.empty()) return "unknown";
+  const std::string rx = info.rx_bitrate_mbps.empty() ? "?" : info.rx_bitrate_mbps;
+  const std::string tx = info.tx_bitrate_mbps.empty() ? "?" : info.tx_bitrate_mbps;
+  return "RX " + rx + " / TX " + tx + " MBit/s";
+}
+
+static bool read_cached_wifi_ip(const std::string& interface, std::string& ip) {
+  static std::string cached_interface;
+  static std::string cached_ip;
+  static ros::Time last_update{0};
+
+  const ros::Time now = ros::Time::now();
+  if (cached_interface == interface && !last_update.isZero() && (now - last_update).toSec() < 60.0) {
+    ip = cached_ip;
+    return !ip.empty();
+  }
+
+  const std::string output = exec_command("ip -4 -o addr show dev " + interface + " 2>/dev/null");
+  std::istringstream stream(output);
+  std::string token;
+  while (stream >> token) {
+    if (token.find('/') != std::string::npos) {
+      const auto slash = token.find('/');
+      ip = token.substr(0, slash);
+      break;
+    }
+  }
+
+  cached_interface = interface;
+  cached_ip = ip;
+  last_update = now;
+  return !ip.empty();
 }
 
 static bool read_wifi_signal_dbm_from_proc_wireless(const std::string& interface, double& signal_dbm) {
@@ -204,7 +350,7 @@ static double wifi_dbm_to_percent(double dbm) {
   return std::max(0.0, std::min(100.0, percent));
 }
 
-static bool read_disk_usage(const std::string& path, double& free_gb, double& free_percent) {
+static bool read_disk_usage(const std::string& path, double& free_gb, double& free_percent, double& total_gb) {
   struct statvfs stat {};
   if (statvfs(path.c_str(), &stat) != 0 || stat.f_blocks == 0) {
     return false;
@@ -214,6 +360,7 @@ static bool read_disk_usage(const std::string& path, double& free_gb, double& fr
   const double total_bytes = static_cast<double>(stat.f_blocks) * block_size;
   const double free_bytes = static_cast<double>(stat.f_bavail) * block_size;
 
+  total_gb = total_bytes / 1000000000.0;
   free_gb = free_bytes / 1000000000.0;
   free_percent = (free_bytes / total_bytes) * 100.0;
   return true;
@@ -224,6 +371,16 @@ static double read_uptime_hours() {
   double uptime_seconds = 0.0;
   file >> uptime_seconds;
   return uptime_seconds / 3600.0;
+}
+
+static std::string format_uptime_days_hours() {
+  const double uptime_hours = read_uptime_hours();
+  const int days = static_cast<int>(uptime_hours / 24.0);
+  const double hours = uptime_hours - static_cast<double>(days * 24);
+
+  std::ostringstream out;
+  out << days << " d " << std::fixed << std::setprecision(1) << hours << " h";
+  return out.str();
 }
 
 static std::string format_time(std::time_t timestamp, const char* format) {
@@ -250,17 +407,28 @@ static std::string last_reboot_string() {
   return format_time(boot_time, "%Y-%m-%d %H:%M:%S");
 }
 
-static void register_system_sensors(ros::NodeHandle& nh) {
+static void register_system_sensors(ros::NodeHandle& nh, const std::string& disk_path) {
   // Same xbot_monitoring contract as mower_logic/src/monitoring/monitoring.cpp:
   // every sensor publishes a latched SensorInfo topic and a matching data topic.
   // xbot_monitoring discovers /xbot_monitoring/sensors/.*/info and builds
   // sensor_infos/json, sensor_infos/bson and sensors/<sensor_id>/data on MQTT.
+  double disk_free_gb_for_info = 0.0;
+  double disk_free_percent_for_info = 0.0;
+  double disk_total_gb_for_info = 0.0;
+  if (read_disk_usage(disk_path, disk_free_gb_for_info, disk_free_percent_for_info, disk_total_gb_for_info)) {
+    auto disk_it = sensor_configs.find("om_system_disk_free_gb");
+    if (disk_it != sensor_configs.end()) {
+      disk_it->second.max_value = disk_total_gb_for_info;
+    }
+  }
+
   for (auto& sc_pair : sensor_configs) {
     const std::string& sensor_id = sc_pair.first;
     SystemSensorConfig& config = sc_pair.second;
 
     config.sensor_info.sensor_id = sensor_id;
     config.sensor_info.sensor_name = config.sensor_name;
+    config.sensor_info.sensor_origin = config.sensor_origin.empty() ? xbot_msgs::SensorInfo::ORIGIN_HOST_SYSTEM : config.sensor_origin;
     config.sensor_info.unit = config.unit;
     config.sensor_info.value_type = config.value_type;
     config.sensor_info.value_description = config.value_description;
@@ -317,24 +485,55 @@ static void publish_string(const std::string& sensor_id, const std::string& valu
 
 static void publish_system_sensor_values(const std::string& wifi_interface, const std::string& disk_path) {
   double wifi_dbm = 0.0;
-  if (read_wifi_signal_dbm(wifi_interface, wifi_dbm)) {
+  const bool has_proc_wifi_signal = read_wifi_signal_dbm(wifi_interface, wifi_dbm);
+  if (has_proc_wifi_signal) {
     publish_double("om_system_wifi_signal_dbm", wifi_dbm);
     publish_double("om_system_wifi_signal_percent", wifi_dbm_to_percent(wifi_dbm));
   } else {
     ROS_WARN_THROTTLE(60.0, "Could not read WLAN signal from interface '%s'", wifi_interface.c_str());
   }
 
-  std::string wifi_ssid;
-  if (read_wifi_ssid(wifi_interface, wifi_ssid)) {
-    publish_string("om_system_wifi_ssid", wifi_ssid);
+  WifiLinkInfo wifi_info;
+  const bool has_wifi_details = read_cached_wifi_link_info(wifi_interface, wifi_info);
+  if (has_wifi_details) {
+    if (!wifi_info.ssid.empty()) {
+      publish_string("om_system_wifi_ssid", wifi_info.ssid);
+    } else {
+      publish_string("om_system_wifi_ssid", "unknown");
+    }
+
+    publish_string("om_system_wifi_bssid", wifi_info.bssid.empty() ? "unknown" : wifi_info.bssid);
+    publish_string("om_system_wifi_band", wifi_info.frequency_mhz > 0.0 ? wifi_band_from_frequency(wifi_info.frequency_mhz) : "unknown");
+    publish_string("om_system_wifi_bitrate", format_wifi_bitrate(wifi_info));
+
+    if (!has_proc_wifi_signal && wifi_info.has_signal_dbm) {
+      publish_double("om_system_wifi_signal_dbm", wifi_info.signal_dbm);
+      publish_double("om_system_wifi_signal_percent", wifi_dbm_to_percent(wifi_info.signal_dbm));
+    }
+  } else if (has_proc_wifi_signal) {
+    publish_string("om_system_wifi_ssid", "unknown");
+    publish_string("om_system_wifi_bssid", "unknown");
+    publish_string("om_system_wifi_band", "unknown");
+    publish_string("om_system_wifi_bitrate", "unknown");
+    ROS_WARN_THROTTLE(60.0, "Could not read WLAN details from interface '%s'", wifi_interface.c_str());
   } else {
     publish_string("om_system_wifi_ssid", "not connected");
-    ROS_WARN_THROTTLE(60.0, "Could not read WLAN SSID from interface '%s'", wifi_interface.c_str());
+    publish_string("om_system_wifi_bssid", "not connected");
+    publish_string("om_system_wifi_band", "not connected");
+    publish_string("om_system_wifi_bitrate", "not connected");
+  }
+
+  std::string wifi_ip;
+  if (read_cached_wifi_ip(wifi_interface, wifi_ip)) {
+    publish_string("om_system_wifi_ip", wifi_ip);
+  } else {
+    publish_string("om_system_wifi_ip", has_proc_wifi_signal ? "unknown" : "not connected");
   }
 
   double disk_free_gb = 0.0;
   double disk_free_percent = 0.0;
-  if (read_disk_usage(disk_path, disk_free_gb, disk_free_percent)) {
+  double disk_total_gb = 0.0;
+  if (read_disk_usage(disk_path, disk_free_gb, disk_free_percent, disk_total_gb)) {
     publish_double("om_system_disk_free_gb", disk_free_gb);
     publish_double("om_system_disk_free_percent", disk_free_percent);
   } else {
@@ -344,7 +543,7 @@ static void publish_system_sensor_values(const std::string& wifi_interface, cons
   publish_string("om_system_time", current_time_string());
   publish_string("om_system_date", current_date_string());
   publish_string("om_system_last_reboot", last_reboot_string());
-  publish_double("om_system_uptime_hours", read_uptime_hours());
+  publish_string("om_system_uptime_hours", format_uptime_days_hours());
 }
 
 int main(int argc, char** argv) {
@@ -366,7 +565,7 @@ int main(int argc, char** argv) {
     publish_rate_hz = 0.2;
   }
 
-  register_system_sensors(nh);
+  register_system_sensors(nh, disk_path);
 
   ROS_INFO_STREAM("system_monitor_node started. wifi_interface=" << wifi_interface
                   << ", disk_path=" << disk_path

@@ -798,6 +798,7 @@ void publish_sensor_metadata() {
             json info;
             info["sensor_id"] = kv.second.sensor_id;
             info["sensor_name"] = kv.second.sensor_name;
+            info["sensor_origin"] = kv.second.sensor_origin.empty() ? "UNKNOWN" : kv.second.sensor_origin;
 
             switch (kv.second.value_type) {
                 case xbot_msgs::SensorInfo::TYPE_STRING: {
