@@ -1176,7 +1176,7 @@ class MowerLogicSettingsBridge {
     if (key.find("path_order_optimizer_") == 0) return "path_order_optimizer";
     if (key.find("outline_simplify_") == 0 || key == "obstacle_outline_count" ||
         key == "obstacle_outline_overlap_count") return "outline_simplification";
-    if (key.find("satellite_logging_") == 0) return "satellite_logging";
+    if (key.find("satellite_logging_") == 0) return "system";
     return kNamespace;
   }
 

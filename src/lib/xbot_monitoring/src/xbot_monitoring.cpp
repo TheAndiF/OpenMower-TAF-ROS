@@ -201,13 +201,11 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "map/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/mowing_progress/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "mower_logic/satellite_logging/set/control/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "mower_logic/satellite_logging/set/renew/json", 0);
-        // settings/mow_load_factor is deprecated. The load regulation settings are
-        // exposed exclusively through settings/mower_logic to avoid duplicate UI groups.
-        // Publishing an empty retained payload clears older retained broker state.
-        try_publish("settings/mow_load_factor/json", "", true);
-        try_publish("settings/mow_load_factor/validation/json", "", true);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/satellite_logging/set/control/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/satellite_logging/set/renew/json", 0);
+        // settings/mow_load_factor is deprecated and is no longer published.
+        // Load regulation settings are exposed exclusively through settings/mower_logic
+        // to avoid duplicate UI groups.
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
@@ -343,11 +341,11 @@ public:
                 }
             }
             publish_statustransition_log(requested_limit);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "mower_logic/satellite_logging/set/control/json") {
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/satellite_logging/set/control/json") {
             std_msgs::String msg;
             msg.data = ptr->get_payload_str();
             mower_logic_satellite_logging_control_pub.publish(msg);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "mower_logic/satellite_logging/set/renew/json") {
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/satellite_logging/set/renew/json") {
             std_msgs::Empty msg;
             mower_logic_satellite_logging_renew_pub.publish(msg);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/session/json") {
@@ -664,12 +662,6 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
     }
 }
 
-void mow_load_factor_status_json_callback(const std_msgs::String::ConstPtr &msg) {
-    (void)msg;
-    // Deprecated: settings/mow_load_factor/json is intentionally not bridged to MQTT.
-    // The canonical settings topic is settings/mower_logic/json.
-}
-
 void mower_logic_settings_status_json_callback(const std_msgs::String::ConstPtr &msg) {
     try_publish("settings/mower_logic/json", msg->data, true);
 }
@@ -679,7 +671,7 @@ void mower_logic_settings_validation_json_callback(const std_msgs::String::Const
 }
 
 void mower_logic_satellite_logging_status_json_callback(const std_msgs::String::ConstPtr &msg) {
-    try_publish("mower_logic/satellite_logging/json", msg->data, true);
+    try_publish("settings/mower_logic/satellite_logging/json", msg->data, true);
 }
 
 void load_factor_computed_callback(const std_msgs::Float32::ConstPtr &msg) {
@@ -1708,7 +1700,6 @@ int main(int argc, char **argv) {
     ros::Subscriber mapMowingProgressSubscriber = n->subscribe("/mower_logic/map/mowing_progress/json", 2, mowing_progress_callback);
     ros::Subscriber mapMowingProgressStatusSubscriber =
         n->subscribe("/mower_logic/map/mowing_progress/status/json", 10, mowing_progress_status_callback);
-    ros::Subscriber mowLoadFactorStatusSubscriber = n->subscribe("/mower_logic/mow_load_factor/status_json", 10, mow_load_factor_status_json_callback);
     ros::Subscriber mowerLogicSettingsStatusSubscriber = n->subscribe("/mower_logic/settings/status_json", 10, mower_logic_settings_status_json_callback);
     ros::Subscriber mowerLogicSettingsValidationSubscriber = n->subscribe("/mower_logic/settings/validation_json", 10, mower_logic_settings_validation_json_callback);
     ros::Subscriber mowerLogicSatelliteLoggingStatusSubscriber = n->subscribe("/mower_logic/satellite_logging/status_json", 10, mower_logic_satellite_logging_status_json_callback);

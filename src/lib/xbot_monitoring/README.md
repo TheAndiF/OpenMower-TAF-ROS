@@ -20,6 +20,8 @@ Map overlay publication uses `map/overlay/json` and `map/overlay/bson` as the ca
 Settings writes now publish validation feedback on:
 
 - `settings/ll_board/validation/json`
-- `settings/mow_load_factor/validation/json`
+- `settings/mower_logic/validation/json`
+
+The deprecated `settings/mow_load_factor/...` MQTT topics are no longer published by the bridge. Load regulation settings are part of `settings/mower_logic/json`.
 
 The validation payload reports the namespace, write mode (`session` or `persistent`), accepted keys, and rejected keys with rejection reasons. Valid keys from a mixed payload are applied; invalid or unknown keys are reported as rejected.
