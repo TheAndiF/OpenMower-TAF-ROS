@@ -15,7 +15,7 @@ uint8 PROCESSING_MODE_ORDERED_OBSTACLES_PLUS_ORDERED_FILLS=3
 uint8 PROCESSING_MODE_MIXED_FILLS_AND_OBSTACLES=4
 
 uint8 OUTLINE_ENTRY_MODE_SLICER_ENTRY=0
-uint8 OUTLINE_ENTRY_MODE_NEAREST_OUTER_OUTLINE_ENTRY=1
+uint8 OUTLINE_ENTRY_MODE_APPROACH_OUTER_OUTLINE_ENTRY=1
 
 slic3r_coverage_planner/Path[] paths
 # Optional identity channel: same length/order as paths. If empty, optimizer uses 0..n-1.
@@ -25,7 +25,9 @@ bool enabled
 uint8 processing_mode
 # Outline entry modes.
 # 0 = slicer_entry: use the original slicer start point for the outer area outline.
-# 1 = approach_inner_outline_entry: rotate all closed area outlines to the first intersection between the approach path and the inner area outline.
+# 1 = approach_outer_outline_entry: plan the approach to the original inner-outline start point,
+#     use the first approach/outer-outline intersection as the entry angle, and rotate all
+#     closed area outlines synchronously to that angle.
 uint8 outline_entry_mode
 bool allow_reverse
 uint8 cost_mode
@@ -44,7 +46,7 @@ int32[] path_indices
 bool[] path_reversed
 # Number of source poses the execution path was rotated by. 0 means no rotation.
 uint32[] rotation_offsets
-# Human readable transformations applied to the execution path, e.g. reversed, rotated_approach_inner_outline_entry.
+# Human readable transformations applied to the execution path, e.g. reversed, rotated_approach_outer_outline_entry.
 string[] transform_flags
 bool success
 bool used_optimization

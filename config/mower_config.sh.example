@@ -214,7 +214,7 @@ export OM_PATH_ORDER_OPTIMIZER_ENABLED=False
 # 1=slicer_order, 2=ordered_fills_plus_ordered_obstacles,
 # 3=ordered_obstacles_plus_ordered_fills, 4=mixed_fills_and_obstacles
 export OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE=2
-# Path Order Optimizer outline entry mode: 0=slicer_entry, 1=approach_inner_outline_entry
+# Path Order Optimizer outline entry mode: 0=slicer_entry, 1=approach_outer_outline_entry
 export OM_PATH_ORDER_OPTIMIZER_OUTLINE_ENTRY_MODE=1
 # Obstacle/inner outline generation is independent of POO. -1 uses OM_OUTLINE_COUNT / OM_OUTLINE_OVERLAP_COUNT.
 export OM_OBSTACLE_OUTLINE_COUNT=-1

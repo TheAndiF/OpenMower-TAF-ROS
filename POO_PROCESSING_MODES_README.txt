@@ -25,10 +25,11 @@ path_order_optimizer_outline_entry_mode:
   0 = slicer_entry
       Use the original slicer start point for the outer area outline.
 
-  1 = approach_inner_outline_entry
+  1 = approach_outer_outline_entry
       Build/receive the complete slicer plan first, find all closed area outlines,
-      determine the innermost outline, plan the approach to its original start
-      point, use the first approach/inner-outline intersection as entry angle,
+      determine the innermost and outermost outline, plan the approach to the original
+      start point of the innermost outline, use the first approach/outer-outline
+      intersection as entry angle,
       and rotate all closed area outlines synchronously. The end point of the
       rotated outline sequence is then used as the start pose for ordering the
       remaining fill and obstacle paths. The original slicer path remains unchanged.
@@ -55,7 +56,7 @@ execution.rotation_offset:
 execution.transform_flags:
   Human-readable debug/status flags. Current values:
     reversed
-    rotated_approach_inner_outline_entry
+    rotated_approach_outer_outline_entry
 
 Build-log note
 --------------

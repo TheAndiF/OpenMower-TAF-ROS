@@ -82,7 +82,7 @@ class MowingBehavior : public Behavior {
     // Slicer-Punkt. Wird aktuell fuer den optimierten Einstieg in den Area-Outline-Block genutzt.
     uint32_t rotation_offset = 0;
 
-    // Lesbare Debug-/Statusinformation, z.B. "reversed" oder "rotated_approach_inner_outline_entry".
+    // Lesbare Debug-/Statusinformation, z.B. "reversed" oder "rotated_approach_outer_outline_entry".
     std::vector<std::string> transform_flags;
   };
 

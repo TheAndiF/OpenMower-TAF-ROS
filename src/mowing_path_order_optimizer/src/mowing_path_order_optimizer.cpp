@@ -387,7 +387,7 @@ class PathOrderOptimizer {
 
   bool outlineEntryEnabled(const mowing_path_order_optimizer::OptimizePaths::Request& req) const {
     return req.outline_entry_mode ==
-        mowing_path_order_optimizer::OptimizePaths::Request::OUTLINE_ENTRY_MODE_NEAREST_OUTER_OUTLINE_ENTRY;
+        mowing_path_order_optimizer::OptimizePaths::Request::OUTLINE_ENTRY_MODE_APPROACH_OUTER_OUTLINE_ENTRY;
   }
 
   void splitPaths(const std::vector<OptimizerPath>& paths,
@@ -542,9 +542,14 @@ class PathOrderOptimizer {
       used_fallback = true;
     }
 
+    // The approach still targets the original start point of the innermost outline,
+    // because this is the deepest slicer entry point. The entry angle, however, is
+    // taken from the first crossing with the outermost outline. This matches the
+    // real field entry: the mower starts the outline block where the approach path
+    // first enters the area, not only when it reaches an inner offset outline.
     Point2D entry_point;
-    if (!firstApproachIntersection(approach_path, paths[inner_index].path, entry_point)) {
-      entry_point = toPoint2D(inner_start);
+    if (!firstApproachIntersection(approach_path, paths[outer_index].path, entry_point)) {
+      entry_point = toPoint2D(firstPose(paths[outer_index].path));
       used_fallback = true;
     }
 
@@ -556,7 +561,7 @@ class PathOrderOptimizer {
       rotateClosedPath(paths[index].path, rotation_index);
       paths[index].rotation_offset = static_cast<uint32_t>(rotation_index);
       paths[index].transform_flags = appendFlag(paths[index].transform_flags,
-                                                "rotated_approach_inner_outline_entry");
+                                                "rotated_approach_outer_outline_entry");
     }
 
     return true;
