@@ -25,10 +25,13 @@ path_order_optimizer_outline_entry_mode:
   0 = slicer_entry
       Use the original slicer start point for the outer area outline.
 
-  1 = nearest_outer_outline_entry
-      Rotate the first closed outer area outline in the executable path so that
-      it starts at the best reachable outline point from the current mower pose.
-      The original slicer path remains unchanged.
+  1 = approach_inner_outline_entry
+      Build/receive the complete slicer plan first, find all closed area outlines,
+      determine the innermost outline, plan the approach to its original start
+      point, use the first approach/inner-outline intersection as entry angle,
+      and rotate all closed area outlines synchronously. The end point of the
+      rotated outline sequence is then used as the start pose for ordering the
+      remaining fill and obstacle paths. The original slicer path remains unchanged.
 
 obstacle_outline_count / obstacle_outline_overlap_count:
   Outline-/Slicer settings for obstacle/inner outlines. They are independent of
@@ -42,18 +45,17 @@ slicer_source.path:
 
 execution.path:
   Fully prepared executable path. This is the only path used for movement.
-  If a path is reversed or the outer area outline is rotated, the execution path
+  If a path is reversed or the area-outline block is rotated, the execution path
   already contains the transformed point order and recomputed pose orientations.
 
 execution.rotation_offset:
   0 means no rotation. A value > 0 means execution.path starts at the original
-  slicer_source.path pose with this index. Currently used for the optimized outer
-  area outline entry.
+  slicer_source.path pose with this index. Currently used for the approach-based area-outline entry.
 
 execution.transform_flags:
   Human-readable debug/status flags. Current values:
     reversed
-    rotated_outer_outline_entry
+    rotated_approach_inner_outline_entry
 
 Build-log note
 --------------

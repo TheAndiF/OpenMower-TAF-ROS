@@ -9,6 +9,7 @@
 #include <actionlib/client/simple_action_client.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <mbf_msgs/GetPathAction.h>
+#include <nav_msgs/Path.h>
 #include <ros/ros.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -65,6 +66,114 @@ void reversePath(slic3r_coverage_planner::Path& path) {
 
 bool isClosedPath(const slic3r_coverage_planner::Path& path) {
   return path.path.poses.size() >= 4 && dist2d(path.path.poses.front(), path.path.poses.back()) < 0.20;
+}
+
+struct Point2D {
+  double x = 0.0;
+  double y = 0.0;
+};
+
+Point2D toPoint2D(const geometry_msgs::PoseStamped& pose) {
+  Point2D p;
+  p.x = pose.pose.position.x;
+  p.y = pose.pose.position.y;
+  return p;
+}
+
+double normalizeAngle(double angle) {
+  while (angle > M_PI) angle -= 2.0 * M_PI;
+  while (angle < -M_PI) angle += 2.0 * M_PI;
+  return angle;
+}
+
+double angleDiff(double a, double b) {
+  return std::abs(normalizeAngle(a - b));
+}
+
+double polygonSignedArea(const slic3r_coverage_planner::Path& path) {
+  if (!isClosedPath(path)) return 0.0;
+  const auto& poses = path.path.poses;
+  const std::size_t unique_count = poses.size() - 1;
+  double twice_area = 0.0;
+  for (std::size_t i = 0; i < unique_count; ++i) {
+    const auto& a = poses[i].pose.position;
+    const auto& b = poses[(i + 1) % unique_count].pose.position;
+    twice_area += a.x * b.y - b.x * a.y;
+  }
+  return 0.5 * twice_area;
+}
+
+double polygonArea(const slic3r_coverage_planner::Path& path) {
+  return std::abs(polygonSignedArea(path));
+}
+
+Point2D polygonCentroid(const slic3r_coverage_planner::Path& path) {
+  Point2D centroid;
+  if (!isClosedPath(path)) return centroid;
+
+  const auto& poses = path.path.poses;
+  const std::size_t unique_count = poses.size() - 1;
+  const double signed_area = polygonSignedArea(path);
+  if (std::abs(signed_area) < 1e-9) {
+    for (std::size_t i = 0; i < unique_count; ++i) {
+      centroid.x += poses[i].pose.position.x;
+      centroid.y += poses[i].pose.position.y;
+    }
+    centroid.x /= static_cast<double>(unique_count);
+    centroid.y /= static_cast<double>(unique_count);
+    return centroid;
+  }
+
+  double cx = 0.0;
+  double cy = 0.0;
+  for (std::size_t i = 0; i < unique_count; ++i) {
+    const auto& a = poses[i].pose.position;
+    const auto& b = poses[(i + 1) % unique_count].pose.position;
+    const double cross = a.x * b.y - b.x * a.y;
+    cx += (a.x + b.x) * cross;
+    cy += (a.y + b.y) * cross;
+  }
+  centroid.x = cx / (6.0 * signed_area);
+  centroid.y = cy / (6.0 * signed_area);
+  return centroid;
+}
+
+bool segmentIntersection(const Point2D& a, const Point2D& b, const Point2D& c, const Point2D& d, Point2D& out, double& t) {
+  const double r_x = b.x - a.x;
+  const double r_y = b.y - a.y;
+  const double s_x = d.x - c.x;
+  const double s_y = d.y - c.y;
+  const double denom = r_x * s_y - r_y * s_x;
+  if (std::abs(denom) < 1e-9) return false;
+
+  const double cma_x = c.x - a.x;
+  const double cma_y = c.y - a.y;
+  const double candidate_t = (cma_x * s_y - cma_y * s_x) / denom;
+  const double u = (cma_x * r_y - cma_y * r_x) / denom;
+
+  if (candidate_t < -1e-6 || candidate_t > 1.0 + 1e-6 || u < -1e-6 || u > 1.0 + 1e-6) return false;
+
+  t = std::max(0.0, std::min(1.0, candidate_t));
+  out.x = a.x + t * r_x;
+  out.y = a.y + t * r_y;
+  return true;
+}
+
+std::size_t closestAngleIndex(const slic3r_coverage_planner::Path& path, const Point2D& center, double target_angle) {
+  const auto& poses = path.path.poses;
+  const std::size_t unique_count = isClosedPath(path) ? poses.size() - 1 : poses.size();
+  std::size_t best_index = 0;
+  double best_score = std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < unique_count; ++i) {
+    const double dx = poses[i].pose.position.x - center.x;
+    const double dy = poses[i].pose.position.y - center.y;
+    const double score = angleDiff(std::atan2(dy, dx), target_angle);
+    if (score < best_score) {
+      best_score = score;
+      best_index = i;
+    }
+  }
+  return best_index;
 }
 
 void rotateClosedPath(slic3r_coverage_planner::Path& path, std::size_t offset) {
@@ -148,25 +257,20 @@ class PathOrderOptimizer {
       const uint8_t mode = normalizeProcessingMode(req.processing_mode);
 
       if (mode == mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_SLICER_ORDER) {
-        // True slicer mode: keep the request order exactly. The optional outer-outline entry optimization
-        // only rotates the prepared execution path of the first area outline; it does not reorder paths.
+        // True slicer mode: keep the request order exactly. The optional approach-based outline entry
+        // rotates closed area outlines in-place, but it does not reorder paths.
         ordered = input_paths;
         if (outlineEntryEnabled(req)) {
-          for (auto& item : ordered) {
-            if (item.path.path_type == slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE) {
-              optimizeOuterOutlineEntry(item, current, req, used_fallback);
-              break;
-            }
-          }
+          optimizeAreaOutlineEntryByApproach(ordered, current, req, used_fallback);
         }
         res.used_fallback = used_fallback;
         res.used_optimization = outlineEntryEnabled(req);
       } else {
-        // The outer area outline stays the first group, but its entry point can be rotated to the
-        // best reachable start. slicer_source remains unchanged in mower_logic; this response path
-        // is the prepared execution path.
+        // Area outlines stay as the first group. When outline entry mode 1 is active, the
+        // complete area-outline block is rotated first. The end pose of the rotated outline
+        // sequence then becomes the start pose for all following fill/obstacle optimization.
         if (outlineEntryEnabled(req) && !area_outlines.empty()) {
-          optimizeOuterOutlineEntry(area_outlines.front(), current, req, used_fallback);
+          optimizeAreaOutlineEntryByApproach(area_outlines, current, req, used_fallback);
         }
         appendAll(ordered, area_outlines);
         if (!ordered.empty() && hasUsablePath(ordered.back().path)) current = lastPose(ordered.back().path);
@@ -313,57 +417,149 @@ class PathOrderOptimizer {
     }
   }
 
-  void optimizeOuterOutlineEntry(OptimizerPath& outline,
-                                 const geometry_msgs::PoseStamped& current,
-                                 const mowing_path_order_optimizer::OptimizePaths::Request& req,
-                                 bool& used_fallback) {
-    if (!isClosedPath(outline.path)) return;
-    const std::size_t unique_count = outline.path.path.poses.size() - 1;
-    if (unique_count < 2) return;
+  bool buildPlannerPath(const geometry_msgs::PoseStamped& start,
+                        const geometry_msgs::PoseStamped& goal_pose,
+                        const mowing_path_order_optimizer::OptimizePaths::Request& req,
+                        nav_msgs::Path& path) {
+    if (req.planner_action.empty()) return false;
 
-    std::vector<CandidateCost> candidates;
-    candidates.reserve(unique_count);
-    for (std::size_t i = 0; i < unique_count; ++i) {
-      CandidateCost candidate;
-      candidate.index = i;
-      candidate.reverse = false;
-      candidate.cost = dist2d(current, outline.path.path.poses[i]);
-      candidates.push_back(candidate);
+    if (!get_path_client_ || planner_action_name_ != req.planner_action) {
+      planner_action_name_ = req.planner_action;
+      get_path_client_.reset(new actionlib::SimpleActionClient<mbf_msgs::GetPathAction>(planner_action_name_, true));
     }
-    std::sort(candidates.begin(), candidates.end(), [](const CandidateCost& a, const CandidateCost& b) {
-      return a.cost < b.cost;
-    });
 
-    CandidateCost best = candidates.front();
-    if (req.cost_mode != mowing_path_order_optimizer::OptimizePaths::Request::COST_EUCLIDEAN) {
-      CandidateCost planner_best;
-      const std::size_t limit = std::max<std::size_t>(1, req.candidate_limit);
-      const std::size_t check_count = std::min(limit, candidates.size());
-      for (std::size_t i = 0; i < check_count; ++i) {
-        CandidateCost candidate = candidates[i];
-        double planner_cost = std::numeric_limits<double>::infinity();
-        if (getPlannerCost(current, outline.path.path.poses[candidate.index], req, planner_cost)) {
-          candidate.cost = planner_cost;
-          candidate.planner_cost_used = true;
-        } else if (req.fallback_to_euclidean || req.cost_mode == mowing_path_order_optimizer::OptimizePaths::Request::COST_HYBRID) {
-          used_fallback = true;
-        } else {
-          used_fallback = true;
-          continue;
+    if (!get_path_client_->waitForServer(ros::Duration(req.planner_timeout))) {
+      ROS_WARN_STREAM_THROTTLE(10.0, "PathOrderOptimizer: planner action not available: " << req.planner_action);
+      return false;
+    }
+
+    mbf_msgs::GetPathGoal goal;
+    goal.use_start_pose = true;
+    goal.start_pose = start;
+    goal.target_pose = goal_pose;
+    goal.start_pose.header.stamp = ros::Time::now();
+    goal.target_pose.header.stamp = goal.start_pose.header.stamp;
+    goal.tolerance = 0.20;
+    goal.planner = req.planner_name;
+
+    get_path_client_->sendGoal(goal);
+    if (!get_path_client_->waitForResult(ros::Duration(req.planner_timeout))) {
+      get_path_client_->cancelGoal();
+      ROS_WARN_STREAM_THROTTLE(10.0, "PathOrderOptimizer: planner action timeout: " << req.planner_action);
+      return false;
+    }
+
+    const auto result = get_path_client_->getResult();
+    if (!result || result->path.poses.empty()) return false;
+
+    path = result->path;
+    return true;
+  }
+
+  nav_msgs::Path makeDirectPath(const geometry_msgs::PoseStamped& start,
+                                const geometry_msgs::PoseStamped& goal) const {
+    nav_msgs::Path path;
+    path.header = goal.header;
+    path.poses.push_back(start);
+    path.poses.push_back(goal);
+    return path;
+  }
+
+  bool firstApproachIntersection(const nav_msgs::Path& approach_path,
+                                 const slic3r_coverage_planner::Path& outline,
+                                 Point2D& intersection) const {
+    if (approach_path.poses.size() < 2 || !isClosedPath(outline)) return false;
+
+    const auto& outline_poses = outline.path.poses;
+    for (std::size_t i = 1; i < approach_path.poses.size(); ++i) {
+      const Point2D a = toPoint2D(approach_path.poses[i - 1]);
+      const Point2D b = toPoint2D(approach_path.poses[i]);
+      bool segment_hit = false;
+      Point2D best_on_segment;
+      double best_t = std::numeric_limits<double>::infinity();
+
+      for (std::size_t j = 1; j < outline_poses.size(); ++j) {
+        const Point2D c = toPoint2D(outline_poses[j - 1]);
+        const Point2D d = toPoint2D(outline_poses[j]);
+        Point2D candidate;
+        double t = 0.0;
+        if (segmentIntersection(a, b, c, d, candidate, t) && t < best_t) {
+          segment_hit = true;
+          best_t = t;
+          best_on_segment = candidate;
         }
-        if (candidate.cost < planner_best.cost) planner_best = candidate;
       }
-      if (std::isfinite(planner_best.cost)) {
-        best = planner_best;
-      } else if (!req.fallback_to_euclidean) {
-        return;
+
+      if (segment_hit) {
+        intersection = best_on_segment;
+        return true;
       }
     }
 
-    if (best.index == 0) return;
-    rotateClosedPath(outline.path, best.index);
-    outline.rotation_offset = static_cast<uint32_t>(best.index);
-    outline.transform_flags = appendFlag(outline.transform_flags, "rotated_outer_outline_entry");
+    return false;
+  }
+
+  bool optimizeAreaOutlineEntryByApproach(std::vector<OptimizerPath>& paths,
+                                          const geometry_msgs::PoseStamped& current,
+                                          const mowing_path_order_optimizer::OptimizePaths::Request& req,
+                                          bool& used_fallback) {
+    std::vector<std::size_t> closed_area_indices;
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+      if (paths[i].path.path_type == slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE &&
+          isClosedPath(paths[i].path)) {
+        closed_area_indices.push_back(i);
+      }
+    }
+
+    if (closed_area_indices.empty()) return false;
+
+    std::size_t inner_index = closed_area_indices.front();
+    std::size_t outer_index = closed_area_indices.front();
+    double inner_area = polygonArea(paths[inner_index].path);
+    double outer_area = inner_area;
+    for (const auto index : closed_area_indices) {
+      const double area = polygonArea(paths[index].path);
+      if (area < inner_area) {
+        inner_area = area;
+        inner_index = index;
+      }
+      if (area > outer_area) {
+        outer_area = area;
+        outer_index = index;
+      }
+    }
+
+    if (!hasUsablePath(paths[inner_index].path) || !hasUsablePath(paths[outer_index].path)) return false;
+
+    const geometry_msgs::PoseStamped inner_start = firstPose(paths[inner_index].path);
+    nav_msgs::Path approach_path;
+    if (!buildPlannerPath(current, inner_start, req, approach_path)) {
+      if (!req.fallback_to_euclidean && req.cost_mode == mowing_path_order_optimizer::OptimizePaths::Request::COST_PLANNER) {
+        used_fallback = true;
+        return false;
+      }
+      approach_path = makeDirectPath(current, inner_start);
+      used_fallback = true;
+    }
+
+    Point2D entry_point;
+    if (!firstApproachIntersection(approach_path, paths[inner_index].path, entry_point)) {
+      entry_point = toPoint2D(inner_start);
+      used_fallback = true;
+    }
+
+    const Point2D center = polygonCentroid(paths[outer_index].path);
+    const double target_angle = std::atan2(entry_point.y - center.y, entry_point.x - center.x);
+
+    for (const auto index : closed_area_indices) {
+      const std::size_t rotation_index = closestAngleIndex(paths[index].path, center, target_angle);
+      rotateClosedPath(paths[index].path, rotation_index);
+      paths[index].rotation_offset = static_cast<uint32_t>(rotation_index);
+      paths[index].transform_flags = appendFlag(paths[index].transform_flags,
+                                                "rotated_approach_inner_outline_entry");
+    }
+
+    return true;
   }
 
   std::vector<OptimizerPath> optimizePaths(
@@ -495,38 +691,10 @@ class PathOrderOptimizer {
                       const geometry_msgs::PoseStamped& goal_pose,
                       const mowing_path_order_optimizer::OptimizePaths::Request& req,
                       double& cost) {
-    if (req.planner_action.empty()) return false;
+    nav_msgs::Path path;
+    if (!buildPlannerPath(start, goal_pose, req, path)) return false;
 
-    if (!get_path_client_ || planner_action_name_ != req.planner_action) {
-      planner_action_name_ = req.planner_action;
-      get_path_client_.reset(new actionlib::SimpleActionClient<mbf_msgs::GetPathAction>(planner_action_name_, true));
-    }
-
-    if (!get_path_client_->waitForServer(ros::Duration(req.planner_timeout))) {
-      ROS_WARN_STREAM_THROTTLE(10.0, "PathOrderOptimizer: planner action not available: " << req.planner_action);
-      return false;
-    }
-
-    mbf_msgs::GetPathGoal goal;
-    goal.use_start_pose = true;
-    goal.start_pose = start;
-    goal.target_pose = goal_pose;
-    goal.start_pose.header.stamp = ros::Time::now();
-    goal.target_pose.header.stamp = goal.start_pose.header.stamp;
-    goal.tolerance = 0.20;
-    goal.planner = req.planner_name;
-
-    get_path_client_->sendGoal(goal);
-    if (!get_path_client_->waitForResult(ros::Duration(req.planner_timeout))) {
-      get_path_client_->cancelGoal();
-      ROS_WARN_STREAM_THROTTLE(10.0, "PathOrderOptimizer: planner action timeout: " << req.planner_action);
-      return false;
-    }
-
-    const auto result = get_path_client_->getResult();
-    if (!result || result->path.poses.empty()) return false;
-
-    cost = pathLength(result->path);
+    cost = pathLength(path);
     return std::isfinite(cost);
   }
 };

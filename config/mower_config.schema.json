@@ -710,7 +710,7 @@
                 "default": 1,
                 "minimum": 0,
                 "maximum": 1,
-                "description": "Path Order Optimizer outline entry mode: 0 slicer_entry, 1 nearest_outer_outline_entry.",
+                "description": "Path Order Optimizer outline entry mode: 0 slicer_entry, 1 approach_inner_outline_entry.",
                 "x-environment-variable": "OM_PATH_ORDER_OPTIMIZER_OUTLINE_ENTRY_MODE"
               },
               "OM_OBSTACLE_OUTLINE_COUNT": {

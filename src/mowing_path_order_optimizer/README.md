@@ -29,14 +29,14 @@ Area outlines are kept as the first group for the grouped and mixed optimizer mo
 
 ## Outline entry modes
 
-`path_order_optimizer_outline_entry_mode` controls the entry point of the outer area outline:
+`path_order_optimizer_outline_entry_mode` controls how the area-outline block is entered:
 
 ```text
 0 = slicer_entry
-1 = nearest_outer_outline_entry
+1 = approach_inner_outline_entry
 ```
 
-Mode `1` rotates the executable outer area outline so that it starts at the nearest/best reachable point from the current mower pose. The original slicer path is not modified; the rotation is reported via `rotation_offsets` and `transform_flags`.
+Mode `1` first plans the approach from the current mower pose to the original start point of the innermost closed area outline. The first intersection between that approach path and the innermost outline is used to calculate an entry angle relative to the outer area centroid. All closed area outlines are rotated synchronously to that angle. After the rotated outline block has been appended, the end point of the rotated outline sequence is used as the start pose for ordering the remaining fill and obstacle paths. The original slicer path is not modified; the rotation is reported via `rotation_offsets` and `transform_flags`.
 
 ## Reverse handling
 

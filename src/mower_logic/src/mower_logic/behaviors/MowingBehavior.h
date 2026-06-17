@@ -79,10 +79,10 @@ class MowingBehavior : public Behavior {
     slic3r_coverage_planner::Path path;
 
     // 0 = keine Rotation. >0 bedeutet: execution.path beginnt bei diesem urspruenglichen
-    // Slicer-Punkt. Wird aktuell fuer den optimierten Einstieg in die aeussere Area-Outline genutzt.
+    // Slicer-Punkt. Wird aktuell fuer den optimierten Einstieg in den Area-Outline-Block genutzt.
     uint32_t rotation_offset = 0;
 
-    // Lesbare Debug-/Statusinformation, z.B. "reversed" oder "rotated_outer_outline_entry".
+    // Lesbare Debug-/Statusinformation, z.B. "reversed" oder "rotated_approach_inner_outline_entry".
     std::vector<std::string> transform_flags;
   };
 

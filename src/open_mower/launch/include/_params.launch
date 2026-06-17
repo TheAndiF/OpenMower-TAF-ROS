@@ -144,7 +144,7 @@
         <param name="mower_logic/path_order_optimizer_processing_mode" value="$(optenv OM_PATH_ORDER_OPTIMIZER_PROCESSING_MODE 2)"/>
         <!-- Path Order Optimizer outline entry mode:
              0 = slicer_entry
-             1 = nearest_outer_outline_entry -->
+             1 = approach_inner_outline_entry -->
         <param name="mower_logic/path_order_optimizer_outline_entry_mode" value="$(optenv OM_PATH_ORDER_OPTIMIZER_OUTLINE_ENTRY_MODE 1)"/>
         <param name="mower_logic/path_order_optimizer_allow_reverse" value="$(optenv OM_PATH_ORDER_OPTIMIZER_ALLOW_REVERSE True)"/>
         <param name="mower_logic/path_order_optimizer_cost_mode" value="$(optenv OM_PATH_ORDER_OPTIMIZER_COST_MODE 2)"/>
