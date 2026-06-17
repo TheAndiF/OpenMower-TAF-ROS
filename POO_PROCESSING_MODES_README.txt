@@ -57,6 +57,8 @@ execution.transform_flags:
   Human-readable debug/status flags. Current values:
     reversed
     rotated_approach_outer_outline_entry
+    approach_outer_outline_entry_closest_fallback, wenn kein echter Schnitt gefunden wurde und der naechste Punkt auf der aeussersten Outline genutzt wurde
+    approach_outer_outline_entry_slicer_start_fallback, wenn auch der naechste Outline-Punkt nicht bestimmt werden konnte
 
 Build-log note
 --------------

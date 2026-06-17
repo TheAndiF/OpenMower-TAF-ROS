@@ -46,7 +46,8 @@ int32[] path_indices
 bool[] path_reversed
 # Number of source poses the execution path was rotated by. 0 means no rotation.
 uint32[] rotation_offsets
-# Human readable transformations applied to the execution path, e.g. reversed, rotated_approach_outer_outline_entry.
+# Human readable transformations applied to the execution path, e.g. reversed,
+# rotated_approach_outer_outline_entry, approach_outer_outline_entry_closest_fallback.
 string[] transform_flags
 bool success
 bool used_optimization

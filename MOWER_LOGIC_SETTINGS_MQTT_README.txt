@@ -129,7 +129,7 @@ Der path-order optimizer wird unter settings/mower_logic geführt. Der Node läu
 
   path_order_optimizer_outline_entry_mode
     0 = slicer_entry, äußere Area-Outline startet am originalen Slicer-Punkt
-    1 = approach_outer_outline_entry, Area-Outlines werden anhand des ersten Schnittpunkts zwischen geplanter Anfahrt und äußerster Outline synchron rotiert; die Anfahrt zielt weiterhin auf den ursprünglichen Startpunkt der innersten Outline
+    1 = approach_outer_outline_entry, Area-Outlines werden anhand des ersten Schnittpunkts zwischen geplanter Anfahrt und äußerster Outline synchron rotiert; die Anfahrt zielt weiterhin auf den ursprünglichen Startpunkt der innersten Outline. Falls kein echter äußerer Schnitt gefunden wird, wird kontrolliert der zur Anfahrt nächstliegende Punkt auf der äußersten Outline als Fallback verwendet.
 
 Beispiel:
 

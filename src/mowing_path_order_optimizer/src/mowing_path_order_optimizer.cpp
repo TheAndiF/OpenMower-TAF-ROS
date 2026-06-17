@@ -159,6 +159,26 @@ bool segmentIntersection(const Point2D& a, const Point2D& b, const Point2D& c, c
   return true;
 }
 
+double squaredDistance(const Point2D& a, const Point2D& b) {
+  const double dx = a.x - b.x;
+  const double dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+Point2D closestPointOnSegment(const Point2D& p, const Point2D& a, const Point2D& b) {
+  const double vx = b.x - a.x;
+  const double vy = b.y - a.y;
+  const double len2 = vx * vx + vy * vy;
+  if (len2 < 1e-12) return a;
+
+  const double raw_t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2;
+  const double t = std::max(0.0, std::min(1.0, raw_t));
+  Point2D out;
+  out.x = a.x + t * vx;
+  out.y = a.y + t * vy;
+  return out;
+}
+
 std::size_t closestAngleIndex(const slic3r_coverage_planner::Path& path, const Point2D& center, double target_angle) {
   const auto& poses = path.path.poses;
   const std::size_t unique_count = isClosedPath(path) ? poses.size() - 1 : poses.size();
@@ -499,6 +519,36 @@ class PathOrderOptimizer {
     return false;
   }
 
+  bool closestOuterOutlinePointToApproach(const nav_msgs::Path& approach_path,
+                                          const slic3r_coverage_planner::Path& outline,
+                                          Point2D& closest_point) const {
+    if (approach_path.poses.empty() || !isClosedPath(outline)) return false;
+
+    const auto& outline_poses = outline.path.poses;
+    bool found = false;
+    double best_score = std::numeric_limits<double>::infinity();
+
+    // Fallback for special cases where the planned approach does not cross the outer outline,
+    // for example when the mower already starts inside the area or the planner path begins on
+    // the outline. Use the point on the outer outline that is closest to the planned approach.
+    for (const auto& approach_pose : approach_path.poses) {
+      const Point2D approach_point = toPoint2D(approach_pose);
+      for (std::size_t j = 1; j < outline_poses.size(); ++j) {
+        const Point2D c = toPoint2D(outline_poses[j - 1]);
+        const Point2D d = toPoint2D(outline_poses[j]);
+        const Point2D candidate = closestPointOnSegment(approach_point, c, d);
+        const double score = squaredDistance(approach_point, candidate);
+        if (score < best_score) {
+          found = true;
+          best_score = score;
+          closest_point = candidate;
+        }
+      }
+    }
+
+    return found;
+  }
+
   bool optimizeAreaOutlineEntryByApproach(std::vector<OptimizerPath>& paths,
                                           const geometry_msgs::PoseStamped& current,
                                           const mowing_path_order_optimizer::OptimizePaths::Request& req,
@@ -548,9 +598,15 @@ class PathOrderOptimizer {
     // real field entry: the mower starts the outline block where the approach path
     // first enters the area, not only when it reaches an inner offset outline.
     Point2D entry_point;
+    std::string rotation_flag = "rotated_approach_outer_outline_entry";
     if (!firstApproachIntersection(approach_path, paths[outer_index].path, entry_point)) {
-      entry_point = toPoint2D(firstPose(paths[outer_index].path));
       used_fallback = true;
+      if (closestOuterOutlinePointToApproach(approach_path, paths[outer_index].path, entry_point)) {
+        rotation_flag = appendFlag(rotation_flag, "approach_outer_outline_entry_closest_fallback");
+      } else {
+        entry_point = toPoint2D(firstPose(paths[outer_index].path));
+        rotation_flag = appendFlag(rotation_flag, "approach_outer_outline_entry_slicer_start_fallback");
+      }
     }
 
     const Point2D center = polygonCentroid(paths[outer_index].path);
@@ -560,8 +616,7 @@ class PathOrderOptimizer {
       const std::size_t rotation_index = closestAngleIndex(paths[index].path, center, target_angle);
       rotateClosedPath(paths[index].path, rotation_index);
       paths[index].rotation_offset = static_cast<uint32_t>(rotation_index);
-      paths[index].transform_flags = appendFlag(paths[index].transform_flags,
-                                                "rotated_approach_outer_outline_entry");
+      paths[index].transform_flags = appendFlag(paths[index].transform_flags, rotation_flag);
     }
 
     return true;
