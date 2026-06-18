@@ -25,3 +25,62 @@ Settings writes now publish validation feedback on:
 The deprecated `settings/mow_load_factor/...` MQTT topics are no longer published by the bridge. Load regulation settings are part of `settings/mower_logic/json`.
 
 The validation payload reports the namespace, write mode (`session` or `persistent`), accepted keys, and rejected keys with rejection reasons. Valid keys from a mixed payload are applied; invalid or unknown keys are reported as rejected.
+
+## Sensor infos metadata API
+
+`sensor_infos/json` now follows the same structural idea as the dynamic settings pages. The retained JSON payload contains:
+
+```json
+{
+  "namespace": "sensor_infos",
+  "schema": "settings_v2",
+  "readonly": true,
+  "settings": {
+    "<sensor_id>": {
+      "label": "Display label",
+      "description": "Display description",
+      "group": "host_system",
+      "order": 10,
+      "type": "number",
+      "unit": "%",
+      "value": null,
+      "active": null,
+      "persistent": null,
+      "visible": true,
+      "expert": false,
+      "readonly": true,
+      "different": false,
+      "restart_required": false,
+      "session_apply_supported": false,
+      "sensor_id": "<sensor_id>",
+      "sensor_name": "Original ROS sensor name",
+      "value_topic": "sensors/<sensor_id>/data"
+    }
+  }
+}
+```
+
+The technical sensor data is still produced by ROS `SensorInfo` messages and the live values remain on `sensors/<sensor_id>/data`. `sensor_infos/json` adds editable display metadata (`label`, `description`, `group`, `order`, `visible`, `expert`) so the app can group and order the sensor view like other dynamically generated settings pages.
+
+### MQTT topics
+
+- `sensor_infos/json` publishes the retained settings-v2-like sensor metadata state.
+- `sensor_infos/set/renew/json` requests a republish of the current retained sensor metadata state.
+- `sensor_infos/set/persistent/json` stores editable display metadata in the persistent settings file under namespace `sensor_infos`.
+- `sensor_infos/validation/json` publishes retained validation feedback for the last persistent write.
+
+Example persistent write:
+
+```json
+{
+  "om_v_battery": {
+    "label": "Akkuspannung",
+    "group": "openmower_power",
+    "order": 10,
+    "visible": true,
+    "expert": false
+  }
+}
+```
+
+Sensor values and technical ROS fields are read-only through this API. Unknown fields, unknown sensor ids and invalid metadata types are rejected.

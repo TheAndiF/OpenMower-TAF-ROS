@@ -28,6 +28,7 @@
 #include <nlohmann/json.hpp>
 #include <vector>
 #include <set>
+#include <mutex>
 #include "geometry_msgs/Twist.h"
 #include "std_msgs/String.h"
 #include "std_msgs/Bool.h"
@@ -77,6 +78,8 @@ static bool validate_group_metadata_value(const json &value, std::string &group,
 
 void publish_capabilities();
 void publish_sensor_metadata();
+void publish_sensor_infos_validation(const json &validation);
+void handle_sensor_infos_persistent_payload(const std::string &payload);
 void publish_map();
 void publish_map_validation(const json &validation);
 void publish_settings_validation(const std::string &settings_namespace, const json &validation);
@@ -209,6 +212,8 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "sensor_infos/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "sensor_infos/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/renew/json", 0);
@@ -359,6 +364,10 @@ public:
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json") {
             std_msgs::Empty msg;
             mower_logic_settings_renew_pub.publish(msg);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensor_infos/set/renew/json") {
+            publish_sensor_metadata();
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensor_infos/set/persistent/json") {
+            handle_sensor_infos_persistent_payload(ptr->get_payload_str());
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/session/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json") {
             const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json";
@@ -539,6 +548,11 @@ std::chrono::system_clock::time_point last_statustransition_timestamp;
 
 std::mutex latest_double_sensor_values_mutex;
 std::map<std::string, double> latest_double_sensor_values;
+std::mutex latest_string_sensor_values_mutex;
+std::map<std::string, std::string> latest_string_sensor_values;
+
+constexpr const char *SENSOR_INFOS_NAMESPACE = "sensor_infos";
+constexpr const char *SENSOR_INFOS_SCHEMA = "settings_v2";
 
 
 
@@ -778,83 +792,359 @@ void publish_params() {
     try_publish("params/json", params.dump(), true);
 }
 
-void publish_sensor_metadata() {
-    json sensor_info;
-    {
-        std::unique_lock<std::mutex> lk(found_sensors_mutex);
+static std::string sensor_value_type_to_settings_type(const xbot_msgs::SensorInfo &info) {
+    switch (info.value_type) {
+        case xbot_msgs::SensorInfo::TYPE_STRING:
+            return "string";
+        case xbot_msgs::SensorInfo::TYPE_DOUBLE:
+            return "number";
+        default:
+            return "string";
+    }
+}
 
-        if(found_sensors.empty())
-            return;
+static std::string sensor_value_type_to_legacy_string(const xbot_msgs::SensorInfo &info) {
+    switch (info.value_type) {
+        case xbot_msgs::SensorInfo::TYPE_STRING:
+            return "STRING";
+        case xbot_msgs::SensorInfo::TYPE_DOUBLE:
+            return "DOUBLE";
+        default:
+            return "UNKNOWN";
+    }
+}
 
-        for (const auto &kv: found_sensors) {
-            json info;
-            info["sensor_id"] = kv.second.sensor_id;
-            info["sensor_name"] = kv.second.sensor_name;
-            info["sensor_origin"] = kv.second.sensor_origin.empty() ? "UNKNOWN" : kv.second.sensor_origin;
+static std::string sensor_value_description_to_string(const xbot_msgs::SensorInfo &info) {
+    switch (info.value_description) {
+        case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_TEMPERATURE:
+            return "TEMPERATURE";
+        case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_VELOCITY:
+            return "VELOCITY";
+        case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_ACCELERATION:
+            return "ACCELERATION";
+        case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_VOLTAGE:
+            return "VOLTAGE";
+        case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_CURRENT:
+            return "CURRENT";
+        case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT:
+            return "PERCENT";
+        case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_RPM:
+            return "REVOLUTIONS";
+        default:
+            return "UNKNOWN";
+    }
+}
 
-            switch (kv.second.value_type) {
-                case xbot_msgs::SensorInfo::TYPE_STRING: {
-                    info["value_type"] = "STRING";
-                    break;
-                }
-                case xbot_msgs::SensorInfo::TYPE_DOUBLE: {
-                    info["value_type"] = "DOUBLE";
-                    break;
-                }
-                default: {
-                    info["value_type"] = "UNKNOWN";
-                    break;
-                }
-
-
-            }
-
-            switch (kv.second.value_description) {
-                case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_TEMPERATURE: {
-                    info["value_description"] = "TEMPERATURE";
-                    break;
-                }
-                case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_VELOCITY: {
-                    info["value_description"] = "VELOCITY";
-                    break;
-                }
-                case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_ACCELERATION: {
-                    info["value_description"] = "ACCELERATION";
-                    break;
-                }
-                case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_VOLTAGE: {
-                    info["value_description"] = "VOLTAGE";
-                    break;
-                }
-                case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_CURRENT: {
-                    info["value_description"] = "CURRENT";
-                    break;
-                }
-                case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT: {
-                    info["value_description"] = "PERCENT";
-                    break;
-                }
-                case xbot_msgs::SensorInfo::VALUE_DESCRIPTION_RPM: {
-                    info["value_description"] = "REVOLUTIONS";
-                    break;
-                }
-                default: {
-                    info["value_description"] = "UNKNOWN";
-                    break;
-                }
-            }
-
-            info["unit"] = kv.second.unit;
-            info["has_min_max"] = kv.second.has_min_max;
-            info["min_value"] = kv.second.min_value;
-            info["max_value"] = kv.second.max_value;
-            info["has_critical_low"] = kv.second.has_critical_low;
-            info["lower_critical_value"] = kv.second.lower_critical_value;
-            info["has_critical_high"] = kv.second.has_critical_high;
-            info["upper_critical_value"] = kv.second.upper_critical_value;
-            sensor_info.push_back(info);
+static std::string normalize_sensor_infos_group(const std::string &raw_group) {
+    std::string group = trim_settings_string(raw_group);
+    if (group.empty() || group == "UNKNOWN") {
+        return "general";
+    }
+    std::string normalized;
+    normalized.reserve(group.size());
+    bool previous_separator = false;
+    for (const unsigned char c : group) {
+        if (std::isalnum(c)) {
+            normalized.push_back(static_cast<char>(std::tolower(c)));
+            previous_separator = false;
+        } else if (!previous_separator) {
+            normalized.push_back('_');
+            previous_separator = true;
         }
     }
+    while (!normalized.empty() && normalized.front() == '_') normalized.erase(normalized.begin());
+    while (!normalized.empty() && normalized.back() == '_') normalized.pop_back();
+    return normalized.empty() ? "general" : normalized;
+}
+
+static json current_sensor_value_json(const xbot_msgs::SensorInfo &info) {
+    if (info.value_type == xbot_msgs::SensorInfo::TYPE_DOUBLE) {
+        std::lock_guard<std::mutex> lk(latest_double_sensor_values_mutex);
+        const auto it = latest_double_sensor_values.find(info.sensor_id);
+        return it == latest_double_sensor_values.end() ? json(nullptr) : json(it->second);
+    }
+    if (info.value_type == xbot_msgs::SensorInfo::TYPE_STRING) {
+        std::lock_guard<std::mutex> lk(latest_string_sensor_values_mutex);
+        const auto it = latest_string_sensor_values.find(info.sensor_id);
+        return it == latest_string_sensor_values.end() ? json(nullptr) : json(it->second);
+    }
+    return nullptr;
+}
+
+static json sensor_info_to_settings_entry(const xbot_msgs::SensorInfo &info, int order) {
+    const std::string group = normalize_sensor_infos_group(info.sensor_origin);
+    const json active_value = current_sensor_value_json(info);
+
+    json entry = json::object();
+    entry["label"] = info.sensor_name.empty() ? info.sensor_id : info.sensor_name;
+    entry["description"] = info.sensor_name.empty() ? info.sensor_id : info.sensor_name;
+    entry["group"] = group;
+    entry["order"] = order;
+    entry["type"] = sensor_value_type_to_settings_type(info);
+    entry["unit"] = info.unit;
+    entry["value"] = active_value;
+    entry["active"] = active_value;
+    entry["persistent"] = nullptr;
+    entry["visible"] = true;
+    entry["expert"] = false;
+    entry["readonly"] = true;
+    entry["different"] = false;
+    entry["restart_required"] = false;
+    entry["session_apply_supported"] = false;
+
+    entry["sensor_id"] = info.sensor_id;
+    entry["sensor_name"] = info.sensor_name;
+    entry["sensor_origin"] = info.sensor_origin.empty() ? "UNKNOWN" : info.sensor_origin;
+    entry["value_type"] = sensor_value_type_to_legacy_string(info);
+    entry["value_description"] = sensor_value_description_to_string(info);
+    entry["value_topic"] = "sensors/" + info.sensor_id + "/data";
+    entry["bson_topic"] = "sensors/" + info.sensor_id + "/bson";
+    entry["has_min_max"] = info.has_min_max;
+    entry["min"] = info.min_value;
+    entry["max"] = info.max_value;
+    entry["min_value"] = info.min_value;
+    entry["max_value"] = info.max_value;
+    entry["has_critical_low"] = info.has_critical_low;
+    entry["lower_critical_value"] = info.lower_critical_value;
+    entry["has_critical_high"] = info.has_critical_high;
+    entry["upper_critical_value"] = info.upper_critical_value;
+    return entry;
+}
+
+static void apply_sensor_infos_overrides(json &entry, const json &overrides) {
+    if (!overrides.is_object()) return;
+    static const std::set<std::string> override_fields = {
+        "label", "description", "group", "order", "visible", "expert"
+    };
+    for (const auto &field : override_fields) {
+        if (overrides.contains(field)) {
+            entry[field] = overrides[field];
+        }
+    }
+}
+
+static json build_sensor_infos_settings_payload() {
+    json root = json::object();
+    root["namespace"] = SENSOR_INFOS_NAMESPACE;
+    root["schema"] = SENSOR_INFOS_SCHEMA;
+    root["readonly"] = true;
+    root["settings"] = json::object();
+
+    std::map<std::string, xbot_msgs::SensorInfo> sensors_by_id;
+    {
+        std::unique_lock<std::mutex> lk(found_sensors_mutex);
+        for (const auto &kv : found_sensors) {
+            if (!kv.second.sensor_id.empty()) {
+                sensors_by_id[kv.second.sensor_id] = kv.second;
+            }
+        }
+    }
+
+    if (sensors_by_id.empty()) {
+        return root;
+    }
+
+    std::string settings_persistent_path;
+    ros::param::param<std::string>("/settings/persistent_file", settings_persistent_path,
+                                   std::string("/data/ros/settings_persistent.json"));
+    const json overrides = open_mower_settings::readNamespace(settings_persistent_path, SENSOR_INFOS_NAMESPACE);
+
+    int order = 10;
+    for (const auto &kv : sensors_by_id) {
+        json entry = sensor_info_to_settings_entry(kv.second, order);
+        if (overrides.contains(kv.first)) {
+            apply_sensor_infos_overrides(entry, overrides[kv.first]);
+        }
+        root["settings"][kv.first] = entry;
+        order += 10;
+    }
+    return root;
+}
+
+void publish_sensor_infos_validation(const json &validation) {
+    try_publish("sensor_infos/validation/json", validation.dump(), true);
+}
+
+static bool validate_sensor_infos_label_field(const json &value, std::string &normalized, std::string &reason) {
+    if (!value.is_string()) {
+        reason = "value must be a string";
+        return false;
+    }
+    normalized = trim_settings_string(value.get<std::string>());
+    if (normalized.size() > 120) {
+        reason = "value must not be longer than 120 characters";
+        return false;
+    }
+    return true;
+}
+
+static bool validate_sensor_infos_description_field(const json &value, std::string &normalized, std::string &reason) {
+    if (!value.is_string()) {
+        reason = "value must be a string";
+        return false;
+    }
+    normalized = trim_settings_string(value.get<std::string>());
+    if (normalized.size() > 500) {
+        reason = "value must not be longer than 500 characters";
+        return false;
+    }
+    return true;
+}
+
+static bool validate_sensor_infos_order_field(const json &value, int &order, std::string &reason) {
+    if (!value.is_number_integer()) {
+        reason = "order must be an integer";
+        return false;
+    }
+    order = value.get<int>();
+    if (order < -100000 || order > 100000) {
+        reason = "order must be between -100000 and 100000";
+        return false;
+    }
+    return true;
+}
+
+static bool validate_sensor_infos_bool_field(const json &value, bool &flag, std::string &reason) {
+    if (!value.is_boolean()) {
+        reason = "value must be a boolean";
+        return false;
+    }
+    flag = value.get<bool>();
+    return true;
+}
+
+void handle_sensor_infos_persistent_payload(const std::string &payload_text) {
+    json validation = {
+        {"valid", false},
+        {"namespace", SENSOR_INFOS_NAMESPACE},
+        {"mode", "persistent"},
+        {"accepted", json::object()},
+        {"rejected", json::object()},
+        {"remarks", json::array()}
+    };
+
+    try {
+        const json payload = json::parse(payload_text.empty() ? "{}" : payload_text);
+        if (!payload.is_object()) {
+            validation["rejected"]["$"] = {{"reason", "payload must be a JSON object"}};
+            publish_sensor_infos_validation(validation);
+            return;
+        }
+
+        std::map<std::string, xbot_msgs::SensorInfo> sensors_by_id;
+        {
+            std::unique_lock<std::mutex> lk(found_sensors_mutex);
+            for (const auto &kv : found_sensors) {
+                if (!kv.second.sensor_id.empty()) {
+                    sensors_by_id[kv.second.sensor_id] = kv.second;
+                }
+            }
+        }
+
+        std::map<std::string, std::map<std::string, open_mower_settings::json>> accepted_updates;
+
+        for (auto sensor_it = payload.begin(); sensor_it != payload.end(); ++sensor_it) {
+            const std::string sensor_id = sensor_it.key();
+            if (sensors_by_id.count(sensor_id) == 0) {
+                validation["rejected"][sensor_id] = {{"reason", "unknown sensor id"}};
+                continue;
+            }
+            if (!sensor_it.value().is_object()) {
+                validation["rejected"][sensor_id] = {{"reason", "sensor entry must be an object"}};
+                continue;
+            }
+
+            json rejected_fields = json::object();
+            std::map<std::string, open_mower_settings::json> entry_updates;
+            for (auto field_it = sensor_it.value().begin(); field_it != sensor_it.value().end(); ++field_it) {
+                const std::string field = field_it.key();
+                std::string reason;
+                if (field == "label") {
+                    std::string value;
+                    if (validate_sensor_infos_label_field(field_it.value(), value, reason)) {
+                        entry_updates[field] = value;
+                    } else {
+                        rejected_fields[field] = reason;
+                    }
+                } else if (field == "description") {
+                    std::string value;
+                    if (validate_sensor_infos_description_field(field_it.value(), value, reason)) {
+                        entry_updates[field] = value;
+                    } else {
+                        rejected_fields[field] = reason;
+                    }
+                } else if (field == "group") {
+                    std::string value;
+                    if (validate_group_metadata_value(field_it.value(), value, reason)) {
+                        entry_updates[field] = value;
+                    } else {
+                        rejected_fields[field] = reason;
+                    }
+                } else if (field == "order") {
+                    int value = 0;
+                    if (validate_sensor_infos_order_field(field_it.value(), value, reason)) {
+                        entry_updates[field] = value;
+                    } else {
+                        rejected_fields[field] = reason;
+                    }
+                } else if (field == "visible" || field == "expert") {
+                    bool value = false;
+                    if (validate_sensor_infos_bool_field(field_it.value(), value, reason)) {
+                        entry_updates[field] = value;
+                    } else {
+                        rejected_fields[field] = reason;
+                    }
+                } else {
+                    rejected_fields[field] = "field is readonly or unknown";
+                }
+            }
+
+            if (!rejected_fields.empty()) {
+                validation["rejected"][sensor_id] = rejected_fields;
+            }
+            if (!entry_updates.empty()) {
+                accepted_updates[sensor_id] = entry_updates;
+            }
+        }
+
+        if (accepted_updates.empty() && validation["rejected"].empty()) {
+            validation["rejected"]["$"] = {{"reason", "payload does not contain any sensor info metadata changes"}};
+        }
+
+        if (!accepted_updates.empty() && validation["rejected"].empty()) {
+            std::string settings_persistent_path;
+            ros::param::param<std::string>("/settings/persistent_file", settings_persistent_path,
+                                           std::string("/data/ros/settings_persistent.json"));
+            if (!open_mower_settings::updateEntryFields(settings_persistent_path, SENSOR_INFOS_NAMESPACE, accepted_updates)) {
+                validation["rejected"]["$"] = {{"reason", "could not write settings_persistent.json"}};
+            } else {
+                for (const auto &entry : accepted_updates) {
+                    json fields = json::array();
+                    for (const auto &field : entry.second) {
+                        fields.push_back(field.first);
+                    }
+                    validation["accepted"][entry.first] = fields;
+                }
+            }
+        }
+    } catch (const json::exception &e) {
+        validation["rejected"]["$"] = {{"reason", std::string("Error decoding JSON: ") + e.what()}};
+        ROS_WARN_STREAM("Error decoding sensor_infos persistent JSON: " << e.what());
+    }
+
+    validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
+    publish_sensor_infos_validation(validation);
+    if (validation["valid"].get<bool>()) {
+        publish_sensor_metadata();
+    }
+}
+
+void publish_sensor_metadata() {
+    json sensor_info = build_sensor_infos_settings_payload();
+    if (sensor_info["settings"].empty()) {
+        return;
+    }
+
     try_publish("sensor_infos/json", sensor_info.dump(), true);
     json data;
     data["d"] = sensor_info;
@@ -895,6 +1185,10 @@ void subscribe_to_sensor(std::string topic, std::vector<ros::Subscriber> &sensor
             ros::Subscriber s = n->subscribe<xbot_msgs::SensorDataString>(data_topic, 10, [info = sensor](
                     const xbot_msgs::SensorDataString::ConstPtr &msg) {
                 try_publish("sensors/" + info.sensor_id + "/data", msg->data, true);
+                {
+                    std::lock_guard<std::mutex> lk(latest_string_sensor_values_mutex);
+                    latest_string_sensor_values[info.sensor_id] = msg->data;
+                }
 
                 json data;
                 data["d"] = msg->data;
