@@ -212,8 +212,8 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "sensor_infos/set/renew/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "sensor_infos/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "sensors/settings/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "sensors/settings/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/renew/json", 0);
@@ -364,9 +364,9 @@ public:
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json") {
             std_msgs::Empty msg;
             mower_logic_settings_renew_pub.publish(msg);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensor_infos/set/renew/json") {
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensors/settings/set/renew/json") {
             publish_sensor_metadata();
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensor_infos/set/persistent/json") {
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensors/settings/set/persistent/json") {
             handle_sensor_infos_persistent_payload(ptr->get_payload_str());
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/session/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json") {
@@ -551,7 +551,7 @@ std::map<std::string, double> latest_double_sensor_values;
 std::mutex latest_string_sensor_values_mutex;
 std::map<std::string, std::string> latest_string_sensor_values;
 
-constexpr const char *SENSOR_INFOS_NAMESPACE = "sensor_infos";
+constexpr const char *SENSOR_INFOS_NAMESPACE = "sensors";
 constexpr const char *SENSOR_INFOS_SCHEMA = "settings_v2";
 
 
@@ -947,7 +947,12 @@ static json build_sensor_infos_settings_payload() {
     std::string settings_persistent_path;
     ros::param::param<std::string>("/settings/persistent_file", settings_persistent_path,
                                    std::string("/data/ros/settings_persistent.json"));
-    const json overrides = open_mower_settings::readNamespace(settings_persistent_path, SENSOR_INFOS_NAMESPACE);
+    json overrides = open_mower_settings::readNamespace(settings_persistent_path, SENSOR_INFOS_NAMESPACE);
+    if (overrides.empty()) {
+        // Migration fallback: read metadata stored by the previous sensor_infos namespace.
+        // New writes always use the sensors namespace.
+        overrides = open_mower_settings::readNamespace(settings_persistent_path, "sensor_infos");
+    }
 
     int order = 10;
     for (const auto &kv : sensors_by_id) {
@@ -962,7 +967,7 @@ static json build_sensor_infos_settings_payload() {
 }
 
 void publish_sensor_infos_validation(const json &validation) {
-    try_publish("sensor_infos/validation/json", validation.dump(), true);
+    try_publish("sensors/settings/validation/json", validation.dump(), true);
 }
 
 static bool validate_sensor_infos_label_field(const json &value, std::string &normalized, std::string &reason) {
@@ -1129,7 +1134,7 @@ void handle_sensor_infos_persistent_payload(const std::string &payload_text) {
         }
     } catch (const json::exception &e) {
         validation["rejected"]["$"] = {{"reason", std::string("Error decoding JSON: ") + e.what()}};
-        ROS_WARN_STREAM("Error decoding sensor_infos persistent JSON: " << e.what());
+        ROS_WARN_STREAM("Error decoding sensors/settings persistent JSON: " << e.what());
     }
 
     validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
@@ -1145,11 +1150,11 @@ void publish_sensor_metadata() {
         return;
     }
 
-    try_publish("sensor_infos/json", sensor_info.dump(), true);
+    try_publish("sensors/settings/json", sensor_info.dump(), true);
     json data;
     data["d"] = sensor_info;
     auto bson = json::to_bson(data);
-    try_publish_binary("sensor_infos/bson", bson.data(), bson.size(), true);
+    try_publish_binary("sensors/settings/bson", bson.data(), bson.size(), true);
 }
 
 void subscribe_to_sensor(std::string topic, std::vector<ros::Subscriber> &sensor_data_subscribers) {

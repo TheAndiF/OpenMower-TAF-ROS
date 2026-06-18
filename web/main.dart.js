@@ -92378,7 +92378,7 @@ new A.d_(r,A.j(r).i("d_<1>")).fb(new A.agW(this))
 s.mJ(0,"actions/bson",B.cK)
 s.mJ(0,"map/bson",B.bN)
 s.mJ(0,"map/overlay/bson",B.af)
-s.mJ(0,"sensor_infos/bson",B.bN)
+s.mJ(0,"sensors/settings/bson",B.bN)
 s.mJ(0,q,B.af)
 s.mJ(0,q,B.af)
 s.mJ(0,"sensors/+/bson",B.af)
@@ -92543,7 +92543,7 @@ J.ab(l.h(0,a),"current_path")
 J.ab(l.h(0,a),"current_path_index")
 m.sl(0,f)
 break
-case"sensor_infos/bson":l=j.c
+case"sensors/settings/bson":l=j.c
 l===$&&A.a()
 l=l.d
 i=l==null?c:l.d1(l,!1)

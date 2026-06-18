@@ -26,13 +26,13 @@ The deprecated `settings/mow_load_factor/...` MQTT topics are no longer publishe
 
 The validation payload reports the namespace, write mode (`session` or `persistent`), accepted keys, and rejected keys with rejection reasons. Valid keys from a mixed payload are applied; invalid or unknown keys are reported as rejected.
 
-## Sensor infos metadata API
+## Sensors settings metadata API
 
-`sensor_infos/json` now follows the same structural idea as the dynamic settings pages. The retained JSON payload contains:
+`sensors/settings/json` follows the same structural idea as the dynamic settings pages while living below the existing `sensors/...` MQTT branch. The retained JSON payload contains:
 
 ```json
 {
-  "namespace": "sensor_infos",
+  "namespace": "sensors",
   "schema": "settings_v2",
   "readonly": true,
   "settings": {
@@ -60,14 +60,15 @@ The validation payload reports the namespace, write mode (`session` or `persiste
 }
 ```
 
-The technical sensor data is still produced by ROS `SensorInfo` messages and the live values remain on `sensors/<sensor_id>/data`. `sensor_infos/json` adds editable display metadata (`label`, `description`, `group`, `order`, `visible`, `expert`) so the app can group and order the sensor view like other dynamically generated settings pages.
+The technical sensor data is still produced by ROS `SensorInfo` messages and the live values remain on `sensors/<sensor_id>/data`. `sensors/settings/json` adds editable display metadata (`label`, `description`, `group`, `order`, `visible`, `expert`) so the app can group and order the sensor view like other dynamically generated settings pages.
 
 ### MQTT topics
 
-- `sensor_infos/json` publishes the retained settings-v2-like sensor metadata state.
-- `sensor_infos/set/renew/json` requests a republish of the current retained sensor metadata state.
-- `sensor_infos/set/persistent/json` stores editable display metadata in the persistent settings file under namespace `sensor_infos`.
-- `sensor_infos/validation/json` publishes retained validation feedback for the last persistent write.
+- `sensors/settings/json` publishes the retained settings-v2-like sensor metadata state.
+- `sensors/settings/set/renew/json` requests a republish of the current retained sensor metadata state.
+- `sensors/settings/set/persistent/json` stores editable display metadata in the persistent settings file under namespace `sensors`.
+- `sensors/settings/validation/json` publishes retained validation feedback for the last persistent write.
+- `sensors/settings/bson` is the BSON equivalent of `sensors/settings/json` for clients that still require BSON.
 
 Example persistent write:
 
