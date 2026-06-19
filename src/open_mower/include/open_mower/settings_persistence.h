@@ -197,6 +197,19 @@ inline json readNamespace(const std::string& path, const std::string& namespace_
   return root["settings"][namespace_name];
 }
 
+
+inline bool updateNamespace(const std::string& path, const std::string& namespace_name,
+                            const json& namespace_value) {
+  ensureDataRosDirectory();
+  FileLock lock(path + ".lock");
+  json root = readRootUnlocked(path);
+  if (!root["settings"].is_object()) {
+    root["settings"] = json::object();
+  }
+  root["settings"][namespace_name] = namespace_value.is_object() ? namespace_value : json::object();
+  return writeRootUnlocked(path, root);
+}
+
 inline bool updateEntryField(const std::string& path, const std::string& namespace_name,
                              const std::string& key, const std::string& field, const json& value) {
   ensureDataRosDirectory();

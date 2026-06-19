@@ -1,15 +1,20 @@
-BS_Move sensor settings MQTT API under sensors
-Date: 2026-06-18
-Summary:
-- Moved the sensor metadata settings MQTT API from sensor_infos/... to sensors/settings/... for a closer MQTT structure to the other dynamic settings pages.
-- Changed the settings-v2 payload namespace from sensor_infos to sensors.
-- Kept live sensor values on sensors/<sensor_id>/data unchanged.
-- Added a migration fallback that reads old sensor_infos persistent metadata when no sensors namespace metadata exists yet; new writes are stored under sensors.
-- Updated the web bundle subscription from sensor_infos/bson to sensors/settings/bson and refreshed the service worker resource hash.
-- Updated xbot_monitoring documentation for the new sensors/settings topics.
+BS_Implement sensor settings groups backend support
+
+- Add groups object to retained sensors/settings/json payload
+- Read and publish group metadata from persistent sensor settings
+- Accept current app payload structure with top-level groups and settings
+- Keep legacy flat sensor settings payloads compatible and migrate them into settings.sensors.settings
+- Store group metadata below settings.sensors.groups in settings_persistent.json
+- Auto-create default group metadata when sensors reference a new group
+- Validate group ids, group labels, group order and sensor metadata fields before persistent writes
+- Republish the complete retained sensor settings state after successful persistent changes
+- Add updateNamespace helper for writing migrated namespace structures atomically
+- Update xbot_monitoring README and project documentation
+
 Changed files:
 - src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/open_mower/include/open_mower/settings_persistence.h
 - src/lib/xbot_monitoring/README.md
-- web/main.dart.js
-- web/flutter_service_worker.js
+- _Dokumentation/2026-06-19_OpenMower-TAF-ROS_Dokumentation_Sensor-Settings-Backend-Groups_v0.1.docx
+- _Dokumentation/2026-06-19_OpenMower-TAF-ROS_Dokumentation_Sensor-Settings-Backend-Groups_v0.1.pdf
 - commit_message.txt

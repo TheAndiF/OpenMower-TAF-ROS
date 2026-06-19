@@ -28,13 +28,23 @@ The validation payload reports the namespace, write mode (`session` or `persiste
 
 ## Sensors settings metadata API
 
-`sensors/settings/json` follows the same structural idea as the dynamic settings pages while living below the existing `sensors/...` MQTT branch. The retained JSON payload contains:
+`sensors/settings/json` follows the same structural idea as the dynamic settings pages while living below the existing `sensors/...` MQTT branch. The retained JSON payload uses the sensor settings v2 schema and contains both group metadata and sensor metadata:
 
 ```json
 {
   "namespace": "sensors",
   "schema": "settings_v2",
   "readonly": true,
+  "groups": {
+    "host_system": {
+      "label": "Host-System",
+      "order": 10
+    },
+    "openmower": {
+      "label": "OpenMower",
+      "order": 20
+    }
+  },
   "settings": {
     "<sensor_id>": {
       "label": "Display label",
@@ -60,17 +70,41 @@ The validation payload reports the namespace, write mode (`session` or `persiste
 }
 ```
 
-The technical sensor data is still produced by ROS `SensorInfo` messages and the live values remain on `sensors/<sensor_id>/data`. `sensors/settings/json` adds editable display metadata (`label`, `description`, `group`, `order`, `visible`, `expert`) so the app can group and order the sensor view like other dynamically generated settings pages.
+The technical sensor data is still produced by ROS `SensorInfo` messages and the live values remain on `sensors/<sensor_id>/data`. `sensors/settings/json` adds editable display metadata (`label`, `description`, `group`, `order`, `visible`, `expert`) so the app can group and order the sensor view like other dynamically generated settings pages. Group metadata is stored separately under `groups.<group_id>.label` and `groups.<group_id>.order`. If no persistent `groups` object exists yet, the bridge derives default groups from `settings.<sensor_id>.group`.
 
 ### MQTT topics
 
-- `sensors/settings/json` publishes the retained settings-v2-like sensor metadata state.
+- `sensors/settings/json` publishes the retained settings-v2-like sensor metadata state including `groups` and `settings`.
 - `sensors/settings/set/renew/json` requests a republish of the current retained sensor metadata state.
 - `sensors/settings/set/persistent/json` stores editable display metadata in the persistent settings file under namespace `sensors`.
 - `sensors/settings/validation/json` publishes retained validation feedback for the last persistent write.
 - `sensors/settings/bson` is the BSON equivalent of `sensors/settings/json` for clients that still require BSON.
 
-Example persistent write:
+Example persistent write with the current app structure:
+
+```json
+{
+  "namespace": "sensors",
+  "schema": "settings_v2",
+  "groups": {
+    "host_system": {
+      "label": "Host-System",
+      "order": 10
+    }
+  },
+  "settings": {
+    "om_v_battery": {
+      "label": "Akkuspannung",
+      "group": "openmower_power",
+      "order": 10,
+      "visible": true,
+      "expert": false
+    }
+  }
+}
+```
+
+Legacy persistent writes without a top-level `settings` object are still accepted and are migrated into `settings.sensors.settings` inside `/data/ros/settings_persistent.json`:
 
 ```json
 {
@@ -84,4 +118,4 @@ Example persistent write:
 }
 ```
 
-Sensor values and technical ROS fields are read-only through this API. Unknown fields, unknown sensor ids and invalid metadata types are rejected.
+The bridge accepts only editable display fields. Sensor values and technical ROS fields are read-only through this API. Unknown fields, unknown sensor ids, invalid group ids and invalid metadata types are rejected. A successful persistent write stores the migrated namespace structure below `settings.sensors.settings` and `settings.sensors.groups`, publishes validation feedback and immediately republishes the complete retained `sensors/settings/json` state.

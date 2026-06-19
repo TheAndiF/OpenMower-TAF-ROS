@@ -923,11 +923,121 @@ static void apply_sensor_infos_overrides(json &entry, const json &overrides) {
     }
 }
 
+static std::string sensor_group_default_label(const std::string &group_id) {
+    if (group_id == "host_system") return "Host-System";
+    if (group_id == "openmower") return "OpenMower";
+    if (group_id == "general") return "Allgemein";
+
+    std::string label;
+    label.reserve(group_id.size());
+    bool next_upper = true;
+    for (const char c : group_id) {
+        if (c == '_' || c == '-') {
+            label.push_back(' ');
+            next_upper = true;
+        } else if (next_upper) {
+            label.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+            next_upper = false;
+        } else {
+            label.push_back(c);
+        }
+    }
+    return label.empty() ? group_id : label;
+}
+
+static int sensor_group_default_order(const std::string &group_id) {
+    if (group_id == "host_system") return 10;
+    if (group_id == "openmower") return 20;
+    if (group_id == "general") return 100;
+    return 1000;
+}
+
+static json default_sensor_group_entry(const std::string &group_id, int fallback_order) {
+    json entry = json::object();
+    entry["label"] = sensor_group_default_label(group_id);
+    const int preferred_order = sensor_group_default_order(group_id);
+    entry["order"] = preferred_order == 1000 ? fallback_order : preferred_order;
+    return entry;
+}
+
+static void apply_sensor_group_overrides(json &entry, const json &overrides) {
+    if (!overrides.is_object()) return;
+    if (overrides.contains("label")) entry["label"] = overrides["label"];
+    if (overrides.contains("order")) entry["order"] = overrides["order"];
+}
+
+static json read_sensor_infos_persisted_namespace(const std::string &settings_persistent_path) {
+    json current = open_mower_settings::readNamespace(settings_persistent_path, SENSOR_INFOS_NAMESPACE);
+    json legacy = open_mower_settings::readNamespace(settings_persistent_path, "sensor_infos");
+
+    json result = json::object();
+    result["settings"] = json::object();
+    result["groups"] = json::object();
+
+    if (legacy.is_object()) {
+        result["settings"] = legacy;
+    }
+
+    if (current.is_object()) {
+        if (current.contains("settings") && current["settings"].is_object()) {
+            for (auto it = current["settings"].begin(); it != current["settings"].end(); ++it) {
+                result["settings"][it.key()] = it.value();
+            }
+        }
+        if (current.contains("groups") && current["groups"].is_object()) {
+            result["groups"] = current["groups"];
+        }
+
+        // Backward compatibility: old builds stored sensor ids directly below settings.sensors.<sensor_id>.
+        for (auto it = current.begin(); it != current.end(); ++it) {
+            if (it.key() == "settings" || it.key() == "groups" || it.key() == "schema") continue;
+            if (it.value().is_object()) {
+                result["settings"][it.key()] = it.value();
+            }
+        }
+    }
+
+    return result;
+}
+
+static bool validate_sensor_group_id(const std::string &raw_group_id, std::string &group_id, std::string &reason) {
+    group_id = trim_settings_string(raw_group_id);
+    if (group_id.empty()) {
+        reason = "group id must not be empty";
+        return false;
+    }
+    if (group_id.size() > 80) {
+        reason = "group id must not be longer than 80 characters";
+        return false;
+    }
+    for (const unsigned char c : group_id) {
+        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) {
+            reason = "group id may only contain letters, digits, underscore, hyphen or dot";
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool validate_sensor_group_label_field(const json &value, std::string &normalized, std::string &reason) {
+    if (!value.is_string()) {
+        reason = "value must be a string";
+        return false;
+    }
+    normalized = trim_settings_string(value.get<std::string>());
+    if (normalized.size() > 120) {
+        reason = "value must not be longer than 120 characters";
+        return false;
+    }
+    return true;
+}
+
 static json build_sensor_infos_settings_payload() {
     json root = json::object();
     root["namespace"] = SENSOR_INFOS_NAMESPACE;
     root["schema"] = SENSOR_INFOS_SCHEMA;
     root["readonly"] = true;
+    root["groups"] = json::object();
     root["settings"] = json::object();
 
     std::map<std::string, xbot_msgs::SensorInfo> sensors_by_id;
@@ -947,22 +1057,54 @@ static json build_sensor_infos_settings_payload() {
     std::string settings_persistent_path;
     ros::param::param<std::string>("/settings/persistent_file", settings_persistent_path,
                                    std::string("/data/ros/settings_persistent.json"));
-    json overrides = open_mower_settings::readNamespace(settings_persistent_path, SENSOR_INFOS_NAMESPACE);
-    if (overrides.empty()) {
-        // Migration fallback: read metadata stored by the previous sensor_infos namespace.
-        // New writes always use the sensors namespace.
-        overrides = open_mower_settings::readNamespace(settings_persistent_path, "sensor_infos");
-    }
+    const json persisted = read_sensor_infos_persisted_namespace(settings_persistent_path);
+    const json sensor_overrides = persisted.contains("settings") && persisted["settings"].is_object()
+                                      ? persisted["settings"]
+                                      : json::object();
+    const json group_overrides = persisted.contains("groups") && persisted["groups"].is_object()
+                                     ? persisted["groups"]
+                                     : json::object();
 
     int order = 10;
+    int next_group_order = 1000;
     for (const auto &kv : sensors_by_id) {
         json entry = sensor_info_to_settings_entry(kv.second, order);
-        if (overrides.contains(kv.first)) {
-            apply_sensor_infos_overrides(entry, overrides[kv.first]);
+        if (sensor_overrides.contains(kv.first)) {
+            apply_sensor_infos_overrides(entry, sensor_overrides[kv.first]);
         }
+
+        std::string group_id = "general";
+        if (entry.contains("group") && entry["group"].is_string()) {
+            std::string reason;
+            std::string validated_group;
+            if (validate_group_metadata_value(entry["group"], validated_group, reason)) {
+                group_id = validated_group;
+            }
+        }
+        entry["group"] = group_id;
+
+        if (!root["groups"].contains(group_id)) {
+            root["groups"][group_id] = default_sensor_group_entry(group_id, next_group_order);
+            next_group_order += 10;
+        }
+
         root["settings"][kv.first] = entry;
         order += 10;
     }
+
+    for (auto group_it = group_overrides.begin(); group_it != group_overrides.end(); ++group_it) {
+        std::string group_id;
+        std::string reason;
+        if (!validate_sensor_group_id(group_it.key(), group_id, reason)) {
+            continue;
+        }
+        if (!root["groups"].contains(group_id)) {
+            root["groups"][group_id] = default_sensor_group_entry(group_id, next_group_order);
+            next_group_order += 10;
+        }
+        apply_sensor_group_overrides(root["groups"][group_id], group_it.value());
+    }
+
     return root;
 }
 
@@ -1036,6 +1178,45 @@ void handle_sensor_infos_persistent_payload(const std::string &payload_text) {
             return;
         }
 
+        const bool wrapped_payload = payload.contains("settings") || payload.contains("groups");
+        static const std::set<std::string> allowed_top_level_fields = {
+            "namespace", "schema", "readonly", "settings", "groups"
+        };
+        if (wrapped_payload) {
+            for (auto it = payload.begin(); it != payload.end(); ++it) {
+                if (allowed_top_level_fields.count(it.key()) == 0) {
+                    validation["rejected"][it.key()] = {{"reason", "unknown top-level field"}};
+                }
+            }
+        }
+
+        json settings_payload = json::object();
+        json groups_payload = json::object();
+        if (wrapped_payload) {
+            if (payload.contains("settings")) {
+                if (!payload["settings"].is_object()) {
+                    validation["rejected"]["settings"] = {{"reason", "settings must be an object"}};
+                } else {
+                    settings_payload = payload["settings"];
+                }
+            }
+            if (payload.contains("groups")) {
+                if (!payload["groups"].is_object()) {
+                    validation["rejected"]["groups"] = {{"reason", "groups must be an object"}};
+                } else {
+                    groups_payload = payload["groups"];
+                }
+            }
+        } else {
+            settings_payload = payload;
+            validation["remarks"].push_back("legacy flat sensors payload accepted; it will be migrated to sensors.settings");
+        }
+
+        if (!validation["rejected"].empty()) {
+            publish_sensor_infos_validation(validation);
+            return;
+        }
+
         std::map<std::string, xbot_msgs::SensorInfo> sensors_by_id;
         {
             std::unique_lock<std::mutex> lk(found_sensors_mutex);
@@ -1046,16 +1227,17 @@ void handle_sensor_infos_persistent_payload(const std::string &payload_text) {
             }
         }
 
-        std::map<std::string, std::map<std::string, open_mower_settings::json>> accepted_updates;
+        std::map<std::string, std::map<std::string, open_mower_settings::json>> accepted_sensor_updates;
+        json accepted_group_updates = json::object();
 
-        for (auto sensor_it = payload.begin(); sensor_it != payload.end(); ++sensor_it) {
+        for (auto sensor_it = settings_payload.begin(); sensor_it != settings_payload.end(); ++sensor_it) {
             const std::string sensor_id = sensor_it.key();
             if (sensors_by_id.count(sensor_id) == 0) {
-                validation["rejected"][sensor_id] = {{"reason", "unknown sensor id"}};
+                validation["rejected"]["settings"][sensor_id] = {{"reason", "unknown sensor id"}};
                 continue;
             }
             if (!sensor_it.value().is_object()) {
-                validation["rejected"][sensor_id] = {{"reason", "sensor entry must be an object"}};
+                validation["rejected"]["settings"][sensor_id] = {{"reason", "sensor entry must be an object"}};
                 continue;
             }
 
@@ -1082,6 +1264,9 @@ void handle_sensor_infos_persistent_payload(const std::string &payload_text) {
                     std::string value;
                     if (validate_group_metadata_value(field_it.value(), value, reason)) {
                         entry_updates[field] = value;
+                        if (!accepted_group_updates.contains(value)) {
+                            accepted_group_updates[value] = default_sensor_group_entry(value, 1000 + static_cast<int>(accepted_group_updates.size()) * 10);
+                        }
                     } else {
                         rejected_fields[field] = reason;
                     }
@@ -1105,31 +1290,101 @@ void handle_sensor_infos_persistent_payload(const std::string &payload_text) {
             }
 
             if (!rejected_fields.empty()) {
-                validation["rejected"][sensor_id] = rejected_fields;
+                validation["rejected"]["settings"][sensor_id] = rejected_fields;
             }
             if (!entry_updates.empty()) {
-                accepted_updates[sensor_id] = entry_updates;
+                accepted_sensor_updates[sensor_id] = entry_updates;
             }
         }
 
-        if (accepted_updates.empty() && validation["rejected"].empty()) {
-            validation["rejected"]["$"] = {{"reason", "payload does not contain any sensor info metadata changes"}};
+        for (auto group_it = groups_payload.begin(); group_it != groups_payload.end(); ++group_it) {
+            std::string group_id;
+            std::string reason;
+            if (!validate_sensor_group_id(group_it.key(), group_id, reason)) {
+                validation["rejected"]["groups"][group_it.key()] = {{"reason", reason}};
+                continue;
+            }
+            if (!group_it.value().is_object()) {
+                validation["rejected"]["groups"][group_it.key()] = {{"reason", "group entry must be an object"}};
+                continue;
+            }
+
+            json group_update = json::object();
+            json rejected_fields = json::object();
+            for (auto field_it = group_it.value().begin(); field_it != group_it.value().end(); ++field_it) {
+                const std::string field = field_it.key();
+                if (field == "label") {
+                    std::string value;
+                    if (validate_sensor_group_label_field(field_it.value(), value, reason)) {
+                        group_update[field] = value;
+                    } else {
+                        rejected_fields[field] = reason;
+                    }
+                } else if (field == "order") {
+                    int value = 0;
+                    if (validate_sensor_infos_order_field(field_it.value(), value, reason)) {
+                        group_update[field] = value;
+                    } else {
+                        rejected_fields[field] = reason;
+                    }
+                } else {
+                    rejected_fields[field] = "field is readonly or unknown";
+                }
+            }
+
+            if (!rejected_fields.empty()) {
+                validation["rejected"]["groups"][group_id] = rejected_fields;
+            }
+            if (!group_update.empty()) {
+                if (!accepted_group_updates.contains(group_id)) {
+                    accepted_group_updates[group_id] = default_sensor_group_entry(group_id, 1000 + static_cast<int>(accepted_group_updates.size()) * 10);
+                }
+                for (auto update_it = group_update.begin(); update_it != group_update.end(); ++update_it) {
+                    accepted_group_updates[group_id][update_it.key()] = update_it.value();
+                }
+            }
         }
 
-        if (!accepted_updates.empty() && validation["rejected"].empty()) {
+        if (accepted_sensor_updates.empty() && accepted_group_updates.empty() && validation["rejected"].empty()) {
+            validation["rejected"]["$"] = {{"reason", "payload does not contain any sensor settings or group metadata changes"}};
+        }
+
+        if (validation["rejected"].empty() && (!accepted_sensor_updates.empty() || !accepted_group_updates.empty())) {
             std::string settings_persistent_path;
             ros::param::param<std::string>("/settings/persistent_file", settings_persistent_path,
                                            std::string("/data/ros/settings_persistent.json"));
-            if (!open_mower_settings::updateEntryFields(settings_persistent_path, SENSOR_INFOS_NAMESPACE, accepted_updates)) {
-                validation["rejected"]["$"] = {{"reason", "could not write settings_persistent.json"}};
-            } else {
-                for (const auto &entry : accepted_updates) {
-                    json fields = json::array();
-                    for (const auto &field : entry.second) {
-                        fields.push_back(field.first);
-                    }
-                    validation["accepted"][entry.first] = fields;
+
+            json persisted = read_sensor_infos_persisted_namespace(settings_persistent_path);
+            if (!persisted.contains("settings") || !persisted["settings"].is_object()) persisted["settings"] = json::object();
+            if (!persisted.contains("groups") || !persisted["groups"].is_object()) persisted["groups"] = json::object();
+
+            for (const auto &entry : accepted_sensor_updates) {
+                if (!persisted["settings"].contains(entry.first) || !persisted["settings"][entry.first].is_object()) {
+                    persisted["settings"][entry.first] = json::object();
                 }
+                json fields = json::array();
+                for (const auto &field : entry.second) {
+                    persisted["settings"][entry.first][field.first] = field.second;
+                    fields.push_back(field.first);
+                }
+                validation["accepted"]["settings"][entry.first] = fields;
+            }
+
+            for (auto group_it = accepted_group_updates.begin(); group_it != accepted_group_updates.end(); ++group_it) {
+                if (!persisted["groups"].contains(group_it.key()) || !persisted["groups"][group_it.key()].is_object()) {
+                    persisted["groups"][group_it.key()] = default_sensor_group_entry(group_it.key(), 1000);
+                }
+                json fields = json::array();
+                for (auto field_it = group_it.value().begin(); field_it != group_it.value().end(); ++field_it) {
+                    persisted["groups"][group_it.key()][field_it.key()] = field_it.value();
+                    fields.push_back(field_it.key());
+                }
+                validation["accepted"]["groups"][group_it.key()] = fields;
+            }
+
+            if (!open_mower_settings::updateNamespace(settings_persistent_path, SENSOR_INFOS_NAMESPACE, persisted)) {
+                validation["accepted"] = json::object();
+                validation["rejected"]["$"] = {{"reason", "could not write settings_persistent.json"}};
             }
         }
     } catch (const json::exception &e) {
