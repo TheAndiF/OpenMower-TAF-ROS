@@ -115,6 +115,7 @@ mower_msgs::HighLevelStatus high_level_status;
 std::atomic<bool> mowerAllowed;
 
 Behavior* currentBehavior = &IdleBehavior::INSTANCE;
+std::atomic<bool> dockedIdleOnChargingRequested{false};
 
 std::vector<xbot_msgs::ActionInfo> rootActions;
 ros::Time last_v_battery_check;
@@ -815,6 +816,14 @@ void checkSafety(const ros::TimerEvent& timer_event) {
   high_level_status.emergency = last_emergency.latched_emergency;
   high_level_status.is_charging = last_power.charge_voltage_chg > 10.0 || last_power.charge_voltage_adc > 10.0;
 
+  if (high_level_status.is_charging && currentBehavior != nullptr &&
+      currentBehavior != &IdleBehavior::DOCKED_INSTANCE) {
+    ROS_INFO_STREAM_THROTTLE(
+        5, "Charging detected, requesting existing docked idle state.");
+    dockedIdleOnChargingRequested = true;
+    currentBehavior->abort();
+  }
+
   // Initialize to true, if after all checks it is still true then mower should be enabled.
   mowerAllowed = true;
 
@@ -822,14 +831,8 @@ void checkSafety(const ros::TimerEvent& timer_event) {
   if (currentBehavior != nullptr) {
     if (last_emergency.latched_emergency) {
       currentBehavior->requestPause(pauseType::PAUSE_EMERGENCY);
-      if (currentBehavior == &AreaRecordingBehavior::INSTANCE || currentBehavior == &IdleBehavior::INSTANCE ||
-          currentBehavior == &IdleBehavior::DOCKED_INSTANCE) {
-        if (high_level_status.is_charging) {
-          // emergency and docked and idle or area recording, so it's safe to reset the emergency mode, reset it. It's
-          // safe since we won't start moving in this mode.
-          setEmergencyMode(false);
-        }
-      }
+      // Keep the emergency/error state unchanged while charging. Charging may request the
+      // existing docked idle behavior, but it must not acknowledge or clear an active emergency.
     } else {
       currentBehavior->requestContinue(pauseType::PAUSE_EMERGENCY);
     }
@@ -1967,6 +1970,9 @@ int main(int argc, char** argv) {
       currentBehavior->start(last_config, shared_state);
       Behavior* newBehavior = currentBehavior->execute();
       currentBehavior->exit();
+      if (dockedIdleOnChargingRequested.exchange(false)) {
+        newBehavior = &IdleBehavior::DOCKED_INSTANCE;
+      }
       currentBehavior = newBehavior;
     } else {
       high_level_status.state_name = "NULL";
