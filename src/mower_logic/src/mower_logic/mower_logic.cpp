@@ -116,6 +116,7 @@ std::atomic<bool> mowerAllowed;
 
 Behavior* currentBehavior = &IdleBehavior::INSTANCE;
 std::atomic<bool> dockedIdleOnChargingRequested{false};
+ros::Time chargingDetectedSince(0.0);
 
 std::vector<xbot_msgs::ActionInfo> rootActions;
 ros::Time last_v_battery_check;
@@ -816,12 +817,21 @@ void checkSafety(const ros::TimerEvent& timer_event) {
   high_level_status.emergency = last_emergency.latched_emergency;
   high_level_status.is_charging = last_power.charge_voltage_chg > 10.0 || last_power.charge_voltage_adc > 10.0;
 
-  if (high_level_status.is_charging && currentBehavior != nullptr &&
-      currentBehavior != &IdleBehavior::DOCKED_INSTANCE) {
-    ROS_INFO_STREAM_THROTTLE(
-        5, "Charging detected, requesting existing docked idle state.");
-    dockedIdleOnChargingRequested = true;
-    currentBehavior->abort();
+  if (high_level_status.is_charging) {
+    if (chargingDetectedSince.isZero()) {
+      chargingDetectedSince = ros::Time::now();
+    }
+
+    if (ros::Time::now() - chargingDetectedSince >= ros::Duration(30.0) && currentBehavior != nullptr &&
+        currentBehavior != &IdleBehavior::DOCKED_INSTANCE) {
+      ROS_INFO_STREAM_THROTTLE(
+          5, "Charging detected for 30 seconds, requesting existing docked idle state.");
+      dockedIdleOnChargingRequested = true;
+      currentBehavior->abort();
+    }
+  } else {
+    chargingDetectedSince = ros::Time(0.0);
+    dockedIdleOnChargingRequested = false;
   }
 
   // Initialize to true, if after all checks it is still true then mower should be enabled.
