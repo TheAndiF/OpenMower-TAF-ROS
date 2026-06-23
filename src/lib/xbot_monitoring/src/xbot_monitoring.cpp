@@ -11,6 +11,7 @@
 #include <ctime>
 #include <cctype>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <csignal>
 #include <sys/types.h>
@@ -24,6 +25,7 @@
 #include "xbot_msgs/SensorDataString.h"
 #include "xbot_msgs/SensorDataDouble.h"
 #include "xbot_msgs/RobotState.h"
+#include "xbot_msgs/GnssSatelliteArray.h"
 #include <mqtt/async_client.h>
 #include <nlohmann/json.hpp>
 #include <vector>
@@ -80,6 +82,10 @@ void publish_capabilities();
 void publish_sensor_metadata();
 void publish_sensor_infos_validation(const json &validation);
 void handle_sensor_infos_persistent_payload(const std::string &payload);
+void publish_gps_state_settings();
+void publish_gps_state_validation(const json &validation);
+void handle_gps_state_set_payload(const std::string &payload_text, bool persistent);
+void publish_latest_gps_state_payloads(bool force = false);
 void publish_map();
 void publish_map_validation(const json &validation);
 void publish_settings_validation(const std::string &settings_namespace, const json &validation);
@@ -182,6 +188,8 @@ class MqttCallback : public mqtt::callback {
         publish_actions();
         publish_version();
         publish_params();
+        publish_gps_state_settings();
+        publish_latest_gps_state_payloads(true);
 
         // BEGIN: Deprecated code (1/2)
         // Earlier implementations subscribed to "/action" and "prefix//action" topics, we do it to not break stuff as well.
@@ -214,6 +222,9 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "sensors/settings/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "sensors/settings/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/session/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/renew/json", 0);
@@ -368,6 +379,13 @@ public:
             publish_sensor_metadata();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensors/settings/set/persistent/json") {
             handle_sensor_infos_persistent_payload(ptr->get_payload_str());
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/renew/json") {
+            publish_gps_state_settings();
+            publish_latest_gps_state_payloads(true);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/session/json") {
+            handle_gps_state_set_payload(ptr->get_payload_str(), false);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/persistent/json") {
+            handle_gps_state_set_payload(ptr->get_payload_str(), true);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/session/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json") {
             const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json";
@@ -553,8 +571,489 @@ std::map<std::string, std::string> latest_string_sensor_values;
 
 constexpr const char *SENSOR_INFOS_NAMESPACE = "sensors";
 constexpr const char *SENSOR_INFOS_SCHEMA = "settings_v2";
+constexpr const char *GPS_STATE_NAMESPACE = "gps_state";
+constexpr const char *GPS_STATE_SCHEMA = "settings_v2";
+
+struct GpsStateSettings {
+    bool enabled = true;
+    double publish_rate_hz = 1.0;
+    bool publish_state1 = true;
+    bool publish_state2 = true;
+    bool publish_state3 = true;
+    bool publish_state4 = false;
+    double weak_cn0_threshold = 20.0;
+    double good_cn0_threshold = 30.0;
+};
+
+std::mutex gps_state_settings_mutex;
+GpsStateSettings gps_state_settings;
+bool gps_state_settings_loaded = false;
+
+std::mutex gps_state_payload_mutex;
+json latest_gps_state_payloads = json::object();
+bool latest_gps_state_available = false;
+ros::Time last_gps_state_publish_time;
 
 
+
+static json gps_state_setting_entry(const std::string &label,
+                                    const std::string &description,
+                                    const std::string &group,
+                                    int order,
+                                    const std::string &type,
+                                    const json &value,
+                                    const json &min_value = nullptr,
+                                    const json &max_value = nullptr,
+                                    const std::string &unit = "",
+                                    bool expert = false,
+                                    bool session_apply_supported = true) {
+    json entry = json::object();
+    entry["label"] = label;
+    entry["description"] = description;
+    entry["group"] = group;
+    entry["order"] = order;
+    entry["type"] = type;
+    entry["value"] = value;
+    entry["active"] = value;
+    entry["persistent"] = value;
+    entry["visible"] = true;
+    entry["expert"] = expert;
+    entry["different"] = false;
+    entry["restart_required"] = false;
+    entry["session_apply_supported"] = session_apply_supported;
+    if (!unit.empty()) entry["unit"] = unit;
+    if (!min_value.is_null()) entry["min"] = min_value;
+    if (!max_value.is_null()) entry["max"] = max_value;
+    return entry;
+}
+
+static json gps_state_descriptor_entry(const std::string &label,
+                                       const std::string &description,
+                                       int order,
+                                       const std::string &topic,
+                                       bool expert) {
+    json entry = json::object();
+    entry["label"] = label;
+    entry["description"] = description;
+    entry["group"] = "states";
+    entry["order"] = order;
+    entry["type"] = "json";
+    entry["topic"] = topic;
+    entry["value"] = nullptr;
+    entry["active"] = nullptr;
+    entry["persistent"] = nullptr;
+    entry["visible"] = true;
+    entry["expert"] = expert;
+    entry["readonly"] = true;
+    entry["different"] = false;
+    entry["restart_required"] = false;
+    entry["session_apply_supported"] = false;
+    return entry;
+}
+
+static json read_gps_state_persisted_namespace() {
+    std::string settings_persistent_path;
+    ros::param::param<std::string>("/settings/persistent_file", settings_persistent_path,
+                                   std::string("/data/ros/settings_persistent.json"));
+    const open_mower_settings::json persisted = open_mower_settings::readNamespace(settings_persistent_path, GPS_STATE_NAMESPACE);
+    return json::parse(persisted.dump());
+}
+
+static bool persisted_bool_or(const json &persisted, const std::string &key, bool fallback) {
+    if (!persisted.is_object() || !persisted.contains(key) || !persisted[key].is_object()) return fallback;
+    const json &entry = persisted[key];
+    if (entry.contains("persistent") && entry["persistent"].is_boolean()) return entry["persistent"].get<bool>();
+    if (entry.contains("value") && entry["value"].is_boolean()) return entry["value"].get<bool>();
+    return fallback;
+}
+
+static double persisted_number_or(const json &persisted, const std::string &key, double fallback) {
+    if (!persisted.is_object() || !persisted.contains(key) || !persisted[key].is_object()) return fallback;
+    const json &entry = persisted[key];
+    if (entry.contains("persistent") && entry["persistent"].is_number()) return entry["persistent"].get<double>();
+    if (entry.contains("value") && entry["value"].is_number()) return entry["value"].get<double>();
+    return fallback;
+}
+
+static double clamp_gps_state_rate(double value) {
+    if (!std::isfinite(value)) return 1.0;
+    return std::max(0.1, std::min(5.0, value));
+}
+
+static void load_gps_state_settings_if_needed() {
+    std::lock_guard<std::mutex> lk(gps_state_settings_mutex);
+    if (gps_state_settings_loaded) return;
+    const json persisted = read_gps_state_persisted_namespace();
+    gps_state_settings.enabled = persisted_bool_or(persisted, "enabled", gps_state_settings.enabled);
+    gps_state_settings.publish_rate_hz = clamp_gps_state_rate(
+        persisted_number_or(persisted, "publish_rate_hz", gps_state_settings.publish_rate_hz));
+    gps_state_settings.publish_state1 = persisted_bool_or(persisted, "publish_state1", gps_state_settings.publish_state1);
+    gps_state_settings.publish_state2 = persisted_bool_or(persisted, "publish_state2", gps_state_settings.publish_state2);
+    gps_state_settings.publish_state3 = persisted_bool_or(persisted, "publish_state3", gps_state_settings.publish_state3);
+    gps_state_settings.publish_state4 = persisted_bool_or(persisted, "publish_state4", gps_state_settings.publish_state4);
+    gps_state_settings.weak_cn0_threshold = persisted_number_or(persisted, "weak_cn0_threshold", gps_state_settings.weak_cn0_threshold);
+    gps_state_settings.good_cn0_threshold = persisted_number_or(persisted, "good_cn0_threshold", gps_state_settings.good_cn0_threshold);
+    gps_state_settings_loaded = true;
+}
+
+static GpsStateSettings current_gps_state_settings() {
+    load_gps_state_settings_if_needed();
+    std::lock_guard<std::mutex> lk(gps_state_settings_mutex);
+    return gps_state_settings;
+}
+
+static json build_gps_state_settings_payload() {
+    const GpsStateSettings cfg = current_gps_state_settings();
+    json root = json::object();
+    root["namespace"] = GPS_STATE_NAMESPACE;
+    root["schema"] = GPS_STATE_SCHEMA;
+    root["groups"] = {
+        {"general", {{"label", "Allgemein"}, {"order", 10}}},
+        {"states", {{"label", "GPS States"}, {"order", 20}}},
+        {"debug", {{"label", "Debug"}, {"order", 90}}}
+    };
+    root["settings"] = json::object();
+    root["settings"]["enabled"] = gps_state_setting_entry(
+        "GPS State aktiv",
+        "Aktiviert die MQTT-Ausgabe der GPS-State-Daten.",
+        "general", 10, "bool", cfg.enabled);
+    root["settings"]["publish_rate_hz"] = gps_state_setting_entry(
+        "Publish-Rate",
+        "Maximale Veröffentlichungsrate der GPS-State-Daten.",
+        "general", 20, "double", cfg.publish_rate_hz, 0.1, 5.0, "Hz");
+    root["settings"]["state1"] = gps_state_descriptor_entry(
+        "GPS State 1",
+        "Kompakter GPS-Zustand für eine schnelle Bewertung der aktuellen Satellitenlage. Enthält Verfügbarkeit, Qualitätsbewertung, sichtbare Satelliten, verwendete Satelliten, durchschnittliche Signalstärke und Aktualisierungszeitpunkt.",
+        10, "gps_state/state1", false);
+    root["settings"]["state2"] = gps_state_descriptor_entry(
+        "GPS State 2",
+        "Erweiterte GPS-Zusammenfassung mit statistischer Bewertung und Verteilung nach Satellitensystemen. Enthält zusätzlich minimale und maximale Signalstärke, Anzahl schwacher und guter verwendeter Satelliten sowie Verteilung nach GPS, Galileo, GLONASS, BeiDou, SBAS und QZSS.",
+        20, "gps_state/state2", false);
+    root["settings"]["state3"] = gps_state_descriptor_entry(
+        "GPS State 3",
+        "Detaildaten der Satelliten, die aktuell aktiv für den Positionsfix verwendet werden. Enthält eine Liste der USED=true Satelliten mit GNSS-System, SV-ID, C/N0-Signalstärke, Elevation, Azimut, Residual und Qualitätswert.",
+        30, "gps_state/state3", false);
+    root["settings"]["state4"] = gps_state_descriptor_entry(
+        "GPS State 4",
+        "Vollständige Satelliten-Diagnose mit allen sichtbaren Satelliten, auch wenn sie nicht für den Positionsfix verwendet werden. Enthält used=true/false, GNSS-System, SV-ID, C/N0, Elevation, Azimut, Residual und Qualität. Gedacht für Experten- und Debuganalyse.",
+        40, "gps_state/state4", true);
+    root["settings"]["publish_state1"] = gps_state_setting_entry(
+        "State 1 veröffentlichen",
+        "Veröffentlicht den kompakten GPS-State auf gps_state/state1.",
+        "states", 110, "bool", cfg.publish_state1);
+    root["settings"]["publish_state2"] = gps_state_setting_entry(
+        "State 2 veröffentlichen",
+        "Veröffentlicht die erweiterte GPS-Zusammenfassung auf gps_state/state2.",
+        "states", 120, "bool", cfg.publish_state2);
+    root["settings"]["publish_state3"] = gps_state_setting_entry(
+        "State 3 veröffentlichen",
+        "Veröffentlicht die Liste der aktuell verwendeten Satelliten auf gps_state/state3.",
+        "states", 130, "bool", cfg.publish_state3);
+    root["settings"]["publish_state4"] = gps_state_setting_entry(
+        "State 4 veröffentlichen",
+        "Veröffentlicht die vollständige Satellitenliste auf gps_state/state4. Diese Ausgabe kann deutlich größer sein und ist primär für Debug- und Expertenansichten gedacht.",
+        "debug", 10, "bool", cfg.publish_state4, nullptr, nullptr, "", true);
+    root["settings"]["weak_cn0_threshold"] = gps_state_setting_entry(
+        "Schwach-Schwelle C/N0",
+        "Grenzwert in dB-Hz, unterhalb dessen ein verwendeter Satellit als schwach gezählt wird.",
+        "debug", 20, "double", cfg.weak_cn0_threshold, 0.0, 60.0, "dB-Hz", true);
+    root["settings"]["good_cn0_threshold"] = gps_state_setting_entry(
+        "Gut-Schwelle C/N0",
+        "Grenzwert in dB-Hz, ab dem ein verwendeter Satellit als gut gezählt wird.",
+        "debug", 30, "double", cfg.good_cn0_threshold, 0.0, 60.0, "dB-Hz", true);
+    return root;
+}
+
+void publish_gps_state_settings() {
+    const json payload = build_gps_state_settings_payload();
+    try_publish("gps_state/settings/json", payload.dump(), true);
+}
+
+void publish_gps_state_validation(const json &validation) {
+    try_publish("gps_state/settings/validation/json", validation.dump(), false);
+}
+
+static bool gps_state_validate_bool_setting(const json &entry, bool &value, std::string &reason) {
+    if (!entry.is_object() || !entry.contains("value")) {
+        reason = "setting entry must be an object with a value field";
+        return false;
+    }
+    if (!entry["value"].is_boolean()) {
+        reason = "value must be a boolean";
+        return false;
+    }
+    value = entry["value"].get<bool>();
+    return true;
+}
+
+static bool gps_state_validate_number_setting(const json &entry, double min_value, double max_value,
+                                              double &value, std::string &reason) {
+    if (!entry.is_object() || !entry.contains("value")) {
+        reason = "setting entry must be an object with a value field";
+        return false;
+    }
+    if (!entry["value"].is_number()) {
+        reason = "value must be numeric";
+        return false;
+    }
+    value = entry["value"].get<double>();
+    if (!std::isfinite(value) || value < min_value || value > max_value) {
+        std::ostringstream msg;
+        msg << "value must be between " << min_value << " and " << max_value;
+        reason = msg.str();
+        return false;
+    }
+    return true;
+}
+
+void handle_gps_state_set_payload(const std::string &payload_text, bool persistent) {
+    json validation = {
+        {"valid", false},
+        {"namespace", GPS_STATE_NAMESPACE},
+        {"mode", persistent ? "persistent" : "session"},
+        {"accepted", json::object()},
+        {"rejected", json::object()},
+        {"remarks", json::array()}
+    };
+
+    try {
+        const json payload = json::parse(payload_text.empty() ? "{}" : payload_text);
+        if (!payload.is_object()) {
+            validation["rejected"]["$"] = "payload must be a JSON object";
+            publish_gps_state_validation(validation);
+            return;
+        }
+
+        GpsStateSettings new_cfg = current_gps_state_settings();
+        std::map<std::string, std::map<std::string, open_mower_settings::json>> persistent_updates;
+
+        for (auto it = payload.begin(); it != payload.end(); ++it) {
+            const std::string key = it.key();
+            const json &entry = it.value();
+            std::string reason;
+            bool bool_value = false;
+            double number_value = 0.0;
+            bool accepted = false;
+            json accepted_fields = json::array();
+
+            if (key == "enabled") {
+                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
+                if (accepted) new_cfg.enabled = bool_value;
+            } else if (key == "publish_state1") {
+                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
+                if (accepted) new_cfg.publish_state1 = bool_value;
+            } else if (key == "publish_state2") {
+                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
+                if (accepted) new_cfg.publish_state2 = bool_value;
+            } else if (key == "publish_state3") {
+                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
+                if (accepted) new_cfg.publish_state3 = bool_value;
+            } else if (key == "publish_state4") {
+                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
+                if (accepted) new_cfg.publish_state4 = bool_value;
+            } else if (key == "publish_rate_hz") {
+                accepted = gps_state_validate_number_setting(entry, 0.1, 5.0, number_value, reason);
+                if (accepted) new_cfg.publish_rate_hz = number_value;
+            } else if (key == "weak_cn0_threshold") {
+                accepted = gps_state_validate_number_setting(entry, 0.0, 60.0, number_value, reason);
+                if (accepted) new_cfg.weak_cn0_threshold = number_value;
+            } else if (key == "good_cn0_threshold") {
+                accepted = gps_state_validate_number_setting(entry, 0.0, 60.0, number_value, reason);
+                if (accepted) new_cfg.good_cn0_threshold = number_value;
+            } else {
+                validation["rejected"][key] = "unknown gps_state setting";
+                continue;
+            }
+
+            if (!accepted) {
+                validation["rejected"][key] = reason;
+                continue;
+            }
+
+            accepted_fields.push_back("value");
+            validation["accepted"][key] = accepted_fields;
+            if (persistent) {
+                persistent_updates[key]["persistent"] = open_mower_settings::json::parse(entry["value"].dump());
+            }
+        }
+
+        if (validation["accepted"].empty() && validation["rejected"].empty()) {
+            validation["rejected"]["$"] = "payload does not contain any gps_state settings";
+        }
+
+        if (validation["rejected"].empty()) {
+            {
+                std::lock_guard<std::mutex> lk(gps_state_settings_mutex);
+                gps_state_settings = new_cfg;
+                gps_state_settings_loaded = true;
+            }
+            if (persistent && !persistent_updates.empty()) {
+                std::string settings_persistent_path;
+                ros::param::param<std::string>("/settings/persistent_file", settings_persistent_path,
+                                               std::string("/data/ros/settings_persistent.json"));
+                if (!open_mower_settings::updateEntryFields(settings_persistent_path, GPS_STATE_NAMESPACE, persistent_updates)) {
+                    validation["accepted"] = json::object();
+                    validation["rejected"]["$"] = "could not write settings_persistent.json";
+                }
+            }
+        }
+    } catch (const json::exception &e) {
+        validation["rejected"]["$"] = std::string("Error decoding JSON: ") + e.what();
+    }
+
+    validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
+    publish_gps_state_validation(validation);
+    publish_gps_state_settings();
+    publish_latest_gps_state_payloads(true);
+}
+
+static std::string gps_state_quality(bool available, int used_count, double avg_cn0) {
+    if (!available || used_count <= 0) return "unavailable";
+    if (used_count < 6 || avg_cn0 < 20.0) return "poor";
+    if (used_count < 10 || avg_cn0 < 30.0) return "fair";
+    if (used_count < 16 || avg_cn0 < 38.0) return "good";
+    return "very_good";
+}
+
+static json gps_state_satellite_json(const xbot_msgs::GnssSatellite &sat) {
+    json entry = json::object();
+    entry["gnss"] = sat.gnss;
+    entry["gnss_id"] = sat.gnss_id;
+    entry["sv"] = sat.sv_id;
+    entry["used"] = sat.used;
+    entry["cn0"] = sat.cno;
+    entry["elev"] = sat.elev;
+    entry["azim"] = sat.azim;
+    entry["prres"] = sat.pr_res;
+    entry["qual"] = sat.quality_ind;
+    return entry;
+}
+
+static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstPtr &msg,
+                                     const GpsStateSettings &cfg) {
+    const int visible_count = msg->num_svs > 0 ? static_cast<int>(msg->num_svs)
+                                               : static_cast<int>(msg->satellites.size());
+    int used_count = 0;
+    int weak_count = 0;
+    int good_count = 0;
+    double cno_sum = 0.0;
+    double min_cn0 = std::numeric_limits<double>::infinity();
+    double max_cn0 = 0.0;
+    json systems = json::object();
+    json used_satellites = json::array();
+    json all_satellites = json::array();
+
+    std::vector<xbot_msgs::GnssSatellite> satellites = msg->satellites;
+    std::sort(satellites.begin(), satellites.end(), [](const auto &a, const auto &b) {
+        if (a.gnss != b.gnss) return a.gnss < b.gnss;
+        return a.sv_id < b.sv_id;
+    });
+
+    for (const auto &sat : satellites) {
+        const std::string system = sat.gnss.empty() ? std::string("UNKNOWN") : sat.gnss;
+        if (!systems.contains(system)) {
+            systems[system] = {{"visible", 0}, {"used", 0}};
+        }
+        systems[system]["visible"] = systems[system]["visible"].get<int>() + 1;
+        if (sat.used) {
+            systems[system]["used"] = systems[system]["used"].get<int>() + 1;
+            used_count += 1;
+            cno_sum += sat.cno;
+            min_cn0 = std::min(min_cn0, static_cast<double>(sat.cno));
+            max_cn0 = std::max(max_cn0, static_cast<double>(sat.cno));
+            if (static_cast<double>(sat.cno) < cfg.weak_cn0_threshold) weak_count += 1;
+            if (static_cast<double>(sat.cno) >= cfg.good_cn0_threshold) good_count += 1;
+            used_satellites.push_back(gps_state_satellite_json(sat));
+        }
+        all_satellites.push_back(gps_state_satellite_json(sat));
+    }
+
+    const bool available = !satellites.empty();
+    const double avg_cn0 = used_count > 0 ? cno_sum / static_cast<double>(used_count) : 0.0;
+    if (used_count == 0) min_cn0 = 0.0;
+    const double stamp = msg->header.stamp.toSec();
+    const std::string quality = gps_state_quality(available, used_count, avg_cn0);
+
+    json base = json::object();
+    base["available"] = available;
+    base["quality"] = quality;
+    base["visible"] = visible_count;
+    base["used"] = used_count;
+    base["avg_cn0"] = avg_cn0;
+    base["updated_at"] = stamp;
+
+    json state1 = base;
+    state1["state"] = "state1";
+
+    json state2 = base;
+    state2["state"] = "state2";
+    state2["sensor_stamp"] = msg->sensor_stamp;
+    state2["min_cn0"] = min_cn0;
+    state2["max_cn0"] = max_cn0;
+    state2["weak_count"] = weak_count;
+    state2["good_count"] = good_count;
+    state2["systems"] = systems;
+
+    json state3 = base;
+    state3["state"] = "state3";
+    state3["sensor_stamp"] = msg->sensor_stamp;
+    state3["min_cn0"] = min_cn0;
+    state3["max_cn0"] = max_cn0;
+    state3["satellites"] = used_satellites;
+
+    json state4 = base;
+    state4["state"] = "state4";
+    state4["sensor_stamp"] = msg->sensor_stamp;
+    state4["min_cn0"] = min_cn0;
+    state4["max_cn0"] = max_cn0;
+    state4["satellites"] = all_satellites;
+
+    return {
+        {"state1", state1},
+        {"state2", state2},
+        {"state3", state3},
+        {"state4", state4}
+    };
+}
+
+void publish_latest_gps_state_payloads(bool force) {
+    GpsStateSettings cfg = current_gps_state_settings();
+    if (!cfg.enabled && !force) return;
+
+    json snapshot;
+    bool has_snapshot = false;
+    {
+        std::lock_guard<std::mutex> lk(gps_state_payload_mutex);
+        has_snapshot = latest_gps_state_available;
+        snapshot = latest_gps_state_payloads;
+    }
+    if (!has_snapshot) return;
+
+    if (cfg.publish_state1 || force) try_publish("gps_state/state1", snapshot["state1"].dump(), true);
+    if (cfg.publish_state2 || force) try_publish("gps_state/state2", snapshot["state2"].dump(), true);
+    if (cfg.publish_state3 || force) try_publish("gps_state/state3", snapshot["state3"].dump(), false);
+    if (cfg.publish_state4 || force) try_publish("gps_state/state4", snapshot["state4"].dump(), false);
+}
+
+void gps_state_satellites_callback(const xbot_msgs::GnssSatelliteArray::ConstPtr &msg) {
+    const GpsStateSettings cfg = current_gps_state_settings();
+    if (!cfg.enabled) return;
+
+    const ros::Time now = ros::Time::now();
+    const double min_interval = 1.0 / std::max(0.1, cfg.publish_rate_hz);
+    if (!last_gps_state_publish_time.isZero() &&
+        (now - last_gps_state_publish_time).toSec() < min_interval) {
+        return;
+    }
+    last_gps_state_publish_time = now;
+
+    {
+        std::lock_guard<std::mutex> lk(gps_state_payload_mutex);
+        latest_gps_state_payloads = build_gps_state_payloads(msg, cfg);
+        latest_gps_state_available = true;
+    }
+    publish_latest_gps_state_payloads(false);
+}
 
 xbot_rpc::RpcProvider rpc_provider("xbot_monitoring", {{
     RPC_METHOD("rpc.ping", {
@@ -2260,6 +2759,7 @@ int main(int argc, char **argv) {
     ros::Subscriber loadFactorComputedSubscriber = n->subscribe("/mower_logic/mow_load_factor/load_factor_computed", 10, load_factor_computed_callback);
     ros::Subscriber loadFactorEffectiveSubscriber = n->subscribe("/mower_logic/mow_load_factor/load_factor_effective", 10, load_factor_effective_callback);
     ros::Subscriber llPowerStatusSubscriber = n->subscribe("/ll/services/power/status_json", 10, ll_power_status_json_callback);
+    ros::Subscriber gpsStateSatellitesSubscriber = n->subscribe("/ll/position/gps/satellites", 1, gps_state_satellites_callback);
 
     cmd_vel_pub = n->advertise<geometry_msgs::Twist>("xbot_monitoring/remote_cmd_vel", 1);
     action_pub = n->advertise<std_msgs::String>("xbot/action", 1);
