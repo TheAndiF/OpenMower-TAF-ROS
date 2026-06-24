@@ -1,0 +1,12 @@
+BS_Add GPS drive-ready status to state1
+Date: 2026-06-24
+Summary:
+- Extended gps_state/state1 with a compact drive-ready decision for app display without removing existing State1 fields.
+- Added detailed drive diagnostics to gps_state/state2 using /ll/position/gps and /xbot_positioning/xb_pose.
+- Subscribed xbot_monitoring to the ROS GPS input pose and positioning output pose to derive RTK state, pose recency, orientation validity, accuracy checks and GPS timeout estimate.
+- Updated GPS-State setting descriptors to document the new State1/State2 split.
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- _Dokumentation/2026-06-24 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS-State Fahrfreigabe State1 - v0.1.docx
+- _Dokumentation/2026-06-24 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS-State Fahrfreigabe State1 - v0.1.pdf
+- commit_message_gps_state_drive_ready.txt

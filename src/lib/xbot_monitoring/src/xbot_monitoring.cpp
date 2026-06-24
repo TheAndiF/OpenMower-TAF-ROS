@@ -26,6 +26,7 @@
 #include "xbot_msgs/SensorDataDouble.h"
 #include "xbot_msgs/RobotState.h"
 #include "xbot_msgs/GnssSatelliteArray.h"
+#include "xbot_msgs/AbsolutePose.h"
 #include <mqtt/async_client.h>
 #include <nlohmann/json.hpp>
 #include <vector>
@@ -86,6 +87,8 @@ void publish_gps_state_settings();
 void publish_gps_state_validation(const json &validation);
 void handle_gps_state_set_payload(const std::string &payload_text, bool persistent);
 void publish_latest_gps_state_payloads(bool force = false);
+void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg);
+void gps_state_xb_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg);
 void publish_map();
 void publish_map_validation(const json &validation);
 void publish_settings_validation(const std::string &settings_namespace, const json &validation);
@@ -594,6 +597,15 @@ json latest_gps_state_payloads = json::object();
 bool latest_gps_state_available = false;
 ros::Time last_gps_state_publish_time;
 
+std::mutex gps_state_pose_mutex;
+xbot_msgs::AbsolutePose latest_ll_gps_pose;
+xbot_msgs::AbsolutePose latest_xb_pose;
+bool latest_ll_gps_pose_available = false;
+bool latest_xb_pose_available = false;
+ros::Time latest_ll_gps_pose_received_at;
+ros::Time latest_xb_pose_received_at;
+ros::Time latest_gps_drive_ready_at;
+
 
 
 static json gps_state_setting_entry(const std::string &label,
@@ -723,11 +735,11 @@ static json build_gps_state_settings_payload() {
         "general", 20, "double", cfg.publish_rate_hz, 0.1, 5.0, "Hz");
     root["settings"]["state1"] = gps_state_descriptor_entry(
         "GPS State 1",
-        "Kompakter GPS-Zustand für eine schnelle Bewertung der aktuellen Satellitenlage. Enthält Verfügbarkeit, Qualitätsbewertung, sichtbare Satelliten, verwendete Satelliten, durchschnittliche Signalstärke und Aktualisierungszeitpunkt.",
+        "Kompakter Bedienerstatus. Enthält die bestehende GPS-Übersicht und ergänzt die zusammengefasste Entscheidung, ob GPS aktuell für die OpenMower-Fahrt ausreicht. Technische Ursachen bleiben in State 2.",
         10, "gps_state/state1", false);
     root["settings"]["state2"] = gps_state_descriptor_entry(
         "GPS State 2",
-        "Erweiterte GPS-Zusammenfassung mit statistischer Bewertung und Verteilung nach Satellitensystemen. Enthält zusätzlich minimale und maximale Signalstärke, Anzahl schwacher und guter verwendeter Satelliten sowie Verteilung nach GPS, Galileo, GLONASS, BeiDou, SBAS und QZSS.",
+        "Erweiterte GPS-Zusammenfassung mit statistischer Bewertung, Verteilung nach Satellitensystemen und technischen Fahrfreigabe-Diagnosen aus /ll/position/gps und /xbot_positioning/xb_pose.",
         20, "gps_state/state2", false);
     root["settings"]["state3"] = gps_state_descriptor_entry(
         "GPS State 3",
@@ -907,6 +919,155 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
     publish_latest_gps_state_payloads(true);
 }
 
+
+static double gps_state_age_ms_or_negative(const ros::Time &now, const ros::Time &received_at) {
+    if (now.isZero() || received_at.isZero()) return -1.0;
+    return std::max(0.0, (now - received_at).toSec() * 1000.0);
+}
+
+static json gps_state_age_ms_json(const ros::Time &now, const ros::Time &received_at) {
+    const double age_ms = gps_state_age_ms_or_negative(now, received_at);
+    if (age_ms < 0.0) return nullptr;
+    return age_ms;
+}
+
+static std::string gps_state_rtk_state(uint16_t flags) {
+    if (flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED) return "fixed";
+    if (flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT) return "float";
+    if (flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK) return "rtk";
+    return "none";
+}
+
+static std::string gps_state_drive_block_reason(bool xb_pose_available,
+                                                bool orientation_valid,
+                                                bool recent_absolute_pose,
+                                                bool xb_accuracy_ok,
+                                                bool ll_pose_available,
+                                                const std::string &rtk_state) {
+    if (!xb_pose_available) return "no_xbot_positioning_pose";
+    if (!orientation_valid) return "orientation_invalid";
+    if (!recent_absolute_pose) {
+        if (ll_pose_available && rtk_state == "float") return "rtk_float_not_sufficient";
+        if (ll_pose_available && rtk_state != "fixed") return "rtk_fixed_missing";
+        return "recent_absolute_pose_missing";
+    }
+    if (!xb_accuracy_ok) return "position_accuracy_too_low";
+    return "unknown";
+}
+
+static std::string gps_state_drive_reason_text(const std::string &block_reason,
+                                               const std::string &rtk_state) {
+    if (block_reason.empty()) return "RTK Fixed, Pose aktuell, Genauigkeit ausreichend";
+    if (block_reason == "no_xbot_positioning_pose") return "Keine aktuelle Pose von xbot_positioning vorhanden";
+    if (block_reason == "orientation_invalid") return "Orientierung ist nicht gueltig";
+    if (block_reason == "rtk_float_not_sufficient") return "RTK Float reicht nicht zum Fahren aus";
+    if (block_reason == "rtk_fixed_missing") return "RTK Fixed fehlt; aktueller RTK-Zustand: " + rtk_state;
+    if (block_reason == "recent_absolute_pose_missing") return "Positioning-Pose enthaelt keine aktuelle absolute GPS-Pose";
+    if (block_reason == "position_accuracy_too_low") return "Positionsgenauigkeit ist schlechter als der erlaubte Grenzwert";
+    return "GPS-Fahrfreigabe konnte nicht bestaetigt werden";
+}
+
+static json build_gps_drive_status_payload(const ros::Time &now) {
+    double max_position_accuracy = 0.2;
+    double max_gps_accuracy = 0.2;
+    double gps_timeout = 10.0;
+    ros::param::param<double>("/mower_logic/max_position_accuracy", max_position_accuracy, 0.2);
+    ros::param::param<double>("/xbot_positioning/max_gps_accuracy", max_gps_accuracy, 0.2);
+    ros::param::param<double>("/mower_logic/gps_timeout", gps_timeout, 10.0);
+
+    xbot_msgs::AbsolutePose ll_pose;
+    xbot_msgs::AbsolutePose xb_pose;
+    bool ll_pose_available = false;
+    bool xb_pose_available = false;
+    ros::Time ll_received_at;
+    ros::Time xb_received_at;
+    ros::Time drive_ready_at;
+    {
+        std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
+        ll_pose = latest_ll_gps_pose;
+        xb_pose = latest_xb_pose;
+        ll_pose_available = latest_ll_gps_pose_available;
+        xb_pose_available = latest_xb_pose_available;
+        ll_received_at = latest_ll_gps_pose_received_at;
+        xb_received_at = latest_xb_pose_received_at;
+        drive_ready_at = latest_gps_drive_ready_at;
+    }
+
+    const std::string rtk_state = ll_pose_available ? gps_state_rtk_state(ll_pose.flags) : "unknown";
+    const bool ll_rtk_fixed = ll_pose_available &&
+        ((ll_pose.flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED) != 0);
+    const bool ll_rtk_float = ll_pose_available &&
+        ((ll_pose.flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT) != 0);
+    const bool ll_accuracy_ok = ll_pose_available && ll_pose.position_accuracy <= max_gps_accuracy;
+
+    const bool orientation_valid = xb_pose_available && xb_pose.orientation_valid;
+    const bool recent_absolute_pose = xb_pose_available &&
+        ((xb_pose.flags & xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE) != 0);
+    const bool xb_accuracy_ok = xb_pose_available && xb_pose.position_accuracy < max_position_accuracy;
+    const bool gps_drive_ready = xb_pose_available && orientation_valid && recent_absolute_pose && xb_accuracy_ok;
+
+    const bool gps_timeout_estimated = !gps_drive_ready &&
+        (drive_ready_at.isZero() || (now - drive_ready_at).toSec() > gps_timeout);
+    const double grace_remaining_s = (!gps_drive_ready && !drive_ready_at.isZero())
+        ? std::max(0.0, gps_timeout - (now - drive_ready_at).toSec())
+        : 0.0;
+
+    const std::string block_reason = gps_drive_ready
+        ? std::string()
+        : gps_state_drive_block_reason(xb_pose_available, orientation_valid, recent_absolute_pose,
+                                       xb_accuracy_ok, ll_pose_available, rtk_state);
+
+    json summary = json::object();
+    summary["gps_drive_ready"] = gps_drive_ready;
+    summary["gps_drive_state"] = gps_drive_ready ? "ready" : "blocked";
+    summary["gps_drive_label"] = gps_drive_ready ? "GPS reicht zum Fahren aus" : "GPS reicht nicht zum Fahren aus";
+    summary["gps_drive_reason"] = gps_state_drive_reason_text(block_reason, rtk_state);
+    summary["gps_drive_block_reason"] = gps_drive_ready ? json(nullptr) : json(block_reason);
+    summary["rtk_state"] = rtk_state;
+    summary["position_accuracy_m"] = xb_pose_available ? json(static_cast<double>(xb_pose.position_accuracy)) : json(nullptr);
+    summary["max_position_accuracy_m"] = max_position_accuracy;
+    summary["orientation_valid"] = xb_pose_available ? json(static_cast<bool>(xb_pose.orientation_valid)) : json(nullptr);
+    summary["recent_absolute_pose"] = xb_pose_available ? json(recent_absolute_pose) : json(nullptr);
+    summary["gps_timeout"] = gps_timeout_estimated;
+    summary["age_ms"] = gps_state_age_ms_json(now, xb_received_at);
+
+    json details = summary;
+    details["mower_logic_gps_timeout_s"] = gps_timeout;
+    details["mower_logic_gps_grace_remaining_s"] = grace_remaining_s;
+    details["last_drive_ready_age_ms"] = gps_state_age_ms_json(now, drive_ready_at);
+    details["xbot_positioning_max_gps_accuracy_m"] = max_gps_accuracy;
+    details["ll_gps_available"] = ll_pose_available;
+    details["ll_gps_flags"] = ll_pose_available ? json(ll_pose.flags) : json(nullptr);
+    details["ll_gps_rtk_fixed"] = ll_pose_available ? json(ll_rtk_fixed) : json(nullptr);
+    details["ll_gps_rtk_float"] = ll_pose_available ? json(ll_rtk_float) : json(nullptr);
+    details["ll_gps_position_accuracy_m"] = ll_pose_available ? json(static_cast<double>(ll_pose.position_accuracy)) : json(nullptr);
+    details["ll_gps_accuracy_ok_for_positioning"] = ll_pose_available ? json(ll_accuracy_ok) : json(nullptr);
+    details["ll_gps_age_ms"] = gps_state_age_ms_json(now, ll_received_at);
+    details["xb_pose_available"] = xb_pose_available;
+    details["xb_pose_flags"] = xb_pose_available ? json(xb_pose.flags) : json(nullptr);
+    details["xb_pose_source"] = xb_pose_available ? json(xb_pose.source) : json(nullptr);
+    details["xb_pose_accuracy_ok_for_mower_logic"] = xb_pose_available ? json(xb_accuracy_ok) : json(nullptr);
+    details["xb_pose_age_ms"] = gps_state_age_ms_json(now, xb_received_at);
+    details["decision_source"] = "xbot_positioning/xb_pose";
+    details["rtk_source"] = "ll/position/gps";
+
+    return {
+        {"summary", summary},
+        {"details", details}
+    };
+}
+
+static void apply_gps_drive_status_to_payloads(json &payloads, const json &drive_status) {
+    if (payloads.contains("state1") && payloads["state1"].is_object()) {
+        for (auto it = drive_status["summary"].begin(); it != drive_status["summary"].end(); ++it) {
+            payloads["state1"][it.key()] = it.value();
+        }
+    }
+    if (payloads.contains("state2") && payloads["state2"].is_object()) {
+        payloads["state2"]["drive_diagnostics"] = drive_status["details"];
+    }
+}
+
 static std::string gps_state_quality(bool available, int used_count, double avg_cn0) {
     if (!available || used_count <= 0) return "unavailable";
     if (used_count < 6 || avg_cn0 < 20.0) return "poor";
@@ -971,8 +1132,10 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
     const bool available = !satellites.empty();
     const double avg_cn0 = used_count > 0 ? cno_sum / static_cast<double>(used_count) : 0.0;
     if (used_count == 0) min_cn0 = 0.0;
+    const ros::Time now = ros::Time::now();
     const double stamp = msg->header.stamp.toSec();
     const std::string quality = gps_state_quality(available, used_count, avg_cn0);
+    const json drive_status = build_gps_drive_status_payload(now);
 
     json base = json::object();
     base["available"] = available;
@@ -1008,12 +1171,14 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
     state4["max_cn0"] = max_cn0;
     state4["satellites"] = all_satellites;
 
-    return {
+    json payloads = {
         {"state1", state1},
         {"state2", state2},
         {"state3", state3},
         {"state4", state4}
     };
+    apply_gps_drive_status_to_payloads(payloads, drive_status);
+    return payloads;
 }
 
 void publish_latest_gps_state_payloads(bool force) {
@@ -1028,6 +1193,9 @@ void publish_latest_gps_state_payloads(bool force) {
         snapshot = latest_gps_state_payloads;
     }
     if (!has_snapshot) return;
+
+    const json drive_status = build_gps_drive_status_payload(ros::Time::now());
+    apply_gps_drive_status_to_payloads(snapshot, drive_status);
 
     if (cfg.publish_state1 || force) try_publish("gps_state/state1", snapshot["state1"].dump(), true);
     if (cfg.publish_state2 || force) try_publish("gps_state/state2", snapshot["state2"].dump(), true);
@@ -1053,6 +1221,31 @@ void gps_state_satellites_callback(const xbot_msgs::GnssSatelliteArray::ConstPtr
         latest_gps_state_available = true;
     }
     publish_latest_gps_state_payloads(false);
+}
+
+void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
+    latest_ll_gps_pose = *msg;
+    latest_ll_gps_pose_received_at = ros::Time::now();
+    latest_ll_gps_pose_available = true;
+}
+
+void gps_state_xb_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
+    double max_position_accuracy = 0.2;
+    ros::param::param<double>("/mower_logic/max_position_accuracy", max_position_accuracy, 0.2);
+
+    const bool orientation_valid = msg->orientation_valid;
+    const bool recent_absolute_pose =
+        (msg->flags & xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE) != 0;
+    const bool accuracy_ok = msg->position_accuracy < max_position_accuracy;
+
+    std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
+    latest_xb_pose = *msg;
+    latest_xb_pose_received_at = ros::Time::now();
+    latest_xb_pose_available = true;
+    if (orientation_valid && recent_absolute_pose && accuracy_ok) {
+        latest_gps_drive_ready_at = latest_xb_pose_received_at;
+    }
 }
 
 xbot_rpc::RpcProvider rpc_provider("xbot_monitoring", {{
@@ -2759,6 +2952,8 @@ int main(int argc, char **argv) {
     ros::Subscriber loadFactorComputedSubscriber = n->subscribe("/mower_logic/mow_load_factor/load_factor_computed", 10, load_factor_computed_callback);
     ros::Subscriber loadFactorEffectiveSubscriber = n->subscribe("/mower_logic/mow_load_factor/load_factor_effective", 10, load_factor_effective_callback);
     ros::Subscriber llPowerStatusSubscriber = n->subscribe("/ll/services/power/status_json", 10, ll_power_status_json_callback);
+    ros::Subscriber gpsStateLlGpsPoseSubscriber = n->subscribe("/ll/position/gps", 1, gps_state_ll_gps_pose_callback);
+    ros::Subscriber gpsStateXbPoseSubscriber = n->subscribe("/xbot_positioning/xb_pose", 1, gps_state_xb_pose_callback);
     ros::Subscriber gpsStateSatellitesSubscriber = n->subscribe("/ll/position/gps/satellites", 1, gps_state_satellites_callback);
 
     cmd_vel_pub = n->advertise<geometry_msgs::Twist>("xbot_monitoring/remote_cmd_vel", 1);
