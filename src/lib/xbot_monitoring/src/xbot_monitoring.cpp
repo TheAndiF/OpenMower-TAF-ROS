@@ -49,6 +49,7 @@
 #include "xbot_rpc/RegisterMethodsSrv.h"
 #include "capabilities.h"
 #include "open_mower/settings_persistence.h"
+#include "robot_localization/navsat_conversions.h"
 
 using json = nlohmann::ordered_json;
 
@@ -107,6 +108,100 @@ void publish_ll_power_status_request();
 void try_publish(const std::string &topic, const std::string &data, bool retain = false);
 std::string utc_timestamp_iso8601(const std::chrono::system_clock::time_point &time_point);
 void rpc_request_callback(const std::string &payload);
+
+
+struct WorldPoseConversionResult {
+    bool valid = false;
+    double latitude = 0.0;
+    double longitude = 0.0;
+    double altitude = 0.0;
+    std::string reason;
+};
+
+struct GpsDatumCache {
+    bool loaded = false;
+    bool attempted = false;
+    double datum_lat = 0.0;
+    double datum_long = 0.0;
+    double datum_height = 0.0;
+    double datum_northing = 0.0;
+    double datum_easting = 0.0;
+    std::string datum_zone;
+    ros::WallTime last_attempt;
+};
+
+std::mutex gps_datum_cache_mutex;
+GpsDatumCache gps_datum_cache;
+
+bool load_gps_datum_for_world_pose(GpsDatumCache &cache) {
+    const ros::WallTime now = ros::WallTime::now();
+    if (cache.loaded) {
+        return true;
+    }
+    if (cache.attempted && (now - cache.last_attempt).toSec() < 5.0) {
+        return false;
+    }
+
+    cache.attempted = true;
+    cache.last_attempt = now;
+
+    double datum_lat = 0.0;
+    double datum_long = 0.0;
+    double datum_height = 0.0;
+    const bool has_datum = ros::param::get("/ll/services/gps/datum_lat", datum_lat) &&
+                           ros::param::get("/ll/services/gps/datum_long", datum_long) &&
+                           ros::param::get("/ll/services/gps/datum_height", datum_height);
+
+    if (!has_datum) {
+        ROS_WARN_THROTTLE(30.0, "Cannot publish robot_state/world_pose: GPS datum parameters are missing");
+        return false;
+    }
+
+    if (!std::isfinite(datum_lat) || !std::isfinite(datum_long) || !std::isfinite(datum_height)) {
+        ROS_WARN_THROTTLE(30.0, "Cannot publish robot_state/world_pose: GPS datum parameters are not finite");
+        return false;
+    }
+
+    RobotLocalization::NavsatConversions::LLtoUTM(
+        datum_lat, datum_long, cache.datum_northing, cache.datum_easting, cache.datum_zone);
+    cache.datum_lat = datum_lat;
+    cache.datum_long = datum_long;
+    cache.datum_height = datum_height;
+    cache.loaded = true;
+
+    ROS_INFO_STREAM("robot_state/world_pose enabled using datum " << datum_lat << ", " << datum_long
+                    << ", height " << datum_height << ", UTM zone " << cache.datum_zone);
+    return true;
+}
+
+WorldPoseConversionResult convert_robot_pose_to_world_pose(const xbot_msgs::AbsolutePose &robot_pose) {
+    WorldPoseConversionResult result;
+
+    const double x = robot_pose.pose.pose.position.x;
+    const double y = robot_pose.pose.pose.position.y;
+    const double z = robot_pose.pose.pose.position.z;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+        result.reason = "robot_pose_not_finite";
+        return result;
+    }
+
+    std::lock_guard<std::mutex> lk(gps_datum_cache_mutex);
+    if (!load_gps_datum_for_world_pose(gps_datum_cache)) {
+        result.reason = "gps_datum_unavailable";
+        return result;
+    }
+
+    const double northing = gps_datum_cache.datum_northing + y;
+    const double easting = gps_datum_cache.datum_easting + x;
+    RobotLocalization::NavsatConversions::UTMtoLL(
+        northing, easting, gps_datum_cache.datum_zone, result.latitude, result.longitude);
+    result.altitude = gps_datum_cache.datum_height + z;
+    result.valid = std::isfinite(result.latitude) && std::isfinite(result.longitude) && std::isfinite(result.altitude);
+    if (!result.valid) {
+        result.reason = "conversion_failed";
+    }
+    return result;
+}
 
 // Stores registered actions (prefix to vector<action>)
 std::map<std::string, std::vector<xbot_msgs::ActionInfo>> registered_actions;
@@ -2453,6 +2548,20 @@ void robot_state_callback(const xbot_msgs::RobotState::ConstPtr &msg) {
     j["pose"]["pos_accuracy"] = msg->robot_pose.position_accuracy;
     j["pose"]["heading_accuracy"] = msg->robot_pose.orientation_accuracy;
     j["pose"]["heading_valid"] = msg->robot_pose.orientation_valid;
+
+    const auto world_pose = convert_robot_pose_to_world_pose(msg->robot_pose);
+    j["world_pose"]["valid"] = world_pose.valid;
+    j["world_pose"]["coordinate_system"] = "WGS84";
+    j["world_pose"]["source"] = "robot_pose_to_wgs84";
+    if (world_pose.valid) {
+        j["world_pose"]["latitude"] = world_pose.latitude;
+        j["world_pose"]["longitude"] = world_pose.longitude;
+        j["world_pose"]["altitude"] = world_pose.altitude;
+        j["world_pose"]["pos_accuracy"] = msg->robot_pose.position_accuracy;
+    } else {
+        j["world_pose"]["reason"] = world_pose.reason;
+    }
+
     {
         std::lock_guard<std::mutex> lk(load_factor_state_mutex);
         j["load_factor_computed"] = load_factor_computed_snapshot;

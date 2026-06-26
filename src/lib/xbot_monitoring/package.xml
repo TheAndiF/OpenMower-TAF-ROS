@@ -24,6 +24,7 @@
   <depend>grid_map_msgs</depend>
   <depend>xbot_rpc</depend>
   <depend>dynamic_reconfigure</depend>
+  <depend>robot_localization</depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>

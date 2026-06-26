@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
         grid_map_msgs
         xbot_rpc
         dynamic_reconfigure
+        robot_localization
         )
 
 

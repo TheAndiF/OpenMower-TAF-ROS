@@ -26,6 +26,35 @@ The deprecated `settings/mow_load_factor/...` MQTT topics are no longer publishe
 
 The validation payload reports the namespace, write mode (`session` or `persistent`), accepted keys, and rejected keys with rejection reasons. Valid keys from a mixed payload are applied; invalid or unknown keys are reported as rejected.
 
+## Robot State world pose
+
+`robot_state/json` now contains the local OpenMower pose and, when a GPS datum is available, the corresponding WGS84 world coordinate. The coordinate is derived from the same `robot_pose` used by OpenMower navigation, not from a separate raw NMEA sentence.
+
+```json
+{
+  "pose": {
+    "x": 12.34,
+    "y": 5.67,
+    "heading": 1.23,
+    "pos_accuracy": 0.03,
+    "heading_accuracy": 0.01,
+    "heading_valid": true
+  },
+  "world_pose": {
+    "valid": true,
+    "coordinate_system": "WGS84",
+    "source": "robot_pose_to_wgs84",
+    "latitude": 52.2057601,
+    "longitude": 13.0761302,
+    "altitude": 0.0,
+    "pos_accuracy": 0.03
+  }
+}
+```
+
+If the mower is running without an absolute GPS datum, `world_pose.valid` remains `false` and `world_pose.reason` explains why, for example `gps_datum_unavailable`. The conversion uses `/ll/services/gps/datum_lat`, `/ll/services/gps/datum_long` and `/ll/services/gps/datum_height`, converts that datum to UTM, adds `pose.x`/`pose.y` in meters and converts the result back to WGS84 latitude/longitude.
+
+
 ## Sensors settings metadata API
 
 `sensors/settings/json` follows the same structural idea as the dynamic settings pages while living below the existing `sensors/...` MQTT branch. The retained JSON payload uses the sensor settings v2 schema and contains both group metadata and sensor metadata:
