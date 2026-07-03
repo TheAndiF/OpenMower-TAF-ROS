@@ -1,5 +1,5 @@
 // Mowing load factor calculation and runtime configuration bridge.
-// This node intentionally does not influence driving speed yet.
+// The local planner consumes the effective factor as a speed multiplier.
 
 #include <algorithm>
 #include <cmath>
@@ -433,7 +433,9 @@ class MowLoadFactorNode {
   }
 
   double effectiveFactor() const {
-    return enabled_ && isMowingState() ? last_computed_factor_ : 1.0;
+    // Only expose a speed-limiting effective factor while the high-level state is MOWING
+    // and the low-level mower status reports that the mowing motor is enabled.
+    return enabled_ && isMowingState() && mow_motor_on_ ? last_computed_factor_ : 1.0;
   }
 
   void stateCallback(const mower_msgs::HighLevelStatus::ConstPtr& msg) {
@@ -444,6 +446,11 @@ class MowLoadFactorNode {
 
   void statusCallback(const mower_msgs::Status::ConstPtr& msg) {
     refreshRuntimeParametersFromParamTree();
+
+    // Gate the effective factor with the actual low-level mowing motor enable state.
+    // Transport movements are not limited when the mowing motor is off, but they remain
+    // load-factor-limited if the motor is intentionally kept on.
+    mow_motor_on_ = msg->mow_enabled;
 
     last_factor_current_ = derateFactor(msg->mower_esc_current, current_start_, current_end_);
     last_factor_motor_temp_ = derateFactor(msg->mower_motor_temperature, motor_temp_start_, motor_temp_end_);
@@ -678,6 +685,7 @@ class MowLoadFactorNode {
 
   std::string settings_persistent_path_;
   std::string current_state_name_;
+  bool mow_motor_on_ = false;
   json settings_entries_;
 
   bool enabled_;

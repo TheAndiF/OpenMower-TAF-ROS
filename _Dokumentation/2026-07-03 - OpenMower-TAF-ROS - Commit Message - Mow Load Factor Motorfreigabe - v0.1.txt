@@ -1,0 +1,14 @@
+BL_Gate mow load factor by mower motor enable
+Date: 2026-07-03
+Summary:
+- Added the low-level mowing motor enable state as an additional gate for the effective mowing load factor.
+- The computed load factor is still calculated from current and temperature values, but the effective factor is only applied while the system is in MOWING state and /ll/mower_status.mow_enabled is true.
+- Kept movement and mowing behavior unchanged, so transport movements with the mower motor off are not limited and movements with the mower motor intentionally on remain load-factor-limited.
+- Updated the mowing load factor README and added project documentation for the change.
+Changed files:
+- MOW_LOAD_FACTOR_MQTT_README.txt
+- src/mower_logic/src/mow_load_factor.cpp
+- _Dokumentation/2026-07-03 - OpenMower-TAF-ROS - Aenderungsdokumentation - Mow Load Factor Motorfreigabe - v0.1.docx
+- _Dokumentation/2026-07-03 - OpenMower-TAF-ROS - Aenderungsdokumentation - Mow Load Factor Motorfreigabe - v0.1.pdf
+- _Dokumentation/2026-07-03 - OpenMower-TAF-ROS - Commit Message - Mow Load Factor Motorfreigabe - v0.1.txt
+- _Dokumentation/2026-07-03 - OpenMower-TAF-ROS - Patch - Mow Load Factor Motorfreigabe - v0.1.patch

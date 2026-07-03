@@ -6,8 +6,22 @@ Diese Änderung berechnet einen Lastfaktor aus
 - Mähmotortemperatur,
 - Mäh-ESC-Temperatur.
 
-Der Faktor beeinflusst in dieser Ausbaustufe noch NICHT die Fahrgeschwindigkeit.
-Er wird nur berechnet, publiziert und per MQTT schaltbar gemacht.
+Der Faktor wird berechnet, publiziert, per MQTT schaltbar gemacht und über
+/mower_logic/mow_load_factor/effective vom lokalen Planner als Geschwindigkeitsfaktor verwendet.
+
+Wirkbedingung des effektiven Faktors
+------------------------------------
+Der berechnete Faktor kann weiterhin aus Mähmotorstrom, Mähmotortemperatur und
+Mäh-ESC-Temperatur kleiner als 1.0 werden. Als effektiver Faktor wird dieser Wert
+aber nur veröffentlicht, wenn alle Bedingungen erfüllt sind:
+- mow_load_factor_enabled ist true,
+- der High-Level-State ist MOWING,
+- /ll/mower_status.mow_enabled ist true.
+
+Wenn der Mähmotor ausgeschaltet ist, wird effective_factor auf 1.0 gesetzt.
+Dadurch werden Transport- oder Bewegungsfahrten ohne eingeschalteten Mähmotor nicht
+durch den Load Factor begrenzt. Wenn der Mähmotor während einer Bewegungsfahrt
+absichtlich eingeschaltet bleibt, wirkt der Load Factor weiterhin.
 
 Defaults
 --------
