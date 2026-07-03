@@ -1058,6 +1058,13 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
   }
   start_current_mowing_plan_path();
 
+  // Persist the freshly created and selected mowing plan immediately.
+  // This makes checkpoint.bag contain the active area_id and plan metadata before
+  // the mower reaches the first periodic checkpoint during path execution.
+  checkpoint();
+  ROS_INFO_STREAM("MowingBehavior: Saved checkpoint after successful mowing plan creation for area_id="
+                  << currentAreaId << " plan_id=" << currentMowingPlan.plan_id);
+
   publish_mowing_progress(true);
   return true;
 }

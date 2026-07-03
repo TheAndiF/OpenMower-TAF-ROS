@@ -1,0 +1,8 @@
+BL_Save checkpoint after mowing plan creation
+Date: 2026-07-03
+Summary:
+- Added an immediate checkpoint write after a mowing plan has been successfully created, selected and initialized.
+- Ensures checkpoint.bag already contains the active area id and mowing plan metadata before the first periodic path-execution checkpoint.
+- Kept the existing periodic, reset and skip-path checkpoint behavior unchanged.
+Changed files:
+- src/mower_logic/src/mower_logic/behaviors/MowingBehavior.cpp
