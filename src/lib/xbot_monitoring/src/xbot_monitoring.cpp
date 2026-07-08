@@ -94,6 +94,7 @@ void publish_gps_restart_status();
 void gps_restart_status_callback(const std_msgs::String::ConstPtr &msg);
 void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg);
 void gps_state_xb_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg);
+void gps_state_positioning_debug_callback(const std_msgs::String::ConstPtr &msg);
 void publish_map();
 void publish_map_validation(const json &validation);
 void publish_settings_validation(const std::string &settings_namespace, const json &validation);
@@ -688,6 +689,7 @@ constexpr const char *GPS_STATE_SCHEMA = "settings_v2";
 struct GpsStateSettings {
     bool enabled = true;
     double publish_rate_hz = 1.0;
+    bool publish_state0 = false;
     bool publish_state1 = true;
     bool publish_state2 = true;
     bool publish_state3 = true;
@@ -713,6 +715,9 @@ bool latest_xb_pose_available = false;
 ros::Time latest_ll_gps_pose_received_at;
 ros::Time latest_xb_pose_received_at;
 ros::Time latest_gps_drive_ready_at;
+json latest_xbot_positioning_gps_debug = json::object();
+bool latest_xbot_positioning_gps_debug_available = false;
+ros::Time latest_xbot_positioning_gps_debug_received_at;
 
 std::mutex gps_restart_status_mutex;
 json latest_gps_restart_status = json::object();
@@ -839,6 +844,7 @@ static void load_gps_state_settings_if_needed() {
     gps_state_settings.enabled = persisted_bool_or(persisted, "enabled", gps_state_settings.enabled);
     gps_state_settings.publish_rate_hz = clamp_gps_state_rate(
         persisted_number_or(persisted, "publish_rate_hz", gps_state_settings.publish_rate_hz));
+    gps_state_settings.publish_state0 = persisted_bool_or(persisted, "publish_state0", gps_state_settings.publish_state0);
     gps_state_settings.publish_state1 = persisted_bool_or(persisted, "publish_state1", gps_state_settings.publish_state1);
     gps_state_settings.publish_state2 = persisted_bool_or(persisted, "publish_state2", gps_state_settings.publish_state2);
     gps_state_settings.publish_state3 = persisted_bool_or(persisted, "publish_state3", gps_state_settings.publish_state3);
@@ -874,6 +880,14 @@ static json build_gps_state_settings_payload() {
         "Publish-Rate",
         "Maximale Veröffentlichungsrate der GPS-State-Daten.",
         "general", 20, "double", cfg.publish_rate_hz, 0.1, 5.0, "Hz");
+    root["settings"]["state0_definition"] = gps_state_descriptor_entry(
+        "GPS State 0 Definition",
+        "Statische Definition der 12 Entscheidungsknoten fuer die GPS-Fahrfaehigkeitsdiagnose. Enthält Titel, Beschreibung, Quelle, Grenzwertbeschreibung, Fehlerfolge und naechste Pruefung.",
+        1, "gps_state/state0/definition", true);
+    root["settings"]["state0_status"] = gps_state_descriptor_entry(
+        "GPS State 0 Status",
+        "Live-Werte der 12 Entscheidungsknoten fuer die sofortige Beurteilung der Fahrfaehigkeit. Enthält Status, aktuellen Wert, Grenzwert, Abweichung und blockierende Stufe.",
+        2, "gps_state/state0/status", true);
     root["settings"]["state1"] = gps_state_descriptor_entry(
         "GPS State 1",
         "Kompakter Bedienerstatus. Enthält die bestehende GPS-Übersicht und ergänzt die zusammengefasste Entscheidung, ob GPS aktuell für die OpenMower-Fahrt ausreicht. Technische Ursachen bleiben in State 2.",
@@ -910,6 +924,10 @@ static json build_gps_state_settings_payload() {
         "F9P Neustart Status",
         "Retained Status des zuletzt angeforderten oder vom GPS-Treiber gemeldeten F9P-Neustarts.",
         220, "gps_state/restart/status/json", true, "restart");
+    root["settings"]["publish_state0"] = gps_state_setting_entry(
+        "State 0 Diagnose veröffentlichen",
+        "Veröffentlicht die schaltbare 12-Stufen-Fahrfaehigkeitsdiagnose auf gps_state/state0/definition und gps_state/state0/status. Die statische Definition wird retained gesendet, die Live-Werte folgen der Publish-Rate.",
+        "debug", 5, "bool", cfg.publish_state0, nullptr, nullptr, "", true);
     root["settings"]["publish_state1"] = gps_state_setting_entry(
         "State 1 veröffentlichen",
         "Veröffentlicht den kompakten GPS-State auf gps_state/state1.",
@@ -1012,6 +1030,9 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
             if (key == "enabled") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
                 if (accepted) new_cfg.enabled = bool_value;
+            } else if (key == "publish_state0") {
+                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
+                if (accepted) new_cfg.publish_state0 = bool_value;
             } else if (key == "publish_state1") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
                 if (accepted) new_cfg.publish_state1 = bool_value;
@@ -1322,6 +1343,376 @@ static std::string gps_state_drive_reason_text(const std::string &block_reason,
     return "GPS-Fahrfreigabe konnte nicht bestaetigt werden";
 }
 
+
+static json gps_state0_definition_entry(int stage,
+                                        const std::string &key,
+                                        const std::string &title,
+                                        const std::string &description,
+                                        const std::string &source,
+                                        const std::string &operator_text,
+                                        const json &expected,
+                                        const std::string &threshold_param,
+                                        const json &default_threshold,
+                                        const std::string &unit,
+                                        const std::string &effect_if_failed,
+                                        const std::string &next_check) {
+    json entry = json::object();
+    entry["stage"] = stage;
+    entry["key"] = key;
+    entry["title"] = title;
+    entry["description"] = description;
+    entry["source"] = source;
+    if (!operator_text.empty()) entry["operator"] = operator_text;
+    if (!expected.is_null()) entry["expected"] = expected;
+    if (!threshold_param.empty()) entry["threshold_param"] = threshold_param;
+    if (!default_threshold.is_null()) entry["default_threshold"] = default_threshold;
+    if (!unit.empty()) entry["unit"] = unit;
+    entry["effect_if_failed"] = effect_if_failed;
+    entry["next_check"] = next_check;
+    return entry;
+}
+
+static json build_gps_state0_definition_payload() {
+    json root = json::object();
+    root["state"] = "state0";
+    root["type"] = "definition";
+    root["definition_version"] = 1;
+    root["name"] = "gps_drive_diagnostics";
+    root["description"] = "Statische 12-Stufen-Definition der GPS-Fahrfaehigkeitsdiagnose. Die Live-Werte stehen in gps_state/state0/status.";
+    root["checks"] = json::object();
+    root["checks"]["01_gps_enabled"] = gps_state0_definition_entry(
+        1, "gps_enabled", "GPS-Verarbeitung aktiv?",
+        "Prueft, ob xbot_positioning GPS-Updates grundsaetzlich verarbeitet.",
+        "xbot_positioning.gps_enabled", "==", true, "", nullptr, "",
+        "GPS-Update wird verworfen", "bei Konfigurationsaenderung oder naechstem GPS-Update");
+    root["checks"]["02_rtk_fixed"] = gps_state0_definition_entry(
+        2, "rtk_fixed", "RTK Fixed vorhanden?",
+        "Prueft, ob das GPS-Update RTK Fixed meldet. RTK Float reicht fuer die Fahrfreigabe nicht aus.",
+        "/ll/position/gps.flags", "==", "fixed", "", nullptr, "",
+        "GPS-Update wird verworfen", "beim naechsten GPS-Update");
+    root["checks"]["03_gps_input_accuracy"] = gps_state0_definition_entry(
+        3, "gps_input_accuracy", "GPS-Genauigkeit Eingang gut?",
+        "Prueft, ob das GPS-Update genau genug fuer xbot_positioning ist.",
+        "/ll/position/gps.position_accuracy", "<=", nullptr, "/xbot_positioning/max_gps_accuracy", 0.2, "m",
+        "GPS-Update wird verworfen", "beim naechsten GPS-Update");
+    root["checks"]["04_valid_gps_samples"] = gps_state0_definition_entry(
+        4, "valid_gps_samples", "Genuegend gueltige GPS-Samples?",
+        "Prueft, ob nach Start oder Reset mehr als 10 gueltige GPS-Updates gesammelt wurden.",
+        "xbot_positioning.valid_gps_samples", ">", nullptr, "", 10, "samples",
+        "Initialisierung bleibt instabil", "bei jedem gueltigen GPS-Update");
+    root["checks"]["05_absolute_gps_pose_recent"] = gps_state0_definition_entry(
+        5, "absolute_gps_pose_recent", "Absolute GPS-Pose aktuell?",
+        "Prueft, ob die letzte akzeptierte absolute GPS-Position juenger als 10 Sekunden ist.",
+        "xbot_positioning.last_accepted_gps", "<", nullptr, "", 10.0, "s",
+        "RECENT_ABSOLUTE_POSE fehlt", "bei neuem gueltigem GPS-Update");
+    root["checks"]["06_xb_pose_received"] = gps_state0_definition_entry(
+        6, "xb_pose_received", "Aktuelle xb_pose vorhanden?",
+        "Prueft, ob mower_logic eine Pose von /xbot_positioning/xb_pose empfangen kann.",
+        "/xbot_positioning/xb_pose", "==", true, "", nullptr, "",
+        "Fahrfreigabe blockiert", "im naechsten mower_logic-Zyklus");
+    root["checks"]["07_xb_pose_age"] = gps_state0_definition_entry(
+        7, "xb_pose_age", "Pose aktuell?",
+        "Prueft, ob die empfangene xb_pose juenger als 1 Sekunde ist.",
+        "/xbot_positioning/xb_pose.header.stamp", "<", nullptr, "", 1.0, "s",
+        "Sicherheitsstopp: Messer aus, Fahren aus", "bei neuer aktueller Pose");
+    root["checks"]["08_orientation_valid"] = gps_state0_definition_entry(
+        8, "orientation_valid", "Orientierung gueltig?",
+        "Prueft, ob die Orientierung der Pose gueltig ist.",
+        "/xbot_positioning/xb_pose.orientation_valid", "==", true, "", nullptr, "",
+        "Keine sichere Navigation", "bei neuer gueltiger Pose");
+    root["checks"]["09_pose_accuracy"] = gps_state0_definition_entry(
+        9, "pose_accuracy", "Positionsgenauigkeit ausreichend?",
+        "Prueft, ob die von xbot_positioning erzeugte Pose genau genug fuer mower_logic ist.",
+        "/xbot_positioning/xb_pose.position_accuracy", "<", nullptr, "/mower_logic/max_position_accuracy", 0.2, "m",
+        "Fahrfreigabe blockiert", "bei verbesserter Pose");
+    root["checks"]["10_recent_absolute_pose"] = gps_state0_definition_entry(
+        10, "recent_absolute_pose", "Aktuelle absolute GPS-Pose vorhanden?",
+        "Prueft, ob die Sensorfusion eine aktuelle absolute GPS-Pose meldet.",
+        "/xbot_positioning/xb_pose.flags", "contains", "FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE", "", nullptr, "",
+        "Weiter zur Toleranzpruefung", "bei aktueller absoluter Pose");
+    root["checks"]["11_gps_timeout"] = gps_state0_definition_entry(
+        11, "gps_timeout", "Letzter guter GPS-Zustand innerhalb Toleranz?",
+        "Prueft, ob der letzte gute GPS-Zustand noch innerhalb gps_timeout liegt.",
+        "mower_logic.last_good_gps", "<", nullptr, "/mower_logic/gps_timeout", 10.0, "s",
+        "GPS-Timeout: Fahren und Messer aus", "nach wieder gueltiger Pose");
+    root["checks"]["12_gps_drive_ready"] = gps_state0_definition_entry(
+        12, "gps_drive_ready", "Fahrfreigabe erreicht?",
+        "Gesamtergebnis der GPS-Fahrfaehigkeitspruefung.",
+        "gps_state/state0/status.drive_ready", "==", true, "", nullptr, "",
+        "Roboter darf GPS-abhaengig nicht fahren", "wenn alle vorherigen Stufen erfuellt sind");
+    return root;
+}
+
+static std::string gps_state0_display_number(double value, const std::string &unit, int precision = 2) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(precision) << value;
+    if (!unit.empty()) out << " " << unit;
+    return out.str();
+}
+
+static json gps_state0_live_entry(int stage,
+                                  const std::string &key,
+                                  const std::string &status,
+                                  int severity,
+                                  const json &value,
+                                  const json &expected,
+                                  const json &threshold,
+                                  const json &deviation,
+                                  const std::string &display) {
+    json entry = json::object();
+    entry["stage"] = stage;
+    entry["key"] = key;
+    entry["status"] = status;
+    entry["severity"] = severity;
+    entry["value"] = value;
+    if (!expected.is_null()) entry["expected"] = expected;
+    if (!threshold.is_null()) entry["threshold"] = threshold;
+    if (!deviation.is_null()) entry["deviation"] = deviation;
+    entry["display"] = display;
+    return entry;
+}
+
+static void gps_state0_add_live_check(json &checks,
+                                      const std::string &id,
+                                      int stage,
+                                      const std::string &key,
+                                      const std::string &status,
+                                      int severity,
+                                      const json &value,
+                                      const json &expected,
+                                      const json &threshold,
+                                      const json &deviation,
+                                      const std::string &display,
+                                      bool &blocking_found,
+                                      int &blocking_stage,
+                                      std::string &blocking_key,
+                                      std::string &blocking_title,
+                                      std::string &summary) {
+    checks[id] = gps_state0_live_entry(stage, key, status, severity, value, expected, threshold, deviation, display);
+    if (!blocking_found && (status == "blocked" || status == "stop")) {
+        blocking_found = true;
+        blocking_stage = stage;
+        blocking_key = key;
+        blocking_title = build_gps_state0_definition_payload()["checks"][id]["title"].get<std::string>();
+        summary = display;
+    }
+}
+
+static json build_gps_state0_status_payload(const ros::Time &now,
+                                            double max_position_accuracy,
+                                            double max_gps_accuracy,
+                                            double gps_timeout,
+                                            const xbot_msgs::AbsolutePose &ll_pose,
+                                            bool ll_pose_available,
+                                            const ros::Time &ll_received_at,
+                                            const xbot_msgs::AbsolutePose &xb_pose,
+                                            bool xb_pose_available,
+                                            const ros::Time &xb_received_at,
+                                            const ros::Time &drive_ready_at,
+                                            const std::string &rtk_state,
+                                            bool ll_rtk_fixed,
+                                            bool ll_accuracy_ok,
+                                            bool orientation_valid,
+                                            bool recent_absolute_pose,
+                                            bool xb_accuracy_ok,
+                                            bool gps_drive_ready,
+                                            double grace_remaining_s,
+                                            bool gps_timeout_estimated) {
+    json positioning_debug = json::object();
+    bool positioning_debug_available = false;
+    ros::Time positioning_debug_received_at;
+    {
+        std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
+        positioning_debug = latest_xbot_positioning_gps_debug;
+        positioning_debug_available = latest_xbot_positioning_gps_debug_available;
+        positioning_debug_received_at = latest_xbot_positioning_gps_debug_received_at;
+    }
+
+    json checks = json::object();
+    bool blocking_found = false;
+    int blocking_stage = 0;
+    std::string blocking_key;
+    std::string blocking_title;
+    std::string summary;
+
+    auto inactive_if_blocked = [&](const std::string &id, int stage, const std::string &key, const std::string &display) {
+        gps_state0_add_live_check(checks, id, stage, key, "inactive", 0, nullptr, nullptr, nullptr, nullptr, display,
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    };
+
+    bool gps_enabled = true;
+    bool gps_enabled_known = false;
+    if (positioning_debug_available && positioning_debug.contains("gps_enabled") && positioning_debug["gps_enabled"].is_boolean()) {
+        gps_enabled = positioning_debug["gps_enabled"].get<bool>();
+        gps_enabled_known = true;
+    }
+    gps_state0_add_live_check(checks, "01_gps_enabled", 1, "gps_enabled",
+                              gps_enabled_known ? (gps_enabled ? "ok" : "blocked") : "unknown",
+                              gps_enabled_known ? (gps_enabled ? 0 : 3) : 1,
+                              gps_enabled_known ? json(gps_enabled) : json(nullptr), true, nullptr, nullptr,
+                              gps_enabled_known ? (gps_enabled ? "aktiv" : "inaktiv") : "unbekannt",
+                              blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+
+    if (blocking_found) {
+        inactive_if_blocked("02_rtk_fixed", 2, "rtk_fixed", "nicht bewertet");
+    } else {
+        const std::string status = ll_pose_available ? (ll_rtk_fixed ? "ok" : "blocked") : "blocked";
+        const std::string display = ll_pose_available ? ("RTK " + rtk_state) : "kein GPS-Update empfangen";
+        gps_state0_add_live_check(checks, "02_rtk_fixed", 2, "rtk_fixed", status, ll_rtk_fixed ? 0 : 3,
+                                  ll_pose_available ? json(rtk_state) : json(nullptr), "fixed", nullptr, nullptr, display,
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    if (blocking_found) {
+        inactive_if_blocked("03_gps_input_accuracy", 3, "gps_input_accuracy", "nicht bewertet");
+    } else {
+        const double value = static_cast<double>(ll_pose.position_accuracy);
+        const double deviation = value - max_gps_accuracy;
+        gps_state0_add_live_check(checks, "03_gps_input_accuracy", 3, "gps_input_accuracy",
+                                  ll_accuracy_ok ? "ok" : "blocked", ll_accuracy_ok ? 0 : 3,
+                                  value, nullptr, max_gps_accuracy, deviation,
+                                  gps_state0_display_number(value, "m") + " / max. " + gps_state0_display_number(max_gps_accuracy, "m"),
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    if (blocking_found) {
+        inactive_if_blocked("04_valid_gps_samples", 4, "valid_gps_samples", "nicht bewertet");
+    } else {
+        int samples = -1;
+        bool has_gps_value = false;
+        if (positioning_debug_available) {
+            if (positioning_debug.contains("valid_gps_samples") && positioning_debug["valid_gps_samples"].is_number_integer()) {
+                samples = positioning_debug["valid_gps_samples"].get<int>();
+            }
+            if (positioning_debug.contains("has_gps") && positioning_debug["has_gps"].is_boolean()) {
+                has_gps_value = positioning_debug["has_gps"].get<bool>();
+            }
+        }
+        const bool samples_ok = has_gps_value || samples > 10;
+        const std::string display = samples >= 0 ? (std::to_string(samples) + " / 11 Samples") : "Sample-Anzahl unbekannt";
+        gps_state0_add_live_check(checks, "04_valid_gps_samples", 4, "valid_gps_samples",
+                                  samples_ok ? "ok" : (samples >= 0 ? "blocked" : "unknown"), samples_ok ? 0 : (samples >= 0 ? 3 : 1),
+                                  samples >= 0 ? json(samples) : json(nullptr), nullptr, 10, samples >= 0 ? json(10 - samples) : json(nullptr), display,
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    if (blocking_found) {
+        inactive_if_blocked("05_absolute_gps_pose_recent", 5, "absolute_gps_pose_recent", "nicht bewertet");
+    } else {
+        json age_value = nullptr;
+        double age_s = -1.0;
+        if (positioning_debug_available && positioning_debug.contains("last_accepted_gps_age_s") && positioning_debug["last_accepted_gps_age_s"].is_number()) {
+            age_s = positioning_debug["last_accepted_gps_age_s"].get<double>();
+            age_value = age_s;
+        }
+        const bool recent = age_s >= 0.0 && age_s < 10.0;
+        gps_state0_add_live_check(checks, "05_absolute_gps_pose_recent", 5, "absolute_gps_pose_recent",
+                                  age_s >= 0.0 ? (recent ? "ok" : "blocked") : "unknown", recent ? 0 : (age_s >= 0.0 ? 3 : 1),
+                                  age_value, nullptr, 10.0, age_s >= 0.0 ? json(age_s - 10.0) : json(nullptr),
+                                  age_s >= 0.0 ? (gps_state0_display_number(age_s, "s") + " / max. 10.00 s") : "Alter unbekannt",
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    if (blocking_found) {
+        inactive_if_blocked("06_xb_pose_received", 6, "xb_pose_received", "nicht bewertet");
+    } else {
+        gps_state0_add_live_check(checks, "06_xb_pose_received", 6, "xb_pose_received",
+                                  xb_pose_available ? "ok" : "blocked", xb_pose_available ? 0 : 3,
+                                  xb_pose_available, true, nullptr, nullptr,
+                                  xb_pose_available ? "empfangen" : "keine xb_pose empfangen",
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    const double xb_pose_age_s = xb_pose_available ? std::max(0.0, (now - xb_received_at).toSec()) : -1.0;
+    if (blocking_found) {
+        inactive_if_blocked("07_xb_pose_age", 7, "xb_pose_age", "nicht bewertet");
+    } else {
+        const bool age_ok = xb_pose_age_s >= 0.0 && xb_pose_age_s < 1.0;
+        gps_state0_add_live_check(checks, "07_xb_pose_age", 7, "xb_pose_age",
+                                  age_ok ? "ok" : "stop", age_ok ? 0 : 4,
+                                  xb_pose_age_s >= 0.0 ? json(xb_pose_age_s) : json(nullptr), nullptr, 1.0,
+                                  xb_pose_age_s >= 0.0 ? json(xb_pose_age_s - 1.0) : json(nullptr),
+                                  xb_pose_age_s >= 0.0 ? (gps_state0_display_number(xb_pose_age_s, "s") + " / max. 1.00 s") : "Pose-Alter unbekannt",
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    if (blocking_found) {
+        inactive_if_blocked("08_orientation_valid", 8, "orientation_valid", "nicht bewertet");
+    } else {
+        gps_state0_add_live_check(checks, "08_orientation_valid", 8, "orientation_valid",
+                                  orientation_valid ? "ok" : "blocked", orientation_valid ? 0 : 3,
+                                  xb_pose_available ? json(static_cast<bool>(xb_pose.orientation_valid)) : json(nullptr), true, nullptr, nullptr,
+                                  orientation_valid ? "gueltig" : "ungueltig",
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    if (blocking_found) {
+        inactive_if_blocked("09_pose_accuracy", 9, "pose_accuracy", "nicht bewertet");
+    } else {
+        const double value = static_cast<double>(xb_pose.position_accuracy);
+        const double deviation = value - max_position_accuracy;
+        gps_state0_add_live_check(checks, "09_pose_accuracy", 9, "pose_accuracy",
+                                  xb_accuracy_ok ? "ok" : "blocked", xb_accuracy_ok ? 0 : 3,
+                                  value, nullptr, max_position_accuracy, deviation,
+                                  gps_state0_display_number(value, "m") + " / max. < " + gps_state0_display_number(max_position_accuracy, "m"),
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    bool stage10_failed = false;
+    if (blocking_found) {
+        inactive_if_blocked("10_recent_absolute_pose", 10, "recent_absolute_pose", "nicht bewertet");
+    } else {
+        stage10_failed = !recent_absolute_pose;
+        gps_state0_add_live_check(checks, "10_recent_absolute_pose", 10, "recent_absolute_pose",
+                                  recent_absolute_pose ? "ok" : "warning", recent_absolute_pose ? 0 : 2,
+                                  recent_absolute_pose, true, nullptr, nullptr,
+                                  recent_absolute_pose ? "aktuelle absolute Pose vorhanden" : "fehlt - Toleranzpruefung",
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    if (blocking_found) {
+        inactive_if_blocked("11_gps_timeout", 11, "gps_timeout", "nicht bewertet");
+    } else if (stage10_failed) {
+        const double since_ready_s = drive_ready_at.isZero() ? gps_timeout + 1.0 : std::max(0.0, (now - drive_ready_at).toSec());
+        const bool within_timeout = !gps_timeout_estimated;
+        gps_state0_add_live_check(checks, "11_gps_timeout", 11, "gps_timeout",
+                                  within_timeout ? "warning" : "stop", within_timeout ? 2 : 4,
+                                  since_ready_s, nullptr, gps_timeout, since_ready_s - gps_timeout,
+                                  within_timeout ? ("noch " + gps_state0_display_number(grace_remaining_s, "s") + " Resttoleranz")
+                                                 : (gps_state0_display_number(since_ready_s, "s") + " / max. " + gps_state0_display_number(gps_timeout, "s")),
+                                  blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    } else {
+        gps_state0_add_live_check(checks, "11_gps_timeout", 11, "gps_timeout", "ok", 0, 0.0, nullptr, gps_timeout, nullptr,
+                                  "nicht erforderlich", blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+    }
+
+    gps_state0_add_live_check(checks, "12_gps_drive_ready", 12, "gps_drive_ready",
+                              gps_drive_ready ? "ok" : (gps_timeout_estimated ? "stop" : "blocked"),
+                              gps_drive_ready ? 0 : (gps_timeout_estimated ? 4 : 3),
+                              gps_drive_ready, true, nullptr, nullptr,
+                              gps_drive_ready ? "fahrbereit" : "nicht fahrbereit",
+                              blocking_found, blocking_stage, blocking_key, blocking_title, summary);
+
+    json root = json::object();
+    root["state"] = "state0";
+    root["type"] = "status";
+    root["definition_version"] = 1;
+    root["timestamp"] = now.toSec();
+    root["drive_ready"] = gps_drive_ready;
+    root["drive_state"] = gps_drive_ready ? "ready" : (gps_timeout_estimated ? "stop" : "blocked");
+    root["severity"] = gps_drive_ready ? 0 : (gps_timeout_estimated ? 4 : 3);
+    root["blocking_stage"] = blocking_found ? json(blocking_stage) : json(nullptr);
+    root["blocking_key"] = blocking_found ? json(blocking_key) : json(nullptr);
+    root["blocking_title"] = blocking_found ? json(blocking_title) : json(nullptr);
+    root["summary"] = blocking_found ? summary : "Alle Bedingungen erfuellt";
+    root["positioning_debug_available"] = positioning_debug_available;
+    root["positioning_debug_age_ms"] = gps_state_age_ms_json(now, positioning_debug_received_at);
+    root["ll_gps_age_ms"] = gps_state_age_ms_json(now, ll_received_at);
+    root["xb_pose_age_ms"] = gps_state_age_ms_json(now, xb_received_at);
+    root["checks"] = checks;
+    return root;
+}
+
 static json build_gps_drive_status_payload(const ros::Time &now) {
     double max_position_accuracy = 0.2;
     double max_gps_accuracy = 0.2;
@@ -1406,9 +1797,18 @@ static json build_gps_drive_status_payload(const ros::Time &now) {
     details["decision_source"] = "xbot_positioning/xb_pose";
     details["rtk_source"] = "ll/position/gps";
 
+    const json state0_status = build_gps_state0_status_payload(
+        now, max_position_accuracy, max_gps_accuracy, gps_timeout,
+        ll_pose, ll_pose_available, ll_received_at,
+        xb_pose, xb_pose_available, xb_received_at, drive_ready_at,
+        rtk_state, ll_rtk_fixed, ll_accuracy_ok, orientation_valid,
+        recent_absolute_pose, xb_accuracy_ok, gps_drive_ready,
+        grace_remaining_s, gps_timeout_estimated);
+
     return {
         {"summary", summary},
-        {"details", details}
+        {"details", details},
+        {"state0_status", state0_status}
     };
 }
 
@@ -1420,6 +1820,9 @@ static void apply_gps_drive_status_to_payloads(json &payloads, const json &drive
     }
     if (payloads.contains("state2") && payloads["state2"].is_object()) {
         payloads["state2"]["drive_diagnostics"] = drive_status["details"];
+    }
+    if (payloads.contains("state0_status") && drive_status.contains("state0_status")) {
+        payloads["state0_status"] = drive_status["state0_status"];
     }
 }
 
@@ -1527,6 +1930,7 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
     state4["satellites"] = all_satellites;
 
     json payloads = {
+        {"state0_status", drive_status["state0_status"]},
         {"state1", state1},
         {"state2", state2},
         {"state3", state3},
@@ -1552,6 +1956,12 @@ void publish_latest_gps_state_payloads(bool force) {
     const json drive_status = build_gps_drive_status_payload(ros::Time::now());
     apply_gps_drive_status_to_payloads(snapshot, drive_status);
 
+    if (cfg.publish_state0 || force) {
+        try_publish("gps_state/state0/definition", build_gps_state0_definition_payload().dump(), true);
+        if (snapshot.contains("state0_status")) {
+            try_publish("gps_state/state0/status", snapshot["state0_status"].dump(), true);
+        }
+    }
     if (cfg.publish_state1 || force) try_publish("gps_state/state1", snapshot["state1"].dump(), true);
     if (cfg.publish_state2 || force) try_publish("gps_state/state2", snapshot["state2"].dump(), true);
     if (cfg.publish_state3 || force) try_publish("gps_state/state3", snapshot["state3"].dump(), false);
@@ -1576,6 +1986,17 @@ void gps_state_satellites_callback(const xbot_msgs::GnssSatelliteArray::ConstPtr
         latest_gps_state_available = true;
     }
     publish_latest_gps_state_payloads(false);
+}
+
+void gps_state_positioning_debug_callback(const std_msgs::String::ConstPtr &msg) {
+    json parsed = json::parse(msg->data, nullptr, false);
+    if (!parsed.is_object()) {
+        parsed = {{"raw", msg->data}, {"parse_error", true}};
+    }
+    std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
+    latest_xbot_positioning_gps_debug = parsed;
+    latest_xbot_positioning_gps_debug_received_at = ros::Time::now();
+    latest_xbot_positioning_gps_debug_available = true;
 }
 
 void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
@@ -3326,6 +3747,7 @@ int main(int argc, char **argv) {
     ros::Subscriber llPowerStatusSubscriber = n->subscribe("/ll/services/power/status_json", 10, ll_power_status_json_callback);
     ros::Subscriber gpsStateLlGpsPoseSubscriber = n->subscribe("/ll/position/gps", 1, gps_state_ll_gps_pose_callback);
     ros::Subscriber gpsStateXbPoseSubscriber = n->subscribe("/xbot_positioning/xb_pose", 1, gps_state_xb_pose_callback);
+    ros::Subscriber gpsStatePositioningDebugSubscriber = n->subscribe("/xbot_positioning/gps_debug_state", 1, gps_state_positioning_debug_callback);
     ros::Subscriber gpsStateSatellitesSubscriber = n->subscribe("/ll/position/gps/satellites", 1, gps_state_satellites_callback);
     ros::Subscriber gpsRestartStatusSubscriber = n->subscribe("/ll/position/gps/restart_status", 10, gps_restart_status_callback);
 

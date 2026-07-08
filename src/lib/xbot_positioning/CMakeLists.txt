@@ -6,6 +6,7 @@ find_package(catkin REQUIRED COMPONENTS
         geometry_msgs
         xbot_msgs
         roscpp
+        std_msgs
         tf2_geometry_msgs
         tf2
         tf2_ros

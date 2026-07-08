@@ -1,0 +1,14 @@
+BS_Add GPS state0 drive diagnostics
+Date: 2026-07-08
+Summary:
+- Added optional GPS State 0 drive-readiness diagnostics with static definition and live status MQTT payloads.
+- Published xbot_positioning GPS debug state to expose internal GPS initialization values for MQTT diagnostics.
+- Documented the State 0 topic structure, status values and 12 decision stages.
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/README.md
+- src/lib/xbot_positioning/src/xbot_positioning.cpp
+- src/lib/xbot_positioning/CMakeLists.txt
+- src/lib/xbot_positioning/package.xml
+- _Dokumentation/2026-07-08 - OpenMower-TAF-ROS - Implementierungsdokumentation - GPS-State State0 Fahrfaehigkeitsdiagnose - v0.1.docx
+- _Dokumentation/2026-07-08 - OpenMower-TAF-ROS - Implementierungsdokumentation - GPS-State State0 Fahrfaehigkeitsdiagnose - v0.1.pdf

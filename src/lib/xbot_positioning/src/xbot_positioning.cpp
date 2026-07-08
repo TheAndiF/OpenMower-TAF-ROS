@@ -4,12 +4,17 @@
 //
 
 #include <geometry_msgs/TwistStamped.h>
+#include <std_msgs/String.h>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Imu.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
+#include <sstream>
+#include <iomanip>
+#include <limits>
+#include <cmath>
 
 #include "SystemModel.hpp"
 #include "geometry_msgs/PoseWithCovarianceStamped.h"
@@ -24,6 +29,7 @@
 
 ros::Publisher odometry_pub;
 ros::Publisher xbot_absolute_pose_pub;
+ros::Publisher gps_debug_state_pub;
 
 // Debug Publishers
 ros::Publisher kalman_state;
@@ -73,6 +79,76 @@ int valid_gps_samples = 0;
 int gps_message_throttle = 1;
 
 ros::Time last_gps_time(0.0);
+
+
+static std::string json_escape_string(const std::string &value) {
+    std::ostringstream out;
+    for (const char c : value) {
+        switch (c) {
+            case '\\': out << "\\\\"; break;
+            case '"': out << "\\\""; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default: out << c; break;
+        }
+    }
+    return out.str();
+}
+
+static void publishGpsDebugState(const std::string &decision,
+                                 const std::string &result,
+                                 const xbot_msgs::AbsolutePose *msg = nullptr,
+                                 double distance_to_last_gps = std::numeric_limits<double>::quiet_NaN()) {
+    if (!gps_debug_state_pub) return;
+
+    const ros::Time now = ros::Time::now();
+    std::ostringstream payload;
+    payload << std::fixed << std::setprecision(3);
+    payload << "{";
+    payload << "\"timestamp\":" << now.toSec();
+    payload << ",\"source\":\"xbot_positioning\"";
+    payload << ",\"decision\":\"" << json_escape_string(decision) << "\"";
+    payload << ",\"result\":\"" << json_escape_string(result) << "\"";
+    payload << ",\"gps_enabled\":" << (gps_enabled ? "true" : "false");
+    payload << ",\"has_gps\":" << (has_gps ? "true" : "false");
+    payload << ",\"valid_gps_samples\":" << valid_gps_samples;
+    payload << ",\"required_valid_gps_samples\":11";
+    payload << ",\"gps_outlier_count\":" << gps_outlier_count;
+    payload << ",\"max_gps_accuracy_m\":" << max_gps_accuracy;
+    if (last_gps_time.isZero()) {
+        payload << ",\"last_accepted_gps_age_s\":null";
+    } else {
+        payload << ",\"last_accepted_gps_age_s\":" << (now - last_gps_time).toSec();
+    }
+
+    if (msg != nullptr) {
+        const bool rtk_fixed = (msg->flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED) != 0;
+        const bool rtk_float = (msg->flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT) != 0;
+        payload << ",\"input_available\":true";
+        payload << ",\"input_flags\":" << msg->flags;
+        payload << ",\"input_rtk_fixed\":" << (rtk_fixed ? "true" : "false");
+        payload << ",\"input_rtk_float\":" << (rtk_float ? "true" : "false");
+        payload << ",\"input_position_accuracy_m\":" << msg->position_accuracy;
+        if (std::isfinite(distance_to_last_gps)) {
+            payload << ",\"distance_to_last_gps_m\":" << distance_to_last_gps;
+        } else {
+            payload << ",\"distance_to_last_gps_m\":null";
+        }
+    } else {
+        payload << ",\"input_available\":false";
+        payload << ",\"input_flags\":null";
+        payload << ",\"input_rtk_fixed\":null";
+        payload << ",\"input_rtk_float\":null";
+        payload << ",\"input_position_accuracy_m\":null";
+        payload << ",\"distance_to_last_gps_m\":null";
+    }
+    payload << "}";
+
+    std_msgs::String out;
+    out.data = payload.str();
+    gps_debug_state_pub.publish(out);
+}
 
 
 void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
@@ -207,6 +283,7 @@ void onTwistIn(const geometry_msgs::TwistStamped::ConstPtr &msg) {
 
 bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::GPSControlSrvResponse &res) {
     gps_enabled = req.gps_enabled;
+    publishGpsDebugState("gps_enabled_changed", gps_enabled ? "enabled" : "disabled");
     return true;
 }
 
@@ -226,11 +303,13 @@ bool setPose(xbot_positioning::SetPoseSrvRequest &req, xbot_positioning::SetPose
 void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
     if (!gps_enabled) {
         ROS_INFO_STREAM_THROTTLE(gps_message_throttle, "dropping GPS update, since gps_enabled = false.");
+        publishGpsDebugState("gps_enabled", "rejected_gps_disabled", msg.get());
         return;
     }
     // TODO fuse with high covariance?
     if ((msg->flags & (xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) == 0) {
         ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed");
+        publishGpsDebugState("rtk_fixed", "rejected_rtk_fixed_missing", msg.get());
         return;
     }
 
@@ -238,6 +317,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         ROS_INFO_STREAM_THROTTLE(
             1, "Dropped GPS update, since it's not accurate enough. Accuracy was: " << msg->position_accuracy <<
             ", limit is:" << max_gps_accuracy);
+        publishGpsDebugState("gps_input_accuracy", "rejected_accuracy_too_high", msg.get());
         return;
     }
 
@@ -250,6 +330,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         last_gps = *msg;
         // we have GPS for next time
         last_gps_time = ros::Time::now();
+        publishGpsDebugState("gps_stream_gap", "reset_after_gap", msg.get());
         return;
     }
 
@@ -291,10 +372,14 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
                 core.updateOrientation2(msg->motion_vector.x, msg->motion_vector.y, 10000.0);
             }
         }
+        publishGpsDebugState(has_gps ? "gps_update_accepted" : "valid_samples",
+                             has_gps ? "accepted" : "collecting_valid_samples",
+                             msg.get(), distance_to_last_gps);
     } else {
         ROS_WARN_STREAM("GPS outlier found. Distance was: " << distance_to_last_gps);
         gps_outlier_count++;
         // ~10 sec
+        publishGpsDebugState("gps_outlier", "rejected_outlier", msg.get(), distance_to_last_gps);
         if (gps_outlier_count > 10) {
             ROS_ERROR_STREAM("too many outliers, assuming that the current gps value is valid.");
             // store the gps as last
@@ -304,6 +389,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
 
             valid_gps_samples = 0;
             gps_outlier_count = 0;
+            publishGpsDebugState("gps_outlier_reset", "reset_after_too_many_outliers", msg.get(), distance_to_last_gps);
         }
     }
 }
@@ -349,6 +435,7 @@ int main(int argc, char **argv) {
 
     odometry_pub = paramNh.advertise<nav_msgs::Odometry>("odom_out", 50);
     xbot_absolute_pose_pub = paramNh.advertise<xbot_msgs::AbsolutePose>("xb_pose_out", 50);
+    gps_debug_state_pub = n.advertise<std_msgs::String>("/xbot_positioning/gps_debug_state", 10, true);
     if (publish_debug) {
         dbg_expected_motion_vector = paramNh.advertise<geometry_msgs::Vector3>("debug_expected_motion_vector", 50);
         kalman_state = paramNh.advertise<xbot_positioning::KalmanState>("kalman_state", 50);
