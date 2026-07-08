@@ -1,0 +1,17 @@
+BS_GPS-State State1-State3 klar trennen und Dopplungen reduzieren
+
+- State 0 bleibt als vollständige 12-stufige Fahrfähigkeitsdiagnose erhalten und wird nicht in State 1 eingebettet.
+- State 1 wird auf den kompakten Bedienerstatus reduziert: Fahrfreigabe, Label, Grund, RTK-Zustand, Genauigkeit, Grenzwert, Pose-Alter und quality_class.
+- State 2 wird zur technischen GNSS-/Pose-Zusammenfassung ohne Satellitenliste: verfügbare/benutzte Satellitenanzahl, C/N0-Statistik, Systemverteilung und technische Diagnosefelder.
+- State 3 enthält nur noch die aktiv verwendeten Satelliten; fachliche Gesamtstatistiken und das redundante used-Feld je Satellit wurden entfernt.
+- State 4 bleibt die vollständige Experten-/Debugliste aller sichtbaren Satelliten mit used=true/false.
+- GPS-State-Payloads erhalten das Schema gps_state.v2; die Settings-Struktur bleibt settings_v2.
+- README und Änderungsdokumentation wurden ergänzt.
+
+Geänderte Dateien:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/README.md
+- _Dokumentation/2026-07-08 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State klare Trennung State1-State3 - v0.1.docx
+- _Dokumentation/2026-07-08 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State klare Trennung State1-State3 - v0.1.pdf
+- _Dokumentation/2026-07-08 - OpenMower-TAF-ROS - Patch - GPS-State klare Trennung State1-State3 - v0.1.patch
+- _Dokumentation/2026-07-08 - OpenMower-TAF-ROS - Commit-Nachricht - GPS-State klare Trennung State1-State3 - v0.1.txt
