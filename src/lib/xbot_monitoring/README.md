@@ -148,3 +148,26 @@ Legacy persistent writes without a top-level `settings` object are still accepte
 ```
 
 The bridge accepts only editable display fields. Sensor values and technical ROS fields are read-only through this API. Unknown fields, unknown sensor ids, invalid group ids and invalid metadata types are rejected. A successful persistent write stores the migrated namespace structure below `settings.sensors.settings` and `settings.sensors.groups`, publishes validation feedback and immediately republishes the complete retained `sensors/settings/json` state.
+
+## GPS State F9P restart command
+
+`gps_state` also exposes a JSON command topic for u-blox/ZED-F9P receiver restarts. The MQTT bridge validates the request, forwards it to the GPS driver through ROS and republishes the driver response as a retained status.
+
+### MQTT topics
+
+- `gps_state/restart/set/json` sends a restart request.
+- `gps_state/restart/status/json` publishes the retained status of the last request or driver response.
+- `gps_state/restart/validation/json` publishes validation feedback for the last MQTT command.
+- `gps_state/restart/set/renew/json` republishes the retained restart status and the `gps_state/settings/json` metadata.
+
+Example hot start request:
+
+```json
+{
+  "mode": "hot_start"
+}
+```
+
+Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The default `reset_mode` is `controlled_software`. Expert clients may set `reset_mode` to `gnss_only` or `hardware_watchdog` if that behavior is explicitly desired.
+
+The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.

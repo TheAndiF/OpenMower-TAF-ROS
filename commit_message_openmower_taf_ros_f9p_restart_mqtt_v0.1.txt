@@ -1,0 +1,15 @@
+BL_Add F9P restart MQTT command
+Date: 2026-07-08
+Summary:
+- Added MQTT command handling under gps_state for F9P hot, warm and cold restart requests.
+- Forwarded validated restart requests from xbot_monitoring to the GPS driver and published restart status/validation feedback.
+- Kept xbot_driver_gps as a separate submodule; the submodule commit must be updated after pushing the GPS driver changes.
+- Documented the MQTT commands, status topics and validation behavior.
+Changed files:
+- src/lib/xbot_monitoring/README.md
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/open_mower/launch/include/_comms.launch
+- _Dokumentation/F9P-Restart-MQTT.md
+- _Dokumentation/2026-07-08 - OpenMower-TAF-ROS - Aenderungsdokumentation - F9P-Neustart MQTT gps_state - v0.1.docx
+- _Dokumentation/2026-07-08 - OpenMower-TAF-ROS - Aenderungsdokumentation - F9P-Neustart MQTT gps_state - v0.1.pdf
+- commit_message_openmower_taf_ros_f9p_restart_mqtt_v0.1.txt

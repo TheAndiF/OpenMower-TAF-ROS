@@ -88,6 +88,10 @@ void publish_gps_state_settings();
 void publish_gps_state_validation(const json &validation);
 void handle_gps_state_set_payload(const std::string &payload_text, bool persistent);
 void publish_latest_gps_state_payloads(bool force = false);
+void handle_gps_restart_set_payload(const std::string &payload_text);
+void publish_gps_restart_validation(const json &validation);
+void publish_gps_restart_status();
+void gps_restart_status_callback(const std_msgs::String::ConstPtr &msg);
 void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg);
 void gps_state_xb_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg);
 void publish_map();
@@ -263,6 +267,7 @@ ros::Publisher ftc_settings_set_persistent_speed_fast_pub;
 ros::Publisher ftc_settings_set_persistent_speed_slow_pub;
 ros::Publisher ftc_settings_set_persistent_speed_fast_threshold_pub;
 ros::Publisher ll_power_renew_pub;
+ros::Publisher gps_restart_request_pub;
 
 // properties for external mqtt
 bool external_mqtt_enable = false;
@@ -288,6 +293,7 @@ class MqttCallback : public mqtt::callback {
         publish_params();
         publish_gps_state_settings();
         publish_latest_gps_state_payloads(true);
+        publish_gps_restart_status();
 
         // BEGIN: Deprecated code (1/2)
         // Earlier implementations subscribed to "/action" and "prefix//action" topics, we do it to not break stuff as well.
@@ -323,6 +329,8 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/restart/set/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/restart/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/renew/json", 0);
@@ -484,6 +492,11 @@ public:
             handle_gps_state_set_payload(ptr->get_payload_str(), false);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/persistent/json") {
             handle_gps_state_set_payload(ptr->get_payload_str(), true);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/restart/set/json") {
+            handle_gps_restart_set_payload(ptr->get_payload_str());
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/restart/set/renew/json") {
+            publish_gps_restart_status();
+            publish_gps_state_settings();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/session/json" ||
                    ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json") {
             const bool persistent = ptr->get_topic() == this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json";
@@ -701,6 +714,10 @@ ros::Time latest_ll_gps_pose_received_at;
 ros::Time latest_xb_pose_received_at;
 ros::Time latest_gps_drive_ready_at;
 
+std::mutex gps_restart_status_mutex;
+json latest_gps_restart_status = json::object();
+bool latest_gps_restart_status_available = false;
+
 
 
 static json gps_state_setting_entry(const std::string &label,
@@ -738,11 +755,12 @@ static json gps_state_descriptor_entry(const std::string &label,
                                        const std::string &description,
                                        int order,
                                        const std::string &topic,
-                                       bool expert) {
+                                       bool expert,
+                                       const std::string &group = "states") {
     json entry = json::object();
     entry["label"] = label;
     entry["description"] = description;
-    entry["group"] = "states";
+    entry["group"] = group;
     entry["order"] = order;
     entry["type"] = "json";
     entry["topic"] = topic;
@@ -755,6 +773,33 @@ static json gps_state_descriptor_entry(const std::string &label,
     entry["different"] = false;
     entry["restart_required"] = false;
     entry["session_apply_supported"] = false;
+    return entry;
+}
+
+static json gps_state_command_entry(const std::string &label,
+                                    const std::string &description,
+                                    int order,
+                                    const std::string &topic,
+                                    const json &payload_schema,
+                                    bool expert = false) {
+    json entry = json::object();
+    entry["label"] = label;
+    entry["description"] = description;
+    entry["group"] = "restart";
+    entry["order"] = order;
+    entry["type"] = "json_command";
+    entry["topic"] = topic;
+    entry["payload_schema"] = payload_schema;
+    entry["value"] = nullptr;
+    entry["active"] = nullptr;
+    entry["persistent"] = nullptr;
+    entry["visible"] = true;
+    entry["expert"] = expert;
+    entry["readonly"] = false;
+    entry["different"] = false;
+    entry["restart_required"] = false;
+    entry["session_apply_supported"] = true;
+    entry["persistent_apply_supported"] = false;
     return entry;
 }
 
@@ -817,6 +862,7 @@ static json build_gps_state_settings_payload() {
     root["groups"] = {
         {"general", {{"label", "Allgemein"}, {"order", 10}}},
         {"states", {{"label", "GPS States"}, {"order", 20}}},
+        {"restart", {{"label", "F9P Neustart"}, {"order", 30}}},
         {"debug", {{"label", "Debug"}, {"order", 90}}}
     };
     root["settings"] = json::object();
@@ -844,6 +890,26 @@ static json build_gps_state_settings_payload() {
         "GPS State 4",
         "Vollständige Satelliten-Diagnose mit allen sichtbaren Satelliten, auch wenn sie nicht für den Positionsfix verwendet werden. Enthält used=true/false, GNSS-System, SV-ID, C/N0, Elevation, Azimut, Residual und Qualität. Gedacht für Experten- und Debuganalyse.",
         40, "gps_state/state4", true);
+    root["settings"]["f9p_restart"] = gps_state_command_entry(
+        "F9P Neustart auslösen",
+        "Sendet eine UBX-CFG-RST-Neustartanforderung an den u-blox/ZED-F9P. Unterstützt hot_start, warm_start und cold_start. Standard ist reset_mode=controlled_software; Experten können gnss_only oder hardware_watchdog angeben.",
+        210, "gps_state/restart/set/json",
+        json{{"type", "object"},
+             {"required", json::array({"mode"})},
+             {"properties", {
+                 {"mode", {{"type", "string"}, {"enum", json::array({"hot_start", "warm_start", "cold_start"})}}},
+                 {"reset_mode", {{"type", "string"}, {"default", "controlled_software"}, {"enum", json::array({"controlled_software", "gnss_only", "hardware_watchdog"})}}}
+             }},
+             {"examples", json::array({
+                 json{{"mode", "hot_start"}},
+                 json{{"mode", "warm_start"}},
+                 json{{"mode", "cold_start"}}
+             })}},
+        true);
+    root["settings"]["f9p_restart_status"] = gps_state_descriptor_entry(
+        "F9P Neustart Status",
+        "Retained Status des zuletzt angeforderten oder vom GPS-Treiber gemeldeten F9P-Neustarts.",
+        220, "gps_state/restart/status/json", true, "restart");
     root["settings"]["publish_state1"] = gps_state_setting_entry(
         "State 1 veröffentlichen",
         "Veröffentlicht den kompakten GPS-State auf gps_state/state1.",
@@ -1012,6 +1078,200 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
     publish_gps_state_validation(validation);
     publish_gps_state_settings();
     publish_latest_gps_state_payloads(true);
+}
+
+
+static std::string normalize_f9p_restart_token(std::string value) {
+    value = trim_settings_string(value);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        if (c == '-' || c == ' ') return '_';
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+static bool normalize_f9p_restart_request(const json &payload,
+                                          std::string &mode,
+                                          std::string &reset_mode,
+                                          uint16_t &nav_bbr_mask,
+                                          uint8_t &reset_mode_value,
+                                          std::string &reason) {
+    std::string raw_mode;
+    std::string raw_reset_mode = "controlled_software";
+
+    if (payload.is_string()) {
+        raw_mode = payload.get<std::string>();
+    } else if (payload.is_object()) {
+        if (payload.contains("mode") && payload["mode"].is_string()) {
+            raw_mode = payload["mode"].get<std::string>();
+        } else if (payload.contains("command") && payload["command"].is_string()) {
+            raw_mode = payload["command"].get<std::string>();
+        } else if (payload.contains("restart") && payload["restart"].is_string()) {
+            raw_mode = payload["restart"].get<std::string>();
+        } else {
+            reason = "payload must contain string field mode, command or restart";
+            return false;
+        }
+
+        if (payload.contains("reset_mode")) {
+            if (!payload["reset_mode"].is_string()) {
+                reason = "reset_mode must be a string";
+                return false;
+            }
+            raw_reset_mode = payload["reset_mode"].get<std::string>();
+        }
+    } else {
+        reason = "payload must be a JSON object or string";
+        return false;
+    }
+
+    mode = normalize_f9p_restart_token(raw_mode);
+    reset_mode = normalize_f9p_restart_token(raw_reset_mode);
+
+    if (mode == "hot" || mode == "hot_start") {
+        mode = "hot_start";
+        nav_bbr_mask = 0x0000;
+    } else if (mode == "warm" || mode == "warm_start") {
+        mode = "warm_start";
+        nav_bbr_mask = 0x0001;
+    } else if (mode == "cold" || mode == "cold_start") {
+        mode = "cold_start";
+        nav_bbr_mask = 0xffff;
+    } else {
+        reason = "unknown restart mode; allowed: hot_start, warm_start, cold_start";
+        return false;
+    }
+
+    if (reset_mode.empty() || reset_mode == "default" || reset_mode == "controlled" ||
+        reset_mode == "software" || reset_mode == "controlled_software") {
+        reset_mode = "controlled_software";
+        reset_mode_value = 0x01;
+    } else if (reset_mode == "gnss" || reset_mode == "gnss_only" || reset_mode == "gnss_tasks") {
+        reset_mode = "gnss_only";
+        reset_mode_value = 0x02;
+    } else if (reset_mode == "hardware" || reset_mode == "watchdog" || reset_mode == "hardware_watchdog") {
+        reset_mode = "hardware_watchdog";
+        reset_mode_value = 0x00;
+    } else {
+        reason = "unknown reset_mode; allowed: controlled_software, gnss_only, hardware_watchdog";
+        return false;
+    }
+    return true;
+}
+
+static json default_gps_restart_status_payload() {
+    return {
+        {"available", true},
+        {"status", "idle"},
+        {"source", "xbot_monitoring"},
+        {"command_topic", "gps_state/restart/set/json"},
+        {"renew_topic", "gps_state/restart/set/renew/json"},
+        {"ros_request_topic", "/ll/position/gps/restart_request"},
+        {"ros_status_topic", "/ll/position/gps/restart_status"},
+        {"modes", json::array({"hot_start", "warm_start", "cold_start"})},
+        {"reset_modes", json::array({"controlled_software", "gnss_only", "hardware_watchdog"})},
+        {"note", "UBX-CFG-RST may reset the receiver before an ACK is returned"}
+    };
+}
+
+static void store_and_publish_gps_restart_status(json status) {
+    if (!status.is_object()) {
+        status = default_gps_restart_status_payload();
+    }
+    status["mqtt_topic"] = "gps_state/restart/status/json";
+    {
+        std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
+        latest_gps_restart_status = status;
+        latest_gps_restart_status_available = true;
+    }
+    try_publish("gps_state/restart/status/json", status.dump(), true);
+}
+
+void publish_gps_restart_status() {
+    json status;
+    {
+        std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
+        status = latest_gps_restart_status_available ? latest_gps_restart_status : default_gps_restart_status_payload();
+    }
+    try_publish("gps_state/restart/status/json", status.dump(), true);
+}
+
+void publish_gps_restart_validation(const json &validation) {
+    try_publish("gps_state/restart/validation/json", validation.dump(), false);
+}
+
+void handle_gps_restart_set_payload(const std::string &payload_text) {
+    json validation = {
+        {"valid", false},
+        {"namespace", GPS_STATE_NAMESPACE},
+        {"command", "f9p_restart"},
+        {"accepted", json::object()},
+        {"rejected", json::object()},
+        {"remarks", json::array()}
+    };
+
+    try {
+        json payload = json::parse(payload_text.empty() ? "{}" : payload_text, nullptr, false);
+        if (payload.is_discarded()) {
+            payload = trim_settings_string(payload_text);
+        }
+
+        std::string mode;
+        std::string reset_mode;
+        uint16_t nav_bbr_mask = 0;
+        uint8_t reset_mode_value = 0;
+        std::string reason;
+        if (!normalize_f9p_restart_request(payload, mode, reset_mode, nav_bbr_mask, reset_mode_value, reason)) {
+            validation["rejected"]["$"] = reason;
+            publish_gps_restart_validation(validation);
+            return;
+        }
+
+        const std::string ros_command = mode + ":" + reset_mode;
+        std_msgs::String request_msg;
+        request_msg.data = ros_command;
+        gps_restart_request_pub.publish(request_msg);
+
+        validation["valid"] = true;
+        validation["accepted"]["mode"] = mode;
+        validation["accepted"]["reset_mode"] = reset_mode;
+        validation["accepted"]["nav_bbr_mask"] = nav_bbr_mask;
+        validation["accepted"]["reset_mode_value"] = reset_mode_value;
+        validation["accepted"]["ros_command"] = ros_command;
+        validation["remarks"].push_back("F9P restart request forwarded to /ll/position/gps/restart_request");
+        publish_gps_restart_validation(validation);
+
+        store_and_publish_gps_restart_status({
+            {"accepted", true},
+            {"status", "requested"},
+            {"source", "xbot_monitoring"},
+            {"mode", mode},
+            {"reset_mode", reset_mode},
+            {"nav_bbr_mask", nav_bbr_mask},
+            {"reset_mode_value", reset_mode_value},
+            {"ros_command", ros_command},
+            {"ros_request_topic", "/ll/position/gps/restart_request"},
+            {"driver_ack_expected", false}
+        });
+    } catch (const json::exception &e) {
+        validation["rejected"]["$"] = std::string("Error decoding JSON: ") + e.what();
+        publish_gps_restart_validation(validation);
+    }
+}
+
+void gps_restart_status_callback(const std_msgs::String::ConstPtr &msg) {
+    json status = json::parse(msg->data, nullptr, false);
+    if (!status.is_object()) {
+        status = {
+            {"accepted", false},
+            {"status", "raw"},
+            {"source", "xbot_driver_gps"},
+            {"raw", msg->data}
+        };
+    }
+    status["received_by"] = "xbot_monitoring";
+    status["ros_status_topic"] = "/ll/position/gps/restart_status";
+    store_and_publish_gps_restart_status(status);
 }
 
 
@@ -3043,6 +3303,9 @@ int main(int argc, char **argv) {
         ROS_INFO_STREAM("Using external MQTT broker: " << external_mqtt_hostname << ":" << external_mqtt_port << " with topic prefix: " + external_mqtt_topic_prefix);
     }
 
+    // The restart command publisher is needed before MQTT subscriptions can receive commands.
+    gps_restart_request_pub = n->advertise<std_msgs::String>("/ll/position/gps/restart_request", 10);
+
     // First setup MQTT
     setupMqttClient();
 
@@ -3064,6 +3327,7 @@ int main(int argc, char **argv) {
     ros::Subscriber gpsStateLlGpsPoseSubscriber = n->subscribe("/ll/position/gps", 1, gps_state_ll_gps_pose_callback);
     ros::Subscriber gpsStateXbPoseSubscriber = n->subscribe("/xbot_positioning/xb_pose", 1, gps_state_xb_pose_callback);
     ros::Subscriber gpsStateSatellitesSubscriber = n->subscribe("/ll/position/gps/satellites", 1, gps_state_satellites_callback);
+    ros::Subscriber gpsRestartStatusSubscriber = n->subscribe("/ll/position/gps/restart_status", 10, gps_restart_status_callback);
 
     cmd_vel_pub = n->advertise<geometry_msgs::Twist>("xbot_monitoring/remote_cmd_vel", 1);
     action_pub = n->advertise<std_msgs::String>("xbot/action", 1);
