@@ -172,6 +172,18 @@ Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The defa
 
 The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.
 
+## GPS State payload separation
+
+The GPS MQTT payloads use schema `gps_state.v2` and keep the five states intentionally separated. Only shared metadata such as `schema`, `state` and `updated_at` is repeated. Fachliche Dopplungen zwischen State 1, State 2 and State 3 are avoided.
+
+- `gps_state/state0/definition` and `gps_state/state0/status`: complete 12-stage drive-readiness decision chain for expert/debug use. State 0 is not embedded into State 1.
+- `gps_state/state1`: compact operator status. It answers whether GPS is currently sufficient for driving and contains only the compact drive label, reason, RTK state, pose accuracy, maximum allowed pose accuracy, pose age and quality class. It does not contain satellite counts or satellite lists.
+- `gps_state/state2`: technical GNSS and pose summary. It contains aggregate signal quality, visible/used counts, C/N0 statistics, GNSS system distribution and technical pose/GPS diagnostics. It does not contain a satellite list.
+- `gps_state/state3`: list of currently used satellites only. It contains no drive-readiness decision, no aggregate GNSS statistics and no unused satellites. Per-satellite entries therefore omit `used`, because every listed satellite is used by definition.
+- `gps_state/state4`: full expert/debug satellite list. It contains all visible satellites and keeps `used=true/false` in every satellite entry.
+
+This separation lets the app choose the correct payload for each UI level without parsing large debug payloads in normal views.
+
 ## GPS State 0 drive diagnostics
 
 `gps_state` now provides an optional State 0 diagnostic view for immediate drive-readiness debugging. State 0 is intentionally split into static and live data so long descriptions do not have to be sent repeatedly.
