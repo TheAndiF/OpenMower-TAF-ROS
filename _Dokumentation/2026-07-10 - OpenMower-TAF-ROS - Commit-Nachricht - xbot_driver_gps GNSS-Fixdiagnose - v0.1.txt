@@ -1,0 +1,13 @@
+BL_Publish GNSS fix diagnostics
+Date: 2026-07-10
+
+Summary:
+- Decode UBX-NAV-PVT GNSS fix and RTK solution states before invalid positions are discarded.
+- Publish a retained internal fix-status message for No Fix, GPS Fix, RTK Float, and RTK Fixed.
+- Preserve the existing safety rule that invalid positions are never published as AbsolutePose updates.
+
+Changed files:
+- src/interfaces/gps_interface.h
+- src/interfaces/gps_interface.cpp
+- src/interfaces/ublox_gps_interface.cpp
+- src/driver_gps_node.cpp

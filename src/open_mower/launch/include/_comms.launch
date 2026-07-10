@@ -23,6 +23,7 @@
             <remap from="~satellites" to="/ll/position/gps/satellites"/>
             <remap from="~restart_request" to="/ll/position/gps/restart_request"/>
             <remap from="~restart_status" to="/ll/position/gps/restart_status"/>
+            <remap from="~fix_status" to="/ll/position/gps/fix_status"/>
             <remap from="~wheel_ticks" to="/mower/wheel_ticks"/>
         </node>
 
