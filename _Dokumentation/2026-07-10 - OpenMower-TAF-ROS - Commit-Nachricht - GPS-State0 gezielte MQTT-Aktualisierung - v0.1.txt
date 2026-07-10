@@ -1,0 +1,18 @@
+BS_Add targeted GPS State0 MQTT refresh
+
+Date: 2026-07-10
+
+Summary:
+- Added the gps_state/state0/set/renew/json MQTT request topic.
+- Rebuilt and republished only the retained State0 definition and live status on demand.
+- Made targeted State0 refresh independent of publish_state0 and the satellite-array snapshot.
+- Recalculated time-dependent GPS ages, grace periods and timeout values when the request is handled.
+- Documented the targeted refresh and the MQTT-configurable regular update interval.
+
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/README.md
+- _Dokumentation/2026-07-10 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State0 gezielte MQTT-Aktualisierung - v0.1.docx
+- _Dokumentation/2026-07-10 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State0 gezielte MQTT-Aktualisierung - v0.1.pdf
+- _Dokumentation/2026-07-10 - OpenMower-TAF-ROS - Patch - GPS-State0 gezielte MQTT-Aktualisierung - v0.1.patch
+- _Dokumentation/2026-07-10 - OpenMower-TAF-ROS - Commit-Nachricht - GPS-State0 gezielte MQTT-Aktualisierung - v0.1.txt

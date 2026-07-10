@@ -192,7 +192,16 @@ This separation lets the app choose the correct payload for each UI level withou
 
 - `gps_state/state0/definition` publishes the retained static definition of the 12 decision stages. It contains the stage number, key, title, description, source, expected value or threshold reference, failure effect and next check.
 - `gps_state/state0/status` publishes the retained live state for the same 12 stages. It contains the status, severity, current value, threshold, deviation and display string.
-- `gps_state/settings/json` contains the expert setting `publish_state0` to enable or disable this diagnostic output.
+- `gps_state/state0/set/renew/json` requests an immediate one-shot rebuild and republish of only `state0/definition` and `state0/status`. The payload may be empty or an arbitrary JSON object. The request works independently of `publish_state0` and does not require a previously received satellite-array snapshot.
+- `gps_state/settings/json` contains the expert setting `publish_state0` to enable or disable continuous State 0 output and `publish_rate_hz` for the regular GPS-State publish interval.
+
+### Update behavior
+
+- A message on `gps_state/state0/set/renew/json` is event-driven and answered immediately; it is not delayed until the next regular publish interval. Time-dependent values such as pose age, GPS age, grace time and timeout are recalculated at request time.
+- The targeted renew request republishes no State 1 to State 4 payloads and does not request an additional measurement from the F9P. It only evaluates the latest ROS inputs.
+- With `publish_state0=false` (default), State 0 is available on demand through the targeted renew topic and through retained broker values.
+- With `publish_state0=true`, State 0 is also included in regular GPS-State publishing. `publish_rate_hz` defaults to `1.0 Hz` and accepts `0.1` to `5.0 Hz`, corresponding to intervals from 10 seconds to 0.2 seconds. Session changes use `gps_state/settings/set/session/json`; persistent changes use `gps_state/settings/set/persistent/json`.
+- Receiver fix-status changes can additionally trigger event-driven GPS-State republishes. Therefore `publish_rate_hz` controls the regular satellite-driven path but is not a strict upper limit for every event-triggered update.
 
 ### Status values
 

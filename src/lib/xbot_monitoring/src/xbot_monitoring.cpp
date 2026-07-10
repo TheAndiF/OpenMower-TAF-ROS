@@ -88,6 +88,7 @@ void publish_gps_state_settings();
 void publish_gps_state_validation(const json &validation);
 void handle_gps_state_set_payload(const std::string &payload_text, bool persistent);
 void publish_latest_gps_state_payloads(bool force = false);
+void publish_gps_state0_snapshot();
 void handle_gps_restart_set_payload(const std::string &payload_text);
 void publish_gps_restart_validation(const json &validation);
 void publish_gps_restart_status();
@@ -328,6 +329,7 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "sensors/settings/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "sensors/settings/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/state0/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/persistent/json", 0);
@@ -487,6 +489,8 @@ public:
             publish_sensor_metadata();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensors/settings/set/persistent/json") {
             handle_sensor_infos_persistent_payload(ptr->get_payload_str());
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/state0/set/renew/json") {
+            publish_gps_state0_snapshot();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/renew/json") {
             publish_gps_state_settings();
             publish_latest_gps_state_payloads(true);
@@ -2110,6 +2114,20 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
     };
     apply_gps_drive_status_to_payloads(payloads, drive_status);
     return payloads;
+}
+
+void publish_gps_state0_snapshot() {
+    const ros::Time now = ros::Time::now();
+
+    // A targeted State 0 request must not depend on a previously received
+    // satellite array. Rebuild the time-dependent diagnostic status directly
+    // from the latest GPS, fix-status, positioning and pose inputs.
+    try_publish("gps_state/state0/definition", build_gps_state0_definition_payload().dump(), true);
+
+    const json drive_status = build_gps_drive_status_payload(now);
+    if (drive_status.contains("state0_status") && drive_status["state0_status"].is_object()) {
+        try_publish("gps_state/state0/status", drive_status["state0_status"].dump(), true);
+    }
 }
 
 void publish_latest_gps_state_payloads(bool force) {
