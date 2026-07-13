@@ -1,0 +1,323 @@
+--- a/src/lib/xbot_driver_gps/src/driver_gps_node.cpp
++++ b/src/lib/xbot_driver_gps/src/driver_gps_node.cpp
+@@ -28,6 +28,8 @@
+ #include <cctype>
+ #include <iomanip>
+ #include <sstream>
++#include <mutex>
++#include <atomic>
+ 
+ using namespace xbot::driver::gps;
+ using namespace nmea;
+@@ -56,6 +58,24 @@
+ ros::Time last_vrs_feedback(0.0);
+ nmea_msgs::Sentence vrs_msg;
+ 
++struct RestartRecoveryState {
++    bool active = false;
++    bool nav_pvt_received = false;
++    bool nav_sat_received = false;
++    std::string mode;
++    std::string reset_mode;
++    uint16_t nav_bbr_mask = 0;
++    uint8_t reset_mode_value = 0;
++    uint64_t sequence = 0;
++    ros::Time requested_at;
++    ros::Time command_sent_at;
++};
++
++std::mutex restart_recovery_mutex;
++RestartRecoveryState restart_recovery;
++const double RESTART_RECOVERY_TIMEOUT_S = 15.0;
++
++
+ void generate_nmea(double lat_in, double lon_in) {
+     // only send every 10 seconds, this will be more than needed
+     if ((ros::Time::now() - last_vrs_feedback).toSec() < 10.0) {
+@@ -179,7 +199,11 @@
+                             const std::string &reset_mode,
+                             uint16_t nav_bbr_mask,
+                             uint8_t reset_mode_value,
+-                            const std::string &reason = std::string()) {
++                            const std::string &reason = std::string(),
++                            uint64_t restart_sequence = 0,
++                            const ros::Time &requested_at = ros::Time(0),
++                            bool nav_pvt_received = false,
++                            bool nav_sat_received = false) {
+     std_msgs::String msg;
+     std::ostringstream payload;
+     payload << "{"
+@@ -190,7 +214,17 @@
+             << "\"reset_mode\":\"" << json_escape(reset_mode) << "\","
+             << "\"nav_bbr_mask\":" << static_cast<unsigned int>(nav_bbr_mask) << ","
+             << "\"reset_mode_value\":" << static_cast<unsigned int>(reset_mode_value) << ","
+-            << "\"stamp\":" << std::fixed << std::setprecision(3) << ros::Time::now().toSec();
++            << "\"stamp\":" << std::fixed << std::setprecision(3) << ros::Time::now().toSec() << ","
++            << "\"restart_sequence\":" << restart_sequence << ","
++            << "\"requested_at\":" << std::fixed << std::setprecision(3)
++            << (requested_at.isZero() ? 0.0 : requested_at.toSec()) << ","
++            << "\"nav_pvt_received\":" << (nav_pvt_received ? "true" : "false") << ","
++            << "\"nav_sat_received\":" << (nav_sat_received ? "true" : "false") << ","
++            << "\"receiver_restart_confirmed\":"
++            << ((nav_pvt_received && nav_sat_received) ? "true" : "false");
++    if (status == "success" || status == "failed") {
++        payload << ",\"completed_at\":" << std::fixed << std::setprecision(3) << ros::Time::now().toSec();
++    }
+     if (!reason.empty()) {
+         payload << ",\"reason\":\"" << json_escape(reason) << "\"";
+     }
+@@ -267,15 +301,50 @@
+         return;
+     }
+ 
++    uint64_t sequence = 0;
++    ros::Time requested_at = ros::Time::now();
++    {
++        std::lock_guard<std::mutex> lk(restart_recovery_mutex);
++        if (restart_recovery.active) {
++            publish_restart_status(false, "rejected", mode, reset_mode, nav_bbr_mask, reset_mode_value,
++                                   "restart_already_in_progress", restart_recovery.sequence,
++                                   restart_recovery.requested_at, restart_recovery.nav_pvt_received,
++                                   restart_recovery.nav_sat_received);
++            return;
++        }
++        restart_recovery = RestartRecoveryState{};
++        restart_recovery.active = true;
++        restart_recovery.mode = mode;
++        restart_recovery.reset_mode = reset_mode;
++        restart_recovery.nav_bbr_mask = nav_bbr_mask;
++        restart_recovery.reset_mode_value = reset_mode_value;
++        restart_recovery.sequence++;
++        static uint64_t global_restart_sequence = 0;
++        restart_recovery.sequence = ++global_restart_sequence;
++        restart_recovery.requested_at = requested_at;
++        sequence = restart_recovery.sequence;
++    }
++
++    publish_restart_status(true, "resetting", mode, reset_mode, nav_bbr_mask, reset_mode_value,
++                           "preparing_receiver_restart", sequence, requested_at, false, false);
++    ubx->begin_restart_recovery();
+     const bool sent = ubx->send_cfg_rst(nav_bbr_mask, reset_mode_value);
+     if (sent) {
+-        publish_restart_status(true, "sent", mode, reset_mode, nav_bbr_mask, reset_mode_value,
+-                               "ubx_cfg_rst_sent_no_ack_expected");
++        {
++            std::lock_guard<std::mutex> lk(restart_recovery_mutex);
++            restart_recovery.command_sent_at = ros::Time::now();
++        }
++        publish_restart_status(true, "waiting_for_receiver", mode, reset_mode, nav_bbr_mask, reset_mode_value,
++                               "ubx_cfg_rst_sent_no_ack_expected", sequence, requested_at, false, false);
+         ROS_WARN_STREAM("Sent UBX-CFG-RST F9P restart request: mode=" << mode
+-                        << ", reset_mode=" << reset_mode);
++                        << ", reset_mode=" << reset_mode << ", sequence=" << sequence);
+     } else {
+-        publish_restart_status(false, "send_failed", mode, reset_mode, nav_bbr_mask, reset_mode_value,
+-                               "gps_device_write_failed");
++        {
++            std::lock_guard<std::mutex> lk(restart_recovery_mutex);
++            restart_recovery.active = false;
++        }
++        publish_restart_status(false, "failed", mode, reset_mode, nav_bbr_mask, reset_mode_value,
++                               "gps_device_write_failed", sequence, requested_at, false, false);
+         ROS_WARN_STREAM("Failed to write UBX-CFG-RST F9P restart request to GPS device.");
+     }
+ }
+@@ -316,7 +385,63 @@
+     return "no_fix";
+ }
+ 
++void update_restart_recovery(bool nav_pvt, bool nav_sat) {
++    RestartRecoveryState snapshot;
++    bool publish_progress = false;
++    bool publish_success = false;
++    {
++        std::lock_guard<std::mutex> lk(restart_recovery_mutex);
++        if (!restart_recovery.active || restart_recovery.command_sent_at.isZero()) return;
++        if (nav_pvt && !restart_recovery.nav_pvt_received) {
++            restart_recovery.nav_pvt_received = true;
++            publish_progress = true;
++        }
++        if (nav_sat && !restart_recovery.nav_sat_received) {
++            restart_recovery.nav_sat_received = true;
++            publish_progress = true;
++        }
++        if (restart_recovery.nav_pvt_received && restart_recovery.nav_sat_received) {
++            restart_recovery.active = false;
++            publish_success = true;
++        }
++        snapshot = restart_recovery;
++    }
++    if (publish_success) {
++        publish_restart_status(true, "success", snapshot.mode, snapshot.reset_mode, snapshot.nav_bbr_mask,
++                               snapshot.reset_mode_value, "receiver_outputs_restored", snapshot.sequence,
++                               snapshot.requested_at, true, true);
++        ROS_INFO_STREAM("F9P restart recovery completed, sequence=" << snapshot.sequence);
++    } else if (publish_progress) {
++        publish_restart_status(true, "validating", snapshot.mode, snapshot.reset_mode, snapshot.nav_bbr_mask,
++                               snapshot.reset_mode_value, "waiting_for_required_receiver_outputs", snapshot.sequence,
++                               snapshot.requested_at, snapshot.nav_pvt_received, snapshot.nav_sat_received);
++    }
++}
++
++void restart_recovery_timer(const ros::TimerEvent &) {
++    RestartRecoveryState snapshot;
++    bool timed_out = false;
++    {
++        std::lock_guard<std::mutex> lk(restart_recovery_mutex);
++        if (!restart_recovery.active || restart_recovery.requested_at.isZero()) return;
++        if ((ros::Time::now() - restart_recovery.requested_at).toSec() > RESTART_RECOVERY_TIMEOUT_S) {
++            restart_recovery.active = false;
++            snapshot = restart_recovery;
++            timed_out = true;
++        }
++    }
++    if (timed_out) {
++        std::string reason = !snapshot.nav_pvt_received ? "nav_pvt_not_received_after_reset"
++                                                       : "nav_sat_not_received_after_reset";
++        publish_restart_status(false, "failed", snapshot.mode, snapshot.reset_mode, snapshot.nav_bbr_mask,
++                               snapshot.reset_mode_value, reason, snapshot.sequence, snapshot.requested_at,
++                               snapshot.nav_pvt_received, snapshot.nav_sat_received);
++        ROS_ERROR_STREAM("F9P restart recovery failed: " << reason << ", sequence=" << snapshot.sequence);
++    }
++}
++
+ void gps_fix_status_received(const GpsInterface::FixStatus &status) {
++    update_restart_recovery(true, false);
+     std_msgs::String msg;
+     std::ostringstream payload;
+     payload << "{"
+@@ -425,6 +550,7 @@
+ }
+ 
+ void satellite_state_received(const GpsInterface::SatelliteState &state) {
++    update_restart_recovery(false, true);
+     xbot_msgs::GnssSatelliteArray msg;
+     msg.header.stamp = ros::Time::now();
+     msg.header.frame_id = "gps";
+@@ -592,6 +718,7 @@
+     fix_status_pub = paramNh.advertise<std_msgs::String>("fix_status", 10, true);
+     ros::Subscriber restart_request_sub = paramNh.subscribe("restart_request", 10, gps_restart_request_received,
+                                                            ros::TransportHints().tcpNoDelay(true));
++    ros::Timer restart_recovery_watchdog = n.createTimer(ros::Duration(0.5), restart_recovery_timer);
+ 
+     gpsInterface->set_state_callback(gps_state_received);
+     gpsInterface->set_fix_status_callback(gps_fix_status_received);
+--- a/src/lib/xbot_driver_gps/src/interfaces/ublox_gps_interface.cpp
++++ b/src/lib/xbot_driver_gps/src/interfaces/ublox_gps_interface.cpp
+@@ -28,6 +28,15 @@
+                 return send_raw(frame, size);
+             }
+ 
++            void UbxGpsInterface::begin_restart_recovery() {
++                // UBX-CFG-RST can remove the volatile CFG-MSG setting. Force the same
++                // NAV-SAT configuration handshake that is used after a normal connection.
++                nav_sat_config_sent_ = false;
++                gps_state_valid_ = false;
++                satellite_state_ = SatelliteState{};
++                log("prepared UBX receiver reconfiguration after restart", INFO);
++            }
++
+             bool UbxGpsInterface::send_cfg_rst(uint16_t nav_bbr_mask, uint8_t reset_mode) {
+                 uint8_t frame[12] = {0};
+                 frame[2] = 0x06;  // UBX-CFG
+--- a/src/lib/xbot_driver_gps/src/interfaces/ublox_gps_interface.h
++++ b/src/lib/xbot_driver_gps/src/interfaces/ublox_gps_interface.h
+@@ -41,6 +41,9 @@
+                  */
+                 bool send_cfg_rst(uint16_t nav_bbr_mask, uint8_t reset_mode);
+ 
++                /** Prepare the running driver for receiver output reconfiguration after UBX-CFG-RST. */
++                void begin_restart_recovery();
++
+             private:
+ 
+ 
+--- a/src/lib/xbot_driver_gps/README.md
++++ b/src/lib/xbot_driver_gps/README.md
+@@ -82,3 +82,9 @@
+ - `hardware_watchdog` -> `resetMode=0x00`
+ 
+ The driver sends UBX-CFG-RST directly through the existing UBX device path. It does not wait for an ACK because the receiver can reset before an acknowledgement is returned.
++
++## Restart recovery and retained audit status
++
++After UBX-CFG-RST the driver invalidates its runtime receiver state and re-applies the volatile UBX-NAV-SAT output configuration as soon as the receiver sends data again. A restart is only reported as successful after both a new UBX-NAV-PVT and a new UBX-NAV-SAT message have been received. The recovery watchdog reports a failure after 15 seconds if either output is missing.
++
++The latched ROS restart status contains `restart_sequence`, `requested_at`, `completed_at`, `nav_pvt_received`, `nav_sat_received`, and `receiver_restart_confirmed`. xbot_monitoring forwards the live status retained to `gps_state/restart/status/json` and stores the last completed restart retained at `gps_state/restart/last/json`.
+--- a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
++++ b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+@@ -301,6 +301,12 @@
+         publish_gps_state_definitions();
+         publish_latest_gps_state_payloads(true);
+         publish_gps_restart_status();
++        {
++            std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
++            if (last_completed_gps_restart_available) {
++                try_publish("gps_state/restart/last/json", last_completed_gps_restart.dump(), true);
++            }
++        }
+ 
+         // BEGIN: Deprecated code (1/2)
+         // Earlier implementations subscribed to "/action" and "prefix//action" topics, we do it to not break stuff as well.
+@@ -743,6 +749,8 @@
+ std::mutex gps_restart_status_mutex;
+ json latest_gps_restart_status = json::object();
+ bool latest_gps_restart_status_available = false;
++json last_completed_gps_restart = json::object();
++bool last_completed_gps_restart_available = false;
+ 
+ 
+ 
+@@ -988,6 +996,10 @@
+         "F9P Neustart Status",
+         "Retained Status des zuletzt angeforderten oder vom GPS-Treiber gemeldeten F9P-Neustarts.",
+         220, "gps_state/restart/status/json", true, "restart");
++    root["settings"]["f9p_restart_last"] = gps_state_descriptor_entry(
++        "Letzter abgeschlossener F9P Neustart",
++        "Retained Datensatz des letzten erfolgreich oder fehlerhaft abgeschlossenen Neustarts mit Zeitstempeln.",
++        230, "gps_state/restart/last/json", true, "restart");
+     root["settings"]["publish_state0"] = gps_state_setting_entry(
+         "State 0 Diagnose veröffentlichen",
+         "Veröffentlicht die schaltbare 12-Stufen-Fahrfaehigkeitsdiagnose auf gps_state/state0/definition und gps_state/state0/status. Die statische Definition wird retained gesendet, die Live-Werte folgen der Publish-Rate.",
+@@ -1265,12 +1277,24 @@
+         status = default_gps_restart_status_payload();
+     }
+     status["mqtt_topic"] = "gps_state/restart/status/json";
++    bool completed = false;
+     {
+         std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
+         latest_gps_restart_status = status;
+         latest_gps_restart_status_available = true;
++        const std::string state = status.value("status", std::string());
++        completed = state == "success" || state == "failed";
++        if (completed) {
++            last_completed_gps_restart = status;
++            last_completed_gps_restart["mqtt_topic"] = "gps_state/restart/last/json";
++            last_completed_gps_restart_available = true;
++        }
+     }
+     try_publish("gps_state/restart/status/json", status.dump(), true);
++    if (completed) {
++        std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
++        try_publish("gps_state/restart/last/json", last_completed_gps_restart.dump(), true);
++    }
+ }
+ 
+ void publish_gps_restart_status() {
+@@ -2414,8 +2438,15 @@
+     root["published_at"] = published_at;
+     root["source_at"] = source_at;
+     root["age_ms"] = age_ms;
++    const bool stale = age_ms > static_cast<long long>(GPS_STATE_STALE_AFTER_S * 1000.0);
++    if (stale && state >= 2 && state <= 4) {
++        available = false;
++        status = "stale";
++        severity = std::max(severity, 1);
++        summary = "Keine aktuellen Satellitendaten seit " + std::to_string(age_ms / 1000) + " s";
++    }
+     root["available"] = available;
+-    root["stale"] = age_ms > static_cast<long long>(GPS_STATE_STALE_AFTER_S * 1000.0);
++    root["stale"] = stale;
+     root["status"] = status;
+     root["severity"] = severity;
+     root["summary"] = summary;

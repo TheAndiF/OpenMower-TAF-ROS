@@ -1,0 +1,17 @@
+BL_Add verified F9P restart recovery and retained timestamps
+Date: 2026-07-13
+Summary:
+- Re-applied volatile UBX-NAV-SAT output configuration after UBX-CFG-RST.
+- Added restart recovery validation using fresh NAV-PVT and NAV-SAT messages.
+- Added timeout and explicit success or failure restart states.
+- Added retained restart timestamps and last completed restart MQTT payload.
+- Marked stale GPS satellite states as unavailable warnings.
+- Kept the existing project root folder name unchanged.
+Changed files:
+- src/lib/xbot_driver_gps/src/driver_gps_node.cpp
+- src/lib/xbot_driver_gps/src/interfaces/ublox_gps_interface.cpp
+- src/lib/xbot_driver_gps/src/interfaces/ublox_gps_interface.h
+- src/lib/xbot_driver_gps/README.md
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - F9P Reset Recovery und Restart-Zeitstempel - v0.1.docx
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - F9P Reset Recovery und Restart-Zeitstempel - v0.1.pdf

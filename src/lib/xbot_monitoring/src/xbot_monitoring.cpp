@@ -301,6 +301,12 @@ class MqttCallback : public mqtt::callback {
         publish_gps_state_definitions();
         publish_latest_gps_state_payloads(true);
         publish_gps_restart_status();
+        {
+            std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
+            if (last_completed_gps_restart_available) {
+                try_publish("gps_state/restart/last/json", last_completed_gps_restart.dump(), true);
+            }
+        }
 
         // BEGIN: Deprecated code (1/2)
         // Earlier implementations subscribed to "/action" and "prefix//action" topics, we do it to not break stuff as well.
@@ -743,6 +749,8 @@ ros::Time latest_xbot_positioning_gps_debug_received_at;
 std::mutex gps_restart_status_mutex;
 json latest_gps_restart_status = json::object();
 bool latest_gps_restart_status_available = false;
+json last_completed_gps_restart = json::object();
+bool last_completed_gps_restart_available = false;
 
 
 
@@ -988,6 +996,10 @@ static json build_gps_state_settings_payload() {
         "F9P Neustart Status",
         "Retained Status des zuletzt angeforderten oder vom GPS-Treiber gemeldeten F9P-Neustarts.",
         220, "gps_state/restart/status/json", true, "restart");
+    root["settings"]["f9p_restart_last"] = gps_state_descriptor_entry(
+        "Letzter abgeschlossener F9P Neustart",
+        "Retained Datensatz des letzten erfolgreich oder fehlerhaft abgeschlossenen Neustarts mit Zeitstempeln.",
+        230, "gps_state/restart/last/json", true, "restart");
     root["settings"]["publish_state0"] = gps_state_setting_entry(
         "State 0 Diagnose veröffentlichen",
         "Veröffentlicht die schaltbare 12-Stufen-Fahrfaehigkeitsdiagnose auf gps_state/state0/definition und gps_state/state0/status. Die statische Definition wird retained gesendet, die Live-Werte folgen der Publish-Rate.",
@@ -1265,12 +1277,24 @@ static void store_and_publish_gps_restart_status(json status) {
         status = default_gps_restart_status_payload();
     }
     status["mqtt_topic"] = "gps_state/restart/status/json";
+    bool completed = false;
     {
         std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
         latest_gps_restart_status = status;
         latest_gps_restart_status_available = true;
+        const std::string state = status.value("status", std::string());
+        completed = state == "success" || state == "failed";
+        if (completed) {
+            last_completed_gps_restart = status;
+            last_completed_gps_restart["mqtt_topic"] = "gps_state/restart/last/json";
+            last_completed_gps_restart_available = true;
+        }
     }
     try_publish("gps_state/restart/status/json", status.dump(), true);
+    if (completed) {
+        std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
+        try_publish("gps_state/restart/last/json", last_completed_gps_restart.dump(), true);
+    }
 }
 
 void publish_gps_restart_status() {
@@ -2414,8 +2438,15 @@ static json gps_state_standard_status_payload(int state, const json &source, con
     root["published_at"] = published_at;
     root["source_at"] = source_at;
     root["age_ms"] = age_ms;
+    const bool stale = age_ms > static_cast<long long>(GPS_STATE_STALE_AFTER_S * 1000.0);
+    if (stale && state >= 2 && state <= 4) {
+        available = false;
+        status = "stale";
+        severity = std::max(severity, 1);
+        summary = "Keine aktuellen Satellitendaten seit " + std::to_string(age_ms / 1000) + " s";
+    }
     root["available"] = available;
-    root["stale"] = age_ms > static_cast<long long>(GPS_STATE_STALE_AFTER_S * 1000.0);
+    root["stale"] = stale;
     root["status"] = status;
     root["severity"] = severity;
     root["summary"] = summary;
