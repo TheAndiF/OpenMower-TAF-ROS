@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <csignal>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -88,6 +89,8 @@ void publish_gps_state_settings();
 void publish_gps_state_validation(const json &validation);
 void handle_gps_state_set_payload(const std::string &payload_text, bool persistent);
 void publish_latest_gps_state_payloads(bool force = false);
+void publish_gps_state_definitions();
+void handle_gps_state_renew_payload(const std::string &payload_text);
 void publish_gps_state0_snapshot();
 void handle_gps_restart_set_payload(const std::string &payload_text);
 void publish_gps_restart_validation(const json &validation);
@@ -295,6 +298,7 @@ class MqttCallback : public mqtt::callback {
         publish_version();
         publish_params();
         publish_gps_state_settings();
+        publish_gps_state_definitions();
         publish_latest_gps_state_payloads(true);
         publish_gps_restart_status();
 
@@ -329,6 +333,8 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "sensors/settings/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "sensors/settings/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/set/renew/json", 0);
+        // Deprecated compatibility alias. New clients use gps_state/set/renew/json.
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/state0/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/session/json", 0);
@@ -489,10 +495,14 @@ public:
             publish_sensor_metadata();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "sensors/settings/set/persistent/json") {
             handle_sensor_infos_persistent_payload(ptr->get_payload_str());
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/set/renew/json") {
+            handle_gps_state_renew_payload(ptr->get_payload_str());
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/state0/set/renew/json") {
+            ROS_WARN_STREAM("Deprecated GPS-State renew topic used; switch to gps_state/set/renew/json");
             publish_gps_state0_snapshot();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/renew/json") {
             publish_gps_state_settings();
+            publish_gps_state_definitions();
             publish_latest_gps_state_payloads(true);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/session/json") {
             handle_gps_state_set_payload(ptr->get_payload_str(), false);
@@ -690,7 +700,9 @@ constexpr const char *SENSOR_INFOS_NAMESPACE = "sensors";
 constexpr const char *SENSOR_INFOS_SCHEMA = "settings_v2";
 constexpr const char *GPS_STATE_NAMESPACE = "gps_state";
 constexpr const char *GPS_STATE_SCHEMA = "settings_v2";
-constexpr const char *GPS_STATE_PAYLOAD_SCHEMA = "gps_state.v2";
+constexpr const char *GPS_STATE_PAYLOAD_SCHEMA = "gps_state.v3";
+constexpr int GPS_STATE_DEFINITION_VERSION = 3;
+constexpr double GPS_STATE_STALE_AFTER_S = 3.0;
 
 struct GpsStateSettings {
     bool enabled = true;
@@ -877,6 +889,7 @@ static json build_gps_state_settings_payload() {
     root["groups"] = {
         {"general", {{"label", "Allgemein"}, {"order", 10}}},
         {"states", {{"label", "GPS States"}, {"order", 20}}},
+        {"refresh", {{"label", "Aktualisierung"}, {"order", 25}}},
         {"restart", {{"label", "F9P Neustart"}, {"order", 30}}},
         {"debug", {{"label", "Debug"}, {"order", 90}}}
     };
@@ -897,22 +910,64 @@ static json build_gps_state_settings_payload() {
         "GPS State 0 Status",
         "Live-Werte der 12 Entscheidungsknoten fuer die sofortige Beurteilung der Fahrfaehigkeit. Enthält Status, aktuellen Wert, Grenzwert, Abweichung und blockierende Stufe.",
         2, "gps_state/state0/status", true);
-    root["settings"]["state1"] = gps_state_descriptor_entry(
-        "GPS State 1",
-        "Kompakter Bedienerstatus. Beantwortet nur, ob GPS aktuell fuer die OpenMower-Fahrt ausreicht. Enthält keine Satellitenstatistik, keine Satellitenliste und keinen State-0-Detailblock.",
-        10, "gps_state/state1", false);
-    root["settings"]["state2"] = gps_state_descriptor_entry(
-        "GPS State 2",
-        "Technische GNSS- und Pose-Zusammenfassung ohne Satellitenliste. Enthält aggregierte Signalwerte, Systemverteilung und technische Diagnosefelder aus /ll/position/gps und /xbot_positioning/xb_pose.",
-        20, "gps_state/state2", false);
-    root["settings"]["state3"] = gps_state_descriptor_entry(
-        "GPS State 3",
-        "Liste der Satelliten, die aktuell aktiv fuer den Positionsfix verwendet werden. Enthält keine Fahrfreigabe, keine GNSS-Gesamtstatistik und keine nicht verwendeten Satelliten.",
-        30, "gps_state/state3", false);
-    root["settings"]["state4"] = gps_state_descriptor_entry(
-        "GPS State 4",
-        "Vollständige Satelliten-Diagnose mit allen sichtbaren Satelliten, auch wenn sie nicht für den Positionsfix verwendet werden. Enthält used=true/false, GNSS-System, SV-ID, C/N0, Elevation, Azimut, Residual und Qualität. Gedacht für Experten- und Debuganalyse.",
-        40, "gps_state/state4", true);
+    root["settings"]["state1_definition"] = gps_state_descriptor_entry(
+        "GPS State 1 Definition",
+        "Statische Felddefinition des kompakten Bedienerstatus.",
+        10, "gps_state/state1/definition", false);
+    root["settings"]["state1_status"] = gps_state_descriptor_entry(
+        "GPS State 1 Status",
+        "Dynamischer Bedienerstatus zur GPS-Fahrfreigabe.",
+        11, "gps_state/state1/status", false);
+    root["settings"]["state2_definition"] = gps_state_descriptor_entry(
+        "GPS State 2 Definition",
+        "Statische Felddefinition der technischen GNSS- und Pose-Zusammenfassung.",
+        20, "gps_state/state2/definition", false);
+    root["settings"]["state2_status"] = gps_state_descriptor_entry(
+        "GPS State 2 Status",
+        "Dynamische technische GNSS- und Pose-Zusammenfassung ohne Satellitenliste.",
+        21, "gps_state/state2/status", false);
+    root["settings"]["state3_definition"] = gps_state_descriptor_entry(
+        "GPS State 3 Definition",
+        "Statische Felddefinition der Liste aktuell verwendeter Satelliten.",
+        30, "gps_state/state3/definition", false);
+    root["settings"]["state3_status"] = gps_state_descriptor_entry(
+        "GPS State 3 Status",
+        "Dynamische Liste der aktuell verwendeten Satelliten.",
+        31, "gps_state/state3/status", false);
+    root["settings"]["state4_definition"] = gps_state_descriptor_entry(
+        "GPS State 4 Definition",
+        "Statische Felddefinition der vollständigen Experten-Satellitenliste.",
+        40, "gps_state/state4/definition", true);
+    root["settings"]["state4_status"] = gps_state_descriptor_entry(
+        "GPS State 4 Status",
+        "Dynamische vollständige Satelliten-Diagnose mit allen sichtbaren Satelliten.",
+        41, "gps_state/state4/status", true);
+    root["settings"]["renew"] = gps_state_descriptor_entry(
+        "GPS States aktualisieren",
+        "Zentrale Aktualisierung. Leerer Inhalt oder {} aktualisiert Definition und Status aller aktivierten States. Optional koennen states und parts angegeben werden.",
+        1, "gps_state/set/renew/json", false, "refresh");
+    root["settings"]["renew"]["readonly"] = false;
+    root["settings"]["renew"]["type"] = "json_command";
+    json renew_schema = json::object();
+    renew_schema["type"] = "object";
+    renew_schema["properties"] = json::object();
+    renew_schema["properties"]["states"] = {
+        {"type", "array"},
+        {"items", {{"oneOf", json::array({
+            json{{"type", "integer"}, {"minimum", 0}, {"maximum", 4}},
+            json{{"type", "string"}}
+        })}}}
+    };
+    renew_schema["properties"]["parts"] = {
+        {"type", "array"},
+        {"items", {{"type", "string"}, {"enum", json::array({"definition", "status"})}}}
+    };
+    renew_schema["examples"] = json::array({
+        json::object(),
+        json{{"states", json::array({0, 2})}, {"parts", json::array({"status"})}},
+        json{{"states", json::array({0, 1, 2, 3, 4})}, {"parts", json::array({"definition"})}}
+    });
+    root["settings"]["renew"]["payload_schema"] = renew_schema;
     root["settings"]["f9p_restart"] = gps_state_command_entry(
         "F9P Neustart auslösen",
         "Sendet eine UBX-CFG-RST-Neustartanforderung an den u-blox/ZED-F9P. Unterstützt hot_start, warm_start und cold_start. Standard ist reset_mode=controlled_software; Experten können gnss_only oder hardware_watchdog angeben.",
@@ -939,19 +994,19 @@ static json build_gps_state_settings_payload() {
         "debug", 5, "bool", cfg.publish_state0, nullptr, nullptr, "", true);
     root["settings"]["publish_state1"] = gps_state_setting_entry(
         "State 1 veröffentlichen",
-        "Veröffentlicht den kompakten GPS-State auf gps_state/state1.",
+        "Veröffentlicht den kompakten GPS-State auf gps_state/state1/status.",
         "states", 110, "bool", cfg.publish_state1);
     root["settings"]["publish_state2"] = gps_state_setting_entry(
         "State 2 veröffentlichen",
-        "Veröffentlicht die erweiterte GPS-Zusammenfassung auf gps_state/state2.",
+        "Veröffentlicht die erweiterte GPS-Zusammenfassung auf gps_state/state2/status.",
         "states", 120, "bool", cfg.publish_state2);
     root["settings"]["publish_state3"] = gps_state_setting_entry(
         "State 3 veröffentlichen",
-        "Veröffentlicht die Liste der aktuell verwendeten Satelliten auf gps_state/state3.",
+        "Veröffentlicht die Liste der aktuell verwendeten Satelliten auf gps_state/state3/status.",
         "states", 130, "bool", cfg.publish_state3);
     root["settings"]["publish_state4"] = gps_state_setting_entry(
         "State 4 veröffentlichen",
-        "Veröffentlicht die vollständige Satellitenliste auf gps_state/state4. Diese Ausgabe kann deutlich größer sein und ist primär für Debug- und Expertenansichten gedacht.",
+        "Veröffentlicht die vollständige Satellitenliste auf gps_state/state4/status. Diese Ausgabe kann deutlich größer sein und ist primär für Debug- und Expertenansichten gedacht.",
         "debug", 10, "bool", cfg.publish_state4, nullptr, nullptr, "", true);
     root["settings"]["weak_cn0_threshold"] = gps_state_setting_entry(
         "Schwach-Schwelle C/N0",
@@ -1107,6 +1162,7 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
     validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
     publish_gps_state_validation(validation);
     publish_gps_state_settings();
+    publish_gps_state_definitions();
     publish_latest_gps_state_payloads(true);
 }
 
@@ -1470,9 +1526,19 @@ static json build_gps_state0_definition_payload() {
     root["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
     root["state"] = "state0";
     root["type"] = "definition";
-    root["definition_version"] = 2;
+    root["definition_version"] = GPS_STATE_DEFINITION_VERSION;
     root["name"] = "gps_drive_diagnostics";
+    root["label"] = "GPS-Fahrdiagnose";
     root["description"] = "Statische 12-Stufen-Definition der GPS-Fahrfaehigkeitsdiagnose. Die Live-Werte stehen in gps_state/state0/status.";
+    root["role"] = "expert";
+    root["order"] = 0;
+    root["status_retained"] = true;
+    root["update_mode"] = "periodic_and_event";
+    root["fields"] = {
+        {"drive_ready", {{"label", "Fahrfreigabe"}, {"description", "Gesamtergebnis der GPS-Fahrfaehigkeitspruefung."}, {"type", "bool"}, {"order", 10}, {"expert", false}}},
+        {"drive_state", {{"label", "Fahrzustand"}, {"description", "ready, blocked oder stop."}, {"type", "string"}, {"order", 20}, {"expert", false}}},
+        {"checks", {{"label", "Pruefstufen"}, {"description", "Live-Ergebnisse der 12 Entscheidungsknoten."}, {"type", "object"}, {"order", 30}, {"expert", true}}}
+    };
     root["checks"] = json::object();
     root["checks"]["01_gps_enabled"] = gps_state0_definition_entry(
         1, "gps_enabled", "GPS-Verarbeitung aktiv?",
@@ -1538,6 +1604,143 @@ static json build_gps_state0_definition_payload() {
         "gps_state/state0/status.drive_ready", "==", true, "", nullptr, "",
         "Roboter darf GPS-abhaengig nicht fahren", "wenn alle vorherigen Stufen erfuellt sind");
     return root;
+}
+
+
+static json gps_state_field_definition(const std::string &label,
+                                       const std::string &description,
+                                       const std::string &type,
+                                       int order,
+                                       const std::string &unit = "",
+                                       bool expert = false) {
+    json field = {
+        {"label", label},
+        {"description", description},
+        {"type", type},
+        {"order", order},
+        {"expert", expert}
+    };
+    if (!unit.empty()) field["unit"] = unit;
+    return field;
+}
+
+static json gps_state_definition_base(int state,
+                                      const std::string &name,
+                                      const std::string &label,
+                                      const std::string &description,
+                                      const std::string &role,
+                                      int order,
+                                      bool status_retained) {
+    return {
+        {"schema", GPS_STATE_PAYLOAD_SCHEMA},
+        {"state", "state" + std::to_string(state)},
+        {"type", "definition"},
+        {"definition_version", GPS_STATE_DEFINITION_VERSION},
+        {"name", name},
+        {"label", label},
+        {"description", description},
+        {"role", role},
+        {"order", order},
+        {"status_retained", status_retained},
+        {"update_mode", state >= 3 ? "sensor_event" : "periodic_and_event"},
+        {"fields", json::object()}
+    };
+}
+
+static json build_gps_state1_definition_payload() {
+    json root = gps_state_definition_base(
+        1, "gps_operator_status", "GPS-Fahrstatus",
+        "Kompakter Bedienerstatus zur GPS-seitigen Fahrfreigabe.",
+        "operator", 10, true);
+    json &fields = root["fields"];
+    fields["quality_class"] = gps_state_field_definition("Qualitaetsklasse", "Kompakte Einordnung der GPS-Qualitaet.", "string", 10);
+    fields["gps_drive_ready"] = gps_state_field_definition("GPS ausreichend", "Gibt an, ob GPS-seitig gefahren werden darf.", "bool", 20);
+    fields["gps_drive_state"] = gps_state_field_definition("Fahrzustand", "ready, blocked oder stop.", "string", 30);
+    fields["gps_drive_label"] = gps_state_field_definition("Kurzstatus", "Direkt anzeigbarer Fahrstatus.", "string", 40);
+    fields["gps_drive_reason"] = gps_state_field_definition("Begruendung", "Direkt anzeigbare Begruendung des Zustands.", "string", 50);
+    fields["gps_drive_block_reason"] = gps_state_field_definition("Blockiergrund", "Technischer Schluessel des Blockiergrunds.", "string_or_null", 60, "", true);
+    fields["rtk_state"] = gps_state_field_definition("RTK-Zustand", "Aktueller GNSS-/RTK-Loesungszustand.", "string", 70);
+    fields["position_accuracy_m"] = gps_state_field_definition("Positionsgenauigkeit", "Genauigkeit der aktuellen Roboterpose.", "double_or_null", 80, "m");
+    fields["max_position_accuracy_m"] = gps_state_field_definition("Erlaubte Genauigkeit", "Grenzwert der mower_logic-Fahrfreigabe.", "double", 90, "m");
+    fields["pose_age_ms"] = gps_state_field_definition("Pose-Alter", "Alter der zuletzt empfangenen Roboterpose.", "integer_or_null", 100, "ms");
+    return root;
+}
+
+static json build_gps_state2_definition_payload() {
+    json root = gps_state_definition_base(
+        2, "gps_technical_summary", "GPS-Technikstatus",
+        "Technische GNSS-, RTK- und Pose-Zusammenfassung ohne Satellitenliste.",
+        "technical", 20, true);
+    json &fields = root["fields"];
+    fields["available"] = gps_state_field_definition("GNSS-Daten vorhanden", "Zeigt, ob eine aktuelle Satellitenmeldung vorhanden ist.", "bool", 10);
+    fields["quality_class"] = gps_state_field_definition("Qualitaetsklasse", "Aus verwendeten Satelliten und C/N0 abgeleitete Klasse.", "string", 20);
+    fields["visible_count"] = gps_state_field_definition("Sichtbare Satelliten", "Anzahl sichtbarer Satelliten.", "integer", 30);
+    fields["used_count"] = gps_state_field_definition("Verwendete Satelliten", "Anzahl fuer den Fix verwendeter Satelliten.", "integer", 40);
+    fields["avg_cn0"] = gps_state_field_definition("C/N0 Mittelwert", "Mittleres C/N0 der verwendeten Satelliten.", "double", 50, "dB-Hz");
+    fields["min_cn0"] = gps_state_field_definition("C/N0 Minimum", "Niedrigstes C/N0 der verwendeten Satelliten.", "double", 60, "dB-Hz");
+    fields["max_cn0"] = gps_state_field_definition("C/N0 Maximum", "Hoechstes C/N0 der verwendeten Satelliten.", "double", 70, "dB-Hz");
+    fields["weak_count"] = gps_state_field_definition("Schwache Satelliten", "Anzahl unterhalb der konfigurierten Schwelle.", "integer", 80);
+    fields["good_count"] = gps_state_field_definition("Gute Satelliten", "Anzahl oberhalb der konfigurierten Schwelle.", "integer", 90);
+    fields["systems"] = gps_state_field_definition("GNSS-Systeme", "Verteilung sichtbarer und verwendeter Satelliten nach System.", "object", 100);
+    fields["rtk_state"] = gps_state_field_definition("RTK-Zustand", "Aktueller GNSS-/RTK-Loesungszustand.", "string", 110);
+    fields["ll_gps_accuracy_m"] = gps_state_field_definition("GPS-Eingangsgenauigkeit", "Vom Empfaenger gemeldete Genauigkeit.", "double_or_null", 120, "m");
+    fields["xb_pose_accuracy_m"] = gps_state_field_definition("Pose-Genauigkeit", "Genauigkeit der ausgegebenen Roboterpose.", "double_or_null", 130, "m");
+    fields["orientation_valid"] = gps_state_field_definition("Orientierung gueltig", "Gueltigkeit der Pose-Orientierung.", "bool_or_null", 140);
+    fields["recent_absolute_pose"] = gps_state_field_definition("Absolute Pose aktuell", "Kennzeichen fuer eine aktuelle absolute GPS-Pose.", "bool_or_null", 150);
+    fields["gps_timeout"] = gps_state_field_definition("GPS-Timeout", "Zeigt einen ueberschrittenen GPS-Toleranzzeitraum.", "bool", 160);
+    fields["diagnostic_summary"] = gps_state_field_definition("Diagnose", "Direkt anzeigbare technische Zusammenfassung.", "string", 170);
+    fields["drive_diagnostics"] = gps_state_field_definition("Fahrdiagnose Details", "Technische Detailwerte der Fahrfreigabe.", "object", 180, "", true);
+    return root;
+}
+
+static json build_gps_state3_definition_payload() {
+    json root = gps_state_definition_base(
+        3, "gps_used_satellites", "Verwendete Satelliten",
+        "Liste der aktuell fuer den Positionsfix verwendeten Satelliten.",
+        "technical", 30, false);
+    root["fields"]["used_count"] = gps_state_field_definition("Verwendete Satelliten", "Anzahl der Listeneintraege.", "integer", 10);
+    root["fields"]["satellites"] = gps_state_field_definition("Satelliten", "Liste mit GNSS-System, SV-ID, C/N0, Elevation, Azimut, Residual und Qualitaet.", "array", 20);
+    root["item_fields"] = {
+        {"gnss", gps_state_field_definition("GNSS-System", "Name des GNSS-Systems.", "string", 10)},
+        {"gnss_id", gps_state_field_definition("GNSS-ID", "Numerische Systemkennung.", "integer", 20)},
+        {"sv", gps_state_field_definition("SV-ID", "Satellitenkennung.", "integer", 30)},
+        {"cn0", gps_state_field_definition("C/N0", "Signal-Rausch-Verhaeltnis.", "double", 40, "dB-Hz")},
+        {"elev", gps_state_field_definition("Elevation", "Hoehenwinkel.", "double", 50, "deg")},
+        {"azim", gps_state_field_definition("Azimut", "Richtungswinkel.", "double", 60, "deg")},
+        {"prres", gps_state_field_definition("Pseudorange-Residual", "Residualwert des Satelliten.", "double", 70)},
+        {"qual", gps_state_field_definition("Qualitaetsindikator", "Empfaengerseitiger Qualitaetsindikator.", "integer", 80)}
+    };
+    return root;
+}
+
+static json build_gps_state4_definition_payload() {
+    json root = gps_state_definition_base(
+        4, "gps_visible_satellites", "Alle sichtbaren Satelliten",
+        "Vollstaendige Experten- und Debugliste aller sichtbaren Satelliten.",
+        "expert", 40, false);
+    root["fields"]["available"] = gps_state_field_definition("Satellitendaten vorhanden", "Zeigt, ob eine aktuelle Satellitenmeldung vorhanden ist.", "bool", 10);
+    root["fields"]["quality_class"] = gps_state_field_definition("Qualitaetsklasse", "Aggregierte Qualitaetsklasse.", "string", 20);
+    root["fields"]["visible_count"] = gps_state_field_definition("Sichtbare Satelliten", "Anzahl aller sichtbaren Satelliten.", "integer", 30);
+    root["fields"]["used_count"] = gps_state_field_definition("Verwendete Satelliten", "Anzahl der verwendeten Satelliten.", "integer", 40);
+    root["fields"]["avg_cn0"] = gps_state_field_definition("C/N0 Mittelwert", "Mittleres C/N0 der verwendeten Satelliten.", "double", 50, "dB-Hz");
+    root["fields"]["min_cn0"] = gps_state_field_definition("C/N0 Minimum", "Niedrigstes C/N0 der verwendeten Satelliten.", "double", 60, "dB-Hz");
+    root["fields"]["max_cn0"] = gps_state_field_definition("C/N0 Maximum", "Hoechstes C/N0 der verwendeten Satelliten.", "double", 70, "dB-Hz");
+    root["fields"]["satellites"] = gps_state_field_definition("Satelliten", "Vollstaendige Liste mit used=true/false.", "array", 80);
+    const json state3_definition = build_gps_state3_definition_payload();
+    root["item_fields"] = state3_definition["item_fields"];
+    root["item_fields"]["used"] = gps_state_field_definition("Verwendet", "Wird der Satellit aktuell fuer den Fix verwendet?", "bool", 35);
+    return root;
+}
+
+static json build_gps_state_definition_payload(int state) {
+    switch (state) {
+        case 0: return build_gps_state0_definition_payload();
+        case 1: return build_gps_state1_definition_payload();
+        case 2: return build_gps_state2_definition_payload();
+        case 3: return build_gps_state3_definition_payload();
+        case 4: return build_gps_state4_definition_payload();
+        default: return json::object();
+    }
 }
 
 static std::string gps_state0_display_number(double value, const std::string &unit, int precision = 2) {
@@ -1802,7 +2005,7 @@ static json build_gps_state0_status_payload(const ros::Time &now,
     root["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
     root["state"] = "state0";
     root["type"] = "status";
-    root["definition_version"] = 2;
+    root["definition_version"] = GPS_STATE_DEFINITION_VERSION;
     root["timestamp"] = now.toSec();
     root["drive_ready"] = gps_drive_ready;
     root["drive_state"] = gps_drive_ready ? "ready" : (gps_timeout_estimated ? "stop" : "blocked");
@@ -2088,6 +2291,7 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
     state3["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
     state3["state"] = "state3";
     state3["updated_at"] = stamp;
+    state3["available"] = available;
     state3["used_count"] = used_count;
     state3["satellites"] = used_satellites;
 
@@ -2116,24 +2320,148 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
     return payloads;
 }
 
-void publish_gps_state0_snapshot() {
-    const ros::Time now = ros::Time::now();
+static std::string gps_state_definition_topic(int state) {
+    return "gps_state/state" + std::to_string(state) + "/definition";
+}
 
-    // A targeted State 0 request must not depend on a previously received
-    // satellite array. Rebuild the time-dependent diagnostic status directly
-    // from the latest GPS, fix-status, positioning and pose inputs.
-    try_publish("gps_state/state0/definition", build_gps_state0_definition_payload().dump(), true);
+static std::string gps_state_status_topic(int state) {
+    return "gps_state/state" + std::to_string(state) + "/status";
+}
 
-    const json drive_status = build_gps_drive_status_payload(now);
-    if (drive_status.contains("state0_status") && drive_status["state0_status"].is_object()) {
-        try_publish("gps_state/state0/status", drive_status["state0_status"].dump(), true);
+static bool gps_state_status_retained(int state) {
+    return state >= 0 && state <= 2;
+}
+
+static bool gps_state_enabled_for_regular_publish(const GpsStateSettings &cfg, int state) {
+    switch (state) {
+        case 0: return cfg.publish_state0;
+        case 1: return cfg.publish_state1;
+        case 2: return cfg.publish_state2;
+        case 3: return cfg.publish_state3;
+        case 4: return cfg.publish_state4;
+        default: return false;
     }
 }
 
-void publish_latest_gps_state_payloads(bool force) {
-    GpsStateSettings cfg = current_gps_state_settings();
-    if (!cfg.enabled && !force) return;
+static json gps_state_standard_status_payload(int state, const json &source, const ros::Time &now) {
+    json root = source.is_object() ? source : json::object();
+    const double published_at = now.toSec();
+    double source_at = published_at;
+    if (root.contains("source_at") && root["source_at"].is_number()) {
+        source_at = root["source_at"].get<double>();
+    } else if (root.contains("updated_at") && root["updated_at"].is_number()) {
+        source_at = root["updated_at"].get<double>();
+    } else if (root.contains("timestamp") && root["timestamp"].is_number()) {
+        source_at = root["timestamp"].get<double>();
+    }
+    if (!std::isfinite(source_at) || source_at <= 0.0) source_at = published_at;
 
+    bool available = root.value("available", true);
+    std::string status = "ok";
+    int severity = 0;
+    std::string summary = "Daten aktuell";
+
+    if (state == 0) {
+        const std::string drive_state = root.value("drive_state", std::string("unknown"));
+        available = root.value("positioning_debug_available", false) ||
+                    (root.contains("ll_gps_age_ms") && !root["ll_gps_age_ms"].is_null()) ||
+                    (root.contains("xb_pose_age_ms") && !root["xb_pose_age_ms"].is_null());
+        status = drive_state == "ready" ? "ok" : drive_state;
+        severity = root.value("severity", drive_state == "stop" ? 4 : (drive_state == "blocked" ? 3 : 1));
+        summary = root.value("summary", std::string("GPS-Fahrdiagnose"));
+    } else if (state == 1) {
+        const std::string drive_state = root.value("gps_drive_state", std::string("unknown"));
+        const std::string rtk_state = root.value("rtk_state", std::string("unknown"));
+        available = rtk_state != "unknown" ||
+                    (root.contains("position_accuracy_m") && !root["position_accuracy_m"].is_null());
+        source_at = published_at;
+        status = drive_state == "ready" ? "ok" : drive_state;
+        severity = drive_state == "ready" ? 0 : (drive_state == "stop" ? 4 : (drive_state == "blocked" ? 3 : 1));
+        summary = root.value("gps_drive_label", std::string("GPS-Fahrstatus unbekannt"));
+        const std::string reason = root.value("gps_drive_reason", std::string());
+        if (!reason.empty()) summary += ": " + reason;
+    } else if (state == 2) {
+        available = root.value("available", false) || root.contains("drive_diagnostics");
+        const bool timeout = root.value("gps_timeout", false);
+        status = timeout ? "stop" : (available ? "ok" : "unavailable");
+        severity = timeout ? 4 : (available ? 0 : 1);
+        summary = root.value("diagnostic_summary", available ? std::string("GNSS-/Pose-Diagnose verfuegbar") : std::string("Keine GNSS-/Pose-Daten"));
+    } else if (state == 3) {
+        const int used_count = root.value("used_count", 0);
+        available = root.value("available", root.contains("satellites"));
+        status = !available ? "unavailable" : (used_count > 0 ? "ok" : "warning");
+        severity = !available ? 1 : (used_count > 0 ? 0 : 2);
+        summary = used_count > 0 ? std::to_string(used_count) + " Satelliten werden verwendet" : "Keine verwendeten Satelliten";
+    } else if (state == 4) {
+        const int visible_count = root.value("visible_count", 0);
+        available = root.value("available", root.contains("satellites"));
+        status = !available ? "unavailable" : (visible_count > 0 ? "ok" : "warning");
+        severity = !available ? 1 : (visible_count > 0 ? 0 : 2);
+        summary = visible_count > 0 ? std::to_string(visible_count) + " Satelliten sichtbar" : "Keine sichtbaren Satelliten";
+    }
+
+    const long long age_ms = static_cast<long long>(std::max(0.0, (published_at - source_at) * 1000.0));
+
+    json data = root;
+    for (const char *key : {"schema", "state", "type", "definition_version", "published_at", "source_at", "age_ms", "stale", "status", "severity", "summary", "data"}) {
+        data.erase(key);
+    }
+
+    root["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
+    root["state"] = "state" + std::to_string(state);
+    root["type"] = "status";
+    root["definition_version"] = GPS_STATE_DEFINITION_VERSION;
+    root["published_at"] = published_at;
+    root["source_at"] = source_at;
+    root["age_ms"] = age_ms;
+    root["available"] = available;
+    root["stale"] = age_ms > static_cast<long long>(GPS_STATE_STALE_AFTER_S * 1000.0);
+    root["status"] = status;
+    root["severity"] = severity;
+    root["summary"] = summary;
+    root["data"] = data;
+    return root;
+}
+
+static void publish_gps_state_definition(int state) {
+    const json definition = build_gps_state_definition_payload(state);
+    if (!definition.empty()) try_publish(gps_state_definition_topic(state), definition.dump(), true);
+}
+
+void publish_gps_state_definitions() {
+    for (int state = 0; state <= 4; ++state) publish_gps_state_definition(state);
+}
+
+static void publish_gps_state_status(int state, const json &raw_status) {
+    const json status = gps_state_standard_status_payload(state, raw_status, ros::Time::now());
+    const bool retain = gps_state_status_retained(state);
+    try_publish(gps_state_status_topic(state), status.dump(), retain);
+
+    // Transitional aliases keep the currently bundled web application and older
+    // MQTT consumers operational while stateN/status becomes the canonical API.
+    if (state >= 1 && state <= 4) {
+        try_publish("gps_state/state" + std::to_string(state), status.dump(), retain);
+    }
+}
+
+static json build_gps_state_fallback_payloads(const ros::Time &now) {
+    const json drive_status = build_gps_drive_status_payload(now);
+    json payloads = {
+        {"state0_status", drive_status["state0_status"]},
+        {"state1", {{"updated_at", now.toSec()}, {"quality_class", "unavailable"}}},
+        {"state2", {{"updated_at", now.toSec()}, {"available", false}, {"quality_class", "unavailable"},
+                    {"visible_count", 0}, {"used_count", 0}, {"avg_cn0", 0.0}, {"min_cn0", 0.0},
+                    {"max_cn0", 0.0}, {"weak_count", 0}, {"good_count", 0}, {"systems", json::object()}}},
+        {"state3", {{"updated_at", now.toSec()}, {"available", false}, {"used_count", 0}, {"satellites", json::array()}}},
+        {"state4", {{"updated_at", now.toSec()}, {"available", false}, {"quality_class", "unavailable"},
+                    {"visible_count", 0}, {"used_count", 0}, {"avg_cn0", 0.0}, {"min_cn0", 0.0},
+                    {"max_cn0", 0.0}, {"satellites", json::array()}}}
+    };
+    apply_gps_drive_status_to_payloads(payloads, drive_status);
+    return payloads;
+}
+
+static json current_gps_state_payload_snapshot(const ros::Time &now) {
     json snapshot;
     bool has_snapshot = false;
     {
@@ -2141,21 +2469,133 @@ void publish_latest_gps_state_payloads(bool force) {
         has_snapshot = latest_gps_state_available;
         snapshot = latest_gps_state_payloads;
     }
-    if (!has_snapshot) return;
-
-    const json drive_status = build_gps_drive_status_payload(ros::Time::now());
+    if (!has_snapshot || !snapshot.is_object()) snapshot = build_gps_state_fallback_payloads(now);
+    const json drive_status = build_gps_drive_status_payload(now);
     apply_gps_drive_status_to_payloads(snapshot, drive_status);
+    return snapshot;
+}
 
-    if (cfg.publish_state0 || force) {
-        try_publish("gps_state/state0/definition", build_gps_state0_definition_payload().dump(), true);
-        if (snapshot.contains("state0_status")) {
-            try_publish("gps_state/state0/status", snapshot["state0_status"].dump(), true);
+static json gps_state_raw_status_from_snapshot(const json &snapshot, int state) {
+    if (state == 0) return snapshot.value("state0_status", json::object());
+    return snapshot.value("state" + std::to_string(state), json::object());
+}
+
+static std::set<int> gps_state_regular_states(const GpsStateSettings &cfg) {
+    std::set<int> states;
+    if (!cfg.enabled) return states;
+    for (int state = 0; state <= 4; ++state) {
+        if (gps_state_enabled_for_regular_publish(cfg, state)) states.insert(state);
+    }
+    return states;
+}
+
+static bool parse_gps_state_number(const json &value, int &state) {
+    if (value.is_number_integer()) {
+        state = value.get<int>();
+        return state >= 0 && state <= 4;
+    }
+    if (!value.is_string()) return false;
+    std::string text = trim_settings_string(value.get<std::string>());
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (text.rfind("state", 0) == 0) text = text.substr(5);
+    if (text.size() != 1 || text[0] < '0' || text[0] > '4') return false;
+    state = text[0] - '0';
+    return true;
+}
+
+void handle_gps_state_renew_payload(const std::string &payload_text) {
+    const GpsStateSettings cfg = current_gps_state_settings();
+    std::set<int> states = gps_state_regular_states(cfg);
+    bool definitions = true;
+    bool statuses = true;
+
+    const std::string trimmed = trim_settings_string(payload_text);
+    if (!trimmed.empty()) {
+        try {
+            const json request = json::parse(trimmed);
+            if (!request.is_object()) throw std::runtime_error("payload must be a JSON object");
+
+            if (request.contains("states")) {
+                if (!request["states"].is_array()) throw std::runtime_error("states must be an array");
+                states.clear();
+                for (const auto &entry : request["states"]) {
+                    if (entry.is_string()) {
+                        std::string text = trim_settings_string(entry.get<std::string>());
+                        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        if (text == "all") {
+                            states = {0, 1, 2, 3, 4};
+                            continue;
+                        }
+                    }
+                    int state = -1;
+                    if (!parse_gps_state_number(entry, state)) throw std::runtime_error("states contains an invalid value");
+                    states.insert(state);
+                }
+            }
+
+            if (request.contains("parts")) {
+                if (!request["parts"].is_array()) throw std::runtime_error("parts must be an array");
+                definitions = false;
+                statuses = false;
+                for (const auto &entry : request["parts"]) {
+                    if (!entry.is_string()) throw std::runtime_error("parts contains a non-string value");
+                    const std::string part = trim_settings_string(entry.get<std::string>());
+                    if (part == "definition") definitions = true;
+                    else if (part == "status") statuses = true;
+                    else throw std::runtime_error("parts supports only definition and status");
+                }
+                if (!definitions && !statuses) throw std::runtime_error("parts must not be empty");
+            }
+        } catch (const std::exception &e) {
+            ROS_WARN_STREAM("Rejected GPS-State renew request: " << e.what());
+            publish_gps_state_validation({
+                {"valid", false},
+                {"namespace", GPS_STATE_NAMESPACE},
+                {"mode", "renew"},
+                {"reason", e.what()}
+            });
+            return;
         }
     }
-    if (cfg.publish_state1 || force) try_publish("gps_state/state1", snapshot["state1"].dump(), true);
-    if (cfg.publish_state2 || force) try_publish("gps_state/state2", snapshot["state2"].dump(), true);
-    if (cfg.publish_state3 || force) try_publish("gps_state/state3", snapshot["state3"].dump(), false);
-    if (cfg.publish_state4 || force) try_publish("gps_state/state4", snapshot["state4"].dump(), false);
+
+    publish_gps_state_settings();
+    if (definitions) {
+        for (const int state : states) publish_gps_state_definition(state);
+    }
+    if (statuses) {
+        const json snapshot = current_gps_state_payload_snapshot(ros::Time::now());
+        for (const int state : states) publish_gps_state_status(state, gps_state_raw_status_from_snapshot(snapshot, state));
+    }
+    json published_parts = json::array();
+    if (definitions) published_parts.push_back("definition");
+    if (statuses) published_parts.push_back("status");
+    publish_gps_state_validation({
+        {"valid", true},
+        {"namespace", GPS_STATE_NAMESPACE},
+        {"mode", "renew"},
+        {"states", states},
+        {"parts", published_parts}
+    });
+}
+
+void publish_gps_state0_snapshot() {
+    publish_gps_state_definition(0);
+    const json drive_status = build_gps_drive_status_payload(ros::Time::now());
+    if (drive_status.contains("state0_status") && drive_status["state0_status"].is_object()) {
+        publish_gps_state_status(0, drive_status["state0_status"]);
+    }
+}
+
+void publish_latest_gps_state_payloads(bool force) {
+    const GpsStateSettings cfg = current_gps_state_settings();
+    if (!cfg.enabled && !force) return;
+
+    const json snapshot = current_gps_state_payload_snapshot(ros::Time::now());
+    for (int state = 0; state <= 4; ++state) {
+        if (force || gps_state_enabled_for_regular_publish(cfg, state)) {
+            publish_gps_state_status(state, gps_state_raw_status_from_snapshot(snapshot, state));
+        }
+    }
 }
 
 void gps_state_satellites_callback(const xbot_msgs::GnssSatelliteArray::ConstPtr &msg) {

@@ -172,36 +172,71 @@ Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The defa
 
 The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.
 
-## GPS State payload separation
+## GPS State standardized topics
 
-The GPS MQTT payloads use schema `gps_state.v2` and keep the five states intentionally separated. Only shared metadata such as `schema`, `state` and `updated_at` is repeated. Fachliche Dopplungen zwischen State 1, State 2 and State 3 are avoided.
+The GPS MQTT payloads use schema `gps_state.v3`. All five states use the same topic structure and a common status envelope. Static field metadata and dynamic values are separated consistently.
 
-- `gps_state/state0/definition` and `gps_state/state0/status`: complete 12-stage drive-readiness decision chain for expert/debug use. State 0 is not embedded into State 1.
-- `gps_state/state1`: compact operator status. It answers whether GPS is currently sufficient for driving and contains only the compact drive label, reason, RTK state, pose accuracy, maximum allowed pose accuracy, pose age and quality class. It does not contain satellite counts or satellite lists.
-- `gps_state/state2`: technical GNSS and pose summary. It contains aggregate signal quality, visible/used counts, C/N0 statistics, GNSS system distribution and technical pose/GPS diagnostics. It does not contain a satellite list.
-- `gps_state/state3`: list of currently used satellites only. It contains no drive-readiness decision, no aggregate GNSS statistics and no unused satellites. Per-satellite entries therefore omit `used`, because every listed satellite is used by definition.
-- `gps_state/state4`: full expert/debug satellite list. It contains all visible satellites and keeps `used=true/false` in every satellite entry.
+For every state the canonical topics are:
 
-This separation lets the app choose the correct payload for each UI level without parsing large debug payloads in normal views.
+- `gps_state/state0/definition` and `gps_state/state0/status`
+- `gps_state/state1/definition` and `gps_state/state1/status`
+- `gps_state/state2/definition` and `gps_state/state2/status`
+- `gps_state/state3/definition` and `gps_state/state3/status`
+- `gps_state/state4/definition` and `gps_state/state4/status`
+
+All definition topics are retained. State 0 to State 2 status topics are retained. State 3 and State 4 status topics are not retained because their satellite lists are short-lived snapshots. During the migration period the former `gps_state/state1` to `gps_state/state4` topics are still published as deprecated compatibility aliases.
+
+Every status contains the shared fields `schema`, `state`, `type`, `definition_version`, `published_at`, `source_at`, `age_ms`, `available`, `stale`, `status`, `severity`, `summary` and `data`. Existing state-specific fields remain available at the top level for compatibility and are additionally grouped below `data`.
+
+The functional separation remains unchanged:
+
+- State 0: complete 12-stage drive-readiness decision chain for expert/debug use.
+- State 1: compact operator status for GPS drive readiness.
+- State 2: technical GNSS and pose summary without a satellite list.
+- State 3: currently used satellites only.
+- State 4: complete expert/debug list of all visible satellites.
+
+## Central GPS State refresh
+
+Manual refresh requests use one central topic:
+
+- `gps_state/set/renew/json`
+
+An empty payload or `{}` republishes definition and status for all currently enabled states. A request can select states and payload parts explicitly:
+
+```json
+{
+  "states": [0, 2],
+  "parts": ["status"]
+}
+```
+
+```json
+{
+  "states": [0, 1, 2, 3, 4],
+  "parts": ["definition"]
+}
+```
+
+State values may be integers from `0` to `4`, strings such as `state2`, or the string `all`. `parts` accepts `definition` and `status`. Explicitly selected states are published independently of their regular publish switches. The central request recalculates time-dependent drive status from the latest ROS inputs and uses an unavailable/empty fallback for states whose satellite snapshot has not arrived yet.
+
+The former `gps_state/state0/set/renew/json` topic remains as a deprecated compatibility alias and republishes only State 0 definition and status. New clients should use the central topic.
 
 ## GPS State 0 drive diagnostics
 
-`gps_state` now provides an optional State 0 diagnostic view for immediate drive-readiness debugging. State 0 is intentionally split into static and live data so long descriptions do not have to be sent repeatedly.
+State 0 remains split into static and live data so long descriptions do not have to be sent repeatedly.
 
-### MQTT topics
-
-- `gps_state/state0/definition` publishes the retained static definition of the 12 decision stages. It contains the stage number, key, title, description, source, expected value or threshold reference, failure effect and next check.
-- `gps_state/state0/status` publishes the retained live state for the same 12 stages. It contains the status, severity, current value, threshold, deviation and display string.
-- `gps_state/state0/set/renew/json` requests an immediate one-shot rebuild and republish of only `state0/definition` and `state0/status`. The payload may be empty or an arbitrary JSON object. The request works independently of `publish_state0` and does not require a previously received satellite-array snapshot.
-- `gps_state/settings/json` contains the expert setting `publish_state0` to enable or disable continuous State 0 output and `publish_rate_hz` for the regular GPS-State publish interval.
+- `gps_state/state0/definition` contains the retained static definition of the 12 decision stages.
+- `gps_state/state0/status` contains the retained live state, current values, thresholds, severity and the first blocking stage.
+- `gps_state/settings/json` contains `publish_state0` and `publish_rate_hz` for regular publication.
 
 ### Update behavior
 
-- A message on `gps_state/state0/set/renew/json` is event-driven and answered immediately; it is not delayed until the next regular publish interval. Time-dependent values such as pose age, GPS age, grace time and timeout are recalculated at request time.
-- The targeted renew request republishes no State 1 to State 4 payloads and does not request an additional measurement from the F9P. It only evaluates the latest ROS inputs.
-- With `publish_state0=false` (default), State 0 is available on demand through the targeted renew topic and through retained broker values.
-- With `publish_state0=true`, State 0 is also included in regular GPS-State publishing. `publish_rate_hz` defaults to `1.0 Hz` and accepts `0.1` to `5.0 Hz`, corresponding to intervals from 10 seconds to 0.2 seconds. Session changes use `gps_state/settings/set/session/json`; persistent changes use `gps_state/settings/set/persistent/json`.
-- Receiver fix-status changes can additionally trigger event-driven GPS-State republishes. Therefore `publish_rate_hz` controls the regular satellite-driven path but is not a strict upper limit for every event-triggered update.
+- Static definitions are published on MQTT connection, settings refresh/change and central renew requests; they are not repeated in every regular 1 Hz cycle.
+- Dynamic status payloads follow the configured publish rate and event-driven updates such as GNSS fix-state changes.
+- `publish_rate_hz` defaults to `1.0 Hz` and accepts `0.1` to `5.0 Hz`, corresponding to intervals from 10 seconds to 0.2 seconds.
+- The central renew request is answered immediately and does not request a new physical measurement from the F9P. It evaluates the latest ROS inputs.
+- Session changes use `gps_state/settings/set/session/json`; persistent changes use `gps_state/settings/set/persistent/json`.
 
 ### Status values
 
@@ -211,6 +246,7 @@ This separation lets the app choose the correct payload for each UI level withou
 - `stop`: safety stop condition, driving and blades are disabled by the logic.
 - `inactive`: stage was not evaluated because an earlier stage already blocks the chain.
 - `unknown`: the required diagnostic input is not available.
+- `unavailable`: the complete state data source is not available.
 
 ### Stage order
 

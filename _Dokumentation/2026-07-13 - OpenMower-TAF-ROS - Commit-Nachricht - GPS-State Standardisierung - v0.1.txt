@@ -1,0 +1,20 @@
+BL_Standardize GPS state MQTT topics
+
+Date: 2026-07-13
+
+Summary:
+- Standardized GPS State 0 through State 4 with retained definition topics and canonical status topics below gps_state/stateN/definition and gps_state/stateN/status.
+- Added a shared gps_state.v3 status envelope with timestamps, availability, staleness, severity, summary, and a state-specific data block while preserving top-level compatibility fields.
+- Added the central gps_state/set/renew/json refresh command with state and part selection.
+- Kept deprecated State 1 through State 4 topic aliases and the former State 0 renew topic for a controlled migration of existing clients.
+- Added static definitions for State 1 through State 4 and stopped repeating definitions in the regular publish cycle.
+- Updated GPS State settings metadata and the xbot_monitoring README.
+- Documented the missing Flutter source-code limitation for the requested in-app JSON download button.
+
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/README.md
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State Standardisierung - v0.1.docx
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State Standardisierung - v0.1.pdf
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Patch - GPS-State Standardisierung - v0.1.patch
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Commit-Nachricht - GPS-State Standardisierung - v0.1.txt
