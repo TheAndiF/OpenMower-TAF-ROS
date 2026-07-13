@@ -1,0 +1,37 @@
+BL_Move GPS logging under GPS State
+
+Date: 2026-07-13
+
+Summary:
+- Added the canonical gps_state/logging MQTT API for GPS, GNSS and RTK recording control.
+- Exposed logging defaults and app metadata in gps_state/settings/json.
+- Added retained runtime and last-session payloads plus non-retained command validation.
+- Added forwarded/pending/applied confirmation for session and persistent logging settings.
+- Kept mower_logic as the internal cycle-aware executor while separating explicit commands from the legacy enable flag.
+- Filtered internal satellite_logging_* settings from the public mower_logic settings payload to prevent duplicate app controls.
+- Preserved legacy MQTT topics as a migration compatibility layer.
+- Added an app-focused API reference and PDF/DOCX implementation documentation.
+
+Changed files:
+- SATELLITE_LOGGER_MQTT_README.txt
+- SATELLITE_LOGGING_MOWER_LOGIC_README.txt
+- src/lib/xbot_monitoring/GPS_LOGGING_API.md
+- src/lib/xbot_monitoring/README.md
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/mower_logic/cfg/MowerLogic.cfg
+- src/mower_logic/scripts/record_satellites.sh
+- src/mower_logic/src/mower_logic/mower_logic.cpp
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS Logging unter GPS State - v0.1.docx
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS Logging unter GPS State - v0.1.pdf
+
+Delivery artifacts:
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Patch - GPS Logging unter GPS State - v0.1.patch
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Commit-Nachricht - GPS Logging unter GPS State - v0.1.txt
+
+Verification:
+- git diff --check passed for all modified text files.
+- bash -n passed for src/mower_logic/scripts/record_satellites.sh.
+- Static lexical delimiter checks passed for both modified C++ files.
+- GPS logging API contract string checks passed.
+- DOCX and PDF were rendered to 12 pages and visually reviewed.
+- A ROS/Catkin integration build was not run because the build environment has no /opt/ros installation.

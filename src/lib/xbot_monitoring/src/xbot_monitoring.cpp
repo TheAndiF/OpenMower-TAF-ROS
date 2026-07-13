@@ -31,6 +31,7 @@
 #include <mqtt/async_client.h>
 #include <nlohmann/json.hpp>
 #include <vector>
+#include <map>
 #include <set>
 #include <mutex>
 #include "geometry_msgs/Twist.h"
@@ -95,6 +96,9 @@ void publish_gps_state0_snapshot();
 void handle_gps_restart_set_payload(const std::string &payload_text);
 void publish_gps_restart_validation(const json &validation);
 void publish_gps_restart_status();
+void handle_gps_logging_control_payload(const std::string &payload_text);
+void publish_gps_logging_status();
+void publish_gps_logging_last();
 void gps_restart_status_callback(const std_msgs::String::ConstPtr &msg);
 void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg);
 void gps_state_fix_status_callback(const std_msgs::String::ConstPtr &msg);
@@ -117,6 +121,8 @@ void publish_params();
 void publish_ll_power_status_request();
 void try_publish(const std::string &topic, const std::string &data, bool retain = false);
 std::string utc_timestamp_iso8601(const std::chrono::system_clock::time_point &time_point);
+bool try_parse_utc_timestamp_iso8601(const std::string &timestamp,
+                                     std::chrono::system_clock::time_point &time_point);
 void rpc_request_callback(const std::string &payload);
 
 
@@ -307,6 +313,8 @@ class MqttCallback : public mqtt::callback {
         publish_gps_state_definitions();
         publish_latest_gps_state_payloads(true);
         publish_gps_restart_status();
+        publish_gps_logging_status();
+        publish_gps_logging_last();
         {
             std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
             if (last_completed_gps_restart_available) {
@@ -351,6 +359,8 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/persistent/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/logging/set/control/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/logging/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/restart/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/restart/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/session/json", 0);
@@ -513,6 +523,8 @@ public:
             ROS_WARN_STREAM("Deprecated GPS-State renew topic used; switch to gps_state/set/renew/json");
             publish_gps_state0_snapshot();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/renew/json") {
+            std_msgs::Empty mower_logic_renew;
+            mower_logic_settings_renew_pub.publish(mower_logic_renew);
             publish_gps_state_settings();
             publish_gps_state_definitions();
             publish_latest_gps_state_payloads(true);
@@ -520,6 +532,14 @@ public:
             handle_gps_state_set_payload(ptr->get_payload_str(), false);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/persistent/json") {
             handle_gps_state_set_payload(ptr->get_payload_str(), true);
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/logging/set/control/json") {
+            handle_gps_logging_control_payload(ptr->get_payload_str());
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/logging/set/renew/json") {
+            std_msgs::Empty msg;
+            mower_logic_satellite_logging_renew_pub.publish(msg);
+            publish_gps_logging_status();
+            publish_gps_logging_last();
+            publish_gps_state_settings();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/restart/set/json") {
             handle_gps_restart_set_payload(ptr->get_payload_str());
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/restart/set/renew/json") {
@@ -758,6 +778,20 @@ bool latest_gps_restart_status_available = false;
 json last_completed_gps_restart = json::object();
 bool last_completed_gps_restart_available = false;
 
+std::mutex mower_logic_settings_cache_mutex;
+json latest_mower_logic_settings_payload = json::object();
+bool latest_mower_logic_settings_available = false;
+
+std::mutex gps_logging_status_mutex;
+json latest_gps_logging_status = json::object();
+bool latest_gps_logging_status_available = false;
+json last_completed_gps_logging = json::object();
+bool last_completed_gps_logging_available = false;
+
+std::mutex gps_logging_pending_mutex;
+json pending_gps_logging_settings = json::object();
+bool pending_gps_logging_settings_persistent = false;
+
 
 
 static json gps_state_setting_entry(const std::string &label,
@@ -821,11 +855,12 @@ static json gps_state_command_entry(const std::string &label,
                                     int order,
                                     const std::string &topic,
                                     const json &payload_schema,
-                                    bool expert = false) {
+                                    bool expert = false,
+                                    const std::string &group = "restart") {
     json entry = json::object();
     entry["label"] = label;
     entry["description"] = description;
-    entry["group"] = "restart";
+    entry["group"] = group;
     entry["order"] = order;
     entry["type"] = "json_command";
     entry["topic"] = topic;
@@ -841,6 +876,74 @@ static json gps_state_command_entry(const std::string &label,
     entry["session_apply_supported"] = true;
     entry["persistent_apply_supported"] = false;
     return entry;
+}
+
+static const std::map<std::string, std::string> &gps_logging_public_to_internal_settings() {
+    static const std::map<std::string, std::string> mapping = {
+        {"logging_default_trigger", "satellite_logging_default_trigger"},
+        {"logging_default_mode", "satellite_logging_default_mode"},
+        {"logging_default_area_id", "satellite_logging_default_area_id"},
+        {"logging_script_path", "satellite_logging_script_path"},
+        {"logging_ram_path", "satellite_logging_ram_path"},
+        {"logging_output_path", "satellite_logging_output_path"},
+        {"logging_container_name", "satellite_logging_container_name"}
+    };
+    return mapping;
+}
+
+static bool is_gps_logging_internal_setting(const std::string &key) {
+    if (key == "satellite_logging_enabled") return true;
+    for (const auto &entry : gps_logging_public_to_internal_settings()) {
+        if (entry.second == key) return true;
+    }
+    return false;
+}
+
+static json gps_logging_cached_internal_entry(const std::string &internal_key) {
+    std::lock_guard<std::mutex> lk(mower_logic_settings_cache_mutex);
+    if (!latest_mower_logic_settings_available || !latest_mower_logic_settings_payload.is_object() ||
+        !latest_mower_logic_settings_payload.contains("settings") ||
+        !latest_mower_logic_settings_payload["settings"].is_object() ||
+        !latest_mower_logic_settings_payload["settings"].contains(internal_key) ||
+        !latest_mower_logic_settings_payload["settings"][internal_key].is_object()) {
+        return json::object();
+    }
+    return latest_mower_logic_settings_payload["settings"][internal_key];
+}
+
+static json gps_logging_string_setting_entry(const std::string &internal_key,
+                                             const std::string &label,
+                                             const std::string &description,
+                                             int order,
+                                             const std::string &fallback,
+                                             bool expert,
+                                             const json &allowed_values = nullptr) {
+    json entry = gps_state_setting_entry(label, description, "logging", order, "string", fallback,
+                                         nullptr, nullptr, "", expert);
+    const json cached = gps_logging_cached_internal_entry(internal_key);
+    if (cached.is_object() && !cached.empty()) {
+        for (const char *field : {"value", "active", "persistent", "default", "different"}) {
+            if (cached.contains(field)) entry[field] = cached[field];
+        }
+    } else {
+        std::string active = fallback;
+        std::string persistent = fallback;
+        ros::param::get("/settings/mower_logic/active/" + internal_key, active);
+        ros::param::get("/settings/mower_logic/persistent/" + internal_key, persistent);
+        entry["value"] = active;
+        entry["active"] = active;
+        entry["persistent"] = persistent;
+        entry["different"] = active != persistent;
+    }
+    if (!allowed_values.is_null()) entry["enum"] = allowed_values;
+    return entry;
+}
+
+static std::string gps_logging_public_key_for_internal(const std::string &internal_key) {
+    for (const auto &entry : gps_logging_public_to_internal_settings()) {
+        if (entry.second == internal_key) return entry.first;
+    }
+    return "";
 }
 
 static json read_gps_state_persisted_namespace() {
@@ -904,7 +1007,8 @@ static json build_gps_state_settings_payload() {
         {"general", {{"label", "Allgemein"}, {"order", 10}}},
         {"states", {{"label", "GPS States"}, {"order", 20}}},
         {"refresh", {{"label", "Aktualisierung"}, {"order", 25}}},
-        {"restart", {{"label", "F9P Neustart"}, {"order", 30}}},
+        {"logging", {{"label", "GPS Logging"}, {"order", 30}}},
+        {"restart", {{"label", "F9P Neustart"}, {"order", 40}}},
         {"debug", {{"label", "Debug"}, {"order", 90}}}
     };
     root["settings"] = json::object();
@@ -982,6 +1086,84 @@ static json build_gps_state_settings_payload() {
         json{{"states", json::array({0, 1, 2, 3, 4})}, {"parts", json::array({"definition"})}}
     });
     root["settings"]["renew"]["payload_schema"] = renew_schema;
+
+    root["settings"]["logging_default_trigger"] = gps_logging_string_setting_entry(
+        "satellite_logging_default_trigger",
+        "Logging Standard-Startart",
+        "Standard-Trigger, wenn ein Startbefehl trigger nicht explizit angibt.",
+        310, "next_cycle", false,
+        json::array({"next_cycle", "ad_hoc", "area_id"}));
+    root["settings"]["logging_default_mode"] = gps_logging_string_setting_entry(
+        "satellite_logging_default_mode",
+        "Logging Standard-Modus",
+        "Standard-Endbedingung, wenn ein Startbefehl mode nicht explizit angibt.",
+        320, "from_start_to_docking", false,
+        json::array({"from_start_to_docking", "from_docking_to_docking", "until_docking", "manual", "area_only", "area_to_docking"}));
+    root["settings"]["logging_default_area_id"] = gps_logging_string_setting_entry(
+        "satellite_logging_default_area_id",
+        "Logging Ziel-Flächen-ID",
+        "Standard-Fläche für trigger=area_id. Ein leerer Wert erfordert area_id im Startbefehl.",
+        330, "", false);
+    root["settings"]["logging_output_path"] = gps_logging_string_setting_entry(
+        "satellite_logging_output_path",
+        "Logging Zielpfad",
+        "Persistentes Zielverzeichnis, in das eine beendete Aufzeichnung kopiert wird.",
+        340, "/home/openmower/recordings/logs", true);
+    root["settings"]["logging_ram_path"] = gps_logging_string_setting_entry(
+        "satellite_logging_ram_path",
+        "Logging RAM-Pfad",
+        "Temporäres Verzeichnis für laufende Aufzeichnungen. Bei einem harten Ausfall können nicht kopierte Daten verloren gehen.",
+        350, "/dev/shm/openmower_satellite_logs", true);
+    root["settings"]["logging_script_path"] = gps_logging_string_setting_entry(
+        "satellite_logging_script_path",
+        "Logging Skriptpfad",
+        "Pfad zum ausführbaren GPS-Logging-Skript.",
+        360, "/home/openmower/scripts/record_satellites.sh", true);
+    root["settings"]["logging_container_name"] = gps_logging_string_setting_entry(
+        "satellite_logging_container_name",
+        "Logging ROS-Container",
+        "Optionaler ROS-Containername. Leer bedeutet direkte Ausführung beziehungsweise automatische Erkennung durch das Skript.",
+        370, "", true);
+
+    json logging_control_schema = {
+        {"type", "object"},
+        {"required", json::array({"command"})},
+        {"properties", {
+            {"command", {{"type", "string"}, {"enum", json::array({"start", "stop", "cancel"})}}},
+            {"trigger", {{"type", "string"}, {"enum", json::array({"next_cycle", "ad_hoc", "area_id"})}}},
+            {"mode", {{"type", "string"}, {"enum", json::array({"from_start_to_docking", "from_docking_to_docking", "until_docking", "manual", "area_only", "area_to_docking"})}}},
+            {"area_id", {{"oneOf", json::array({json{{"type", "string"}}, json{{"type", "integer"}}})}}},
+            {"request_id", {{"description", "Optional correlation value echoed by validation."}}}
+        }},
+        {"examples", json::array({
+            json{{"command", "start"}, {"trigger", "ad_hoc"}, {"mode", "until_docking"}},
+            json{{"command", "start"}, {"trigger", "next_cycle"}, {"mode", "from_start_to_docking"}},
+            json{{"command", "start"}, {"trigger", "area_id"}, {"mode", "until_docking"}, {"area_id", "3"}},
+            json{{"command", "stop"}},
+            json{{"command", "cancel"}}
+        })}
+    };
+    root["settings"]["logging_control"] = gps_state_command_entry(
+        "GPS Logging steuern",
+        "Startet, stoppt oder bricht eine GPS-Logging-Anforderung ab. Bei cancel bleibt eine bereits erzeugte Session als abgebrochen nachvollziehbar. Start/Stop ist ein Befehl und kein persistenter Einstellungswert.",
+        380, "gps_state/logging/set/control/json", logging_control_schema, false, "logging");
+    root["settings"]["logging_status"] = gps_state_descriptor_entry(
+        "GPS Logging Laufzeitstatus",
+        "Retained Laufzeitstatus mit Anfrage, Session, Zeitstempeln, Dateien, Speicherpfaden und Fehlerzustand.",
+        390, "gps_state/logging/status/json", false, "logging");
+    root["settings"]["logging_last"] = gps_state_descriptor_entry(
+        "Letzte GPS Logging Session",
+        "Retained Abschlussdatensatz der zuletzt beendeten Aufzeichnung.",
+        400, "gps_state/logging/last/json", false, "logging");
+    root["settings"]["logging_validation"] = gps_state_descriptor_entry(
+        "GPS Logging Validierung",
+        "Ergebnis des letzten Logging-Steuerbefehls. Nicht retained und für direkte App-Rückmeldung gedacht. Einstellungsänderungen werden separat über gps_state/settings/validation/json bestätigt.",
+        410, "gps_state/logging/validation/json", true, "logging");
+    root["settings"]["logging_renew"] = gps_state_command_entry(
+        "GPS Logging aktualisieren",
+        "Fordert Laufzeitstatus, letzte Session und GPS-State-Einstellungen erneut an.",
+        420, "gps_state/logging/set/renew/json", json{{"type", "object"}, {"examples", json::array({json::object()})}}, false, "logging");
+
     root["settings"]["f9p_restart"] = gps_state_command_entry(
         "F9P Neustart auslösen",
         "Sendet eine UBX-CFG-RST-Neustartanforderung an den u-blox/ZED-F9P. Unterstützt hot_start, warm_start und cold_start. Standard ist reset_mode=controlled_software; Experten können gnss_only oder hardware_watchdog angeben.",
@@ -1079,6 +1261,31 @@ static bool gps_state_validate_number_setting(const json &entry, double min_valu
     return true;
 }
 
+static bool gps_state_validate_string_setting(const json &entry,
+                                              std::string &value,
+                                              std::string &reason,
+                                              const std::set<std::string> &allowed = {},
+                                              bool allow_empty = true) {
+    if (!entry.is_object() || !entry.contains("value")) {
+        reason = "setting entry must be an object with a value field";
+        return false;
+    }
+    if (!entry["value"].is_string()) {
+        reason = "value must be a string";
+        return false;
+    }
+    value = trim_settings_string(entry["value"].get<std::string>());
+    if (!allow_empty && value.empty()) {
+        reason = "value must not be empty";
+        return false;
+    }
+    if (!allowed.empty() && allowed.find(value) == allowed.end()) {
+        reason = "value is not part of the supported enum";
+        return false;
+    }
+    return true;
+}
+
 void handle_gps_state_set_payload(const std::string &payload_text, bool persistent) {
     json validation = {
         {"valid", false},
@@ -1099,6 +1306,8 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
 
         GpsStateSettings new_cfg = current_gps_state_settings();
         std::map<std::string, std::map<std::string, open_mower_settings::json>> persistent_updates;
+        json logging_forward_payload = json::object();
+        bool has_native_gps_state_change = false;
 
         for (auto it = payload.begin(); it != payload.end(); ++it) {
             const std::string key = it.key();
@@ -1106,36 +1315,54 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
             std::string reason;
             bool bool_value = false;
             double number_value = 0.0;
+            std::string string_value;
             bool accepted = false;
             json accepted_fields = json::array();
 
             if (key == "enabled") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) new_cfg.enabled = bool_value;
+                if (accepted) { new_cfg.enabled = bool_value; has_native_gps_state_change = true; }
             } else if (key == "publish_state0") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) new_cfg.publish_state0 = bool_value;
+                if (accepted) { new_cfg.publish_state0 = bool_value; has_native_gps_state_change = true; }
             } else if (key == "publish_state1") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) new_cfg.publish_state1 = bool_value;
+                if (accepted) { new_cfg.publish_state1 = bool_value; has_native_gps_state_change = true; }
             } else if (key == "publish_state2") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) new_cfg.publish_state2 = bool_value;
+                if (accepted) { new_cfg.publish_state2 = bool_value; has_native_gps_state_change = true; }
             } else if (key == "publish_state3") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) new_cfg.publish_state3 = bool_value;
+                if (accepted) { new_cfg.publish_state3 = bool_value; has_native_gps_state_change = true; }
             } else if (key == "publish_state4") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) new_cfg.publish_state4 = bool_value;
+                if (accepted) { new_cfg.publish_state4 = bool_value; has_native_gps_state_change = true; }
             } else if (key == "publish_rate_hz") {
                 accepted = gps_state_validate_number_setting(entry, 0.1, 5.0, number_value, reason);
-                if (accepted) new_cfg.publish_rate_hz = number_value;
+                if (accepted) { new_cfg.publish_rate_hz = number_value; has_native_gps_state_change = true; }
             } else if (key == "weak_cn0_threshold") {
                 accepted = gps_state_validate_number_setting(entry, 0.0, 60.0, number_value, reason);
-                if (accepted) new_cfg.weak_cn0_threshold = number_value;
+                if (accepted) { new_cfg.weak_cn0_threshold = number_value; has_native_gps_state_change = true; }
             } else if (key == "good_cn0_threshold") {
                 accepted = gps_state_validate_number_setting(entry, 0.0, 60.0, number_value, reason);
-                if (accepted) new_cfg.good_cn0_threshold = number_value;
+                if (accepted) { new_cfg.good_cn0_threshold = number_value; has_native_gps_state_change = true; }
+            } else if (gps_logging_public_to_internal_settings().find(key) != gps_logging_public_to_internal_settings().end()) {
+                if (key == "logging_default_trigger") {
+                    accepted = gps_state_validate_string_setting(
+                        entry, string_value, reason, {"next_cycle", "ad_hoc", "area_id"}, false);
+                } else if (key == "logging_default_mode") {
+                    accepted = gps_state_validate_string_setting(
+                        entry, string_value, reason,
+                        {"from_start_to_docking", "from_docking_to_docking", "until_docking", "manual", "area_only", "area_to_docking"}, false);
+                } else if (key == "logging_script_path" || key == "logging_ram_path" || key == "logging_output_path") {
+                    accepted = gps_state_validate_string_setting(entry, string_value, reason, {}, false);
+                } else {
+                    accepted = gps_state_validate_string_setting(entry, string_value, reason);
+                }
+                if (accepted) {
+                    const std::string &internal_key = gps_logging_public_to_internal_settings().at(key);
+                    logging_forward_payload[internal_key] = {{"value", string_value}};
+                }
             } else {
                 validation["rejected"][key] = "unknown gps_state setting";
                 continue;
@@ -1148,7 +1375,7 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
 
             accepted_fields.push_back("value");
             validation["accepted"][key] = accepted_fields;
-            if (persistent) {
+            if (persistent && gps_logging_public_to_internal_settings().find(key) == gps_logging_public_to_internal_settings().end()) {
                 persistent_updates[key]["persistent"] = open_mower_settings::json::parse(entry["value"].dump());
             }
         }
@@ -1158,7 +1385,7 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
         }
 
         if (validation["rejected"].empty()) {
-            {
+            if (has_native_gps_state_change) {
                 std::lock_guard<std::mutex> lk(gps_state_settings_mutex);
                 gps_state_settings = new_cfg;
                 gps_state_settings_loaded = true;
@@ -1172,16 +1399,262 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
                     validation["rejected"]["$"] = "could not write settings_persistent.json";
                 }
             }
+            if (!logging_forward_payload.empty() && validation["rejected"].empty()) {
+                {
+                    std::lock_guard<std::mutex> lk(gps_logging_pending_mutex);
+                    pending_gps_logging_settings = json::object();
+                    for (auto it = logging_forward_payload.begin(); it != logging_forward_payload.end(); ++it) {
+                        const std::string public_key = gps_logging_public_key_for_internal(it.key());
+                        if (!public_key.empty()) pending_gps_logging_settings[public_key] = it.value()["value"];
+                    }
+                    pending_gps_logging_settings_persistent = persistent;
+                }
+                std_msgs::String forward;
+                forward.data = logging_forward_payload.dump();
+                if (persistent) {
+                    mower_logic_settings_set_persistent_json_pub.publish(forward);
+                } else {
+                    mower_logic_settings_set_session_json_pub.publish(forward);
+                }
+                validation["pending"] = true;
+                validation["status"] = "forwarded";
+                validation["remarks"].push_back(
+                    "GPS logging settings were forwarded to mower_logic; confirm applied values via gps_state/settings/json.");
+            }
         }
     } catch (const json::exception &e) {
         validation["rejected"]["$"] = std::string("Error decoding JSON: ") + e.what();
     }
 
     validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
+    if (!validation.contains("pending")) validation["pending"] = false;
+    if (!validation.contains("status")) validation["status"] = validation["valid"] ? "applied" : "rejected";
     publish_gps_state_validation(validation);
     publish_gps_state_settings();
     publish_gps_state_definitions();
     publish_latest_gps_state_payloads(true);
+}
+
+static std::string gps_logging_string_or(const json &payload,
+                                         const std::string &key,
+                                         const std::string &fallback = "") {
+    if (!payload.is_object() || !payload.contains(key) || !payload[key].is_string()) return fallback;
+    return payload[key].get<std::string>();
+}
+
+static json gps_logging_json_or_null(const json &payload, const std::string &key) {
+    if (!payload.is_object() || !payload.contains(key)) return nullptr;
+    return payload[key];
+}
+
+static json gps_logging_duration_seconds(const json &payload) {
+    const std::string started_at = gps_logging_string_or(payload, "started_at");
+    if (started_at.empty()) return nullptr;
+    std::chrono::system_clock::time_point start;
+    if (!try_parse_utc_timestamp_iso8601(started_at, start)) return nullptr;
+
+    std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
+    const std::string finished_at = gps_logging_string_or(payload, "finished_at");
+    if (!finished_at.empty() && !try_parse_utc_timestamp_iso8601(finished_at, end)) return nullptr;
+    const double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() / 1000.0;
+    return std::max(0.0, seconds);
+}
+
+static json build_gps_logging_status_payload(const json &source) {
+    const std::string state = gps_logging_string_or(source, "state", "unknown");
+    const bool running = source.value("running", false);
+    const bool armed = source.value("armed", false);
+    const bool request_active = source.value("request_active", running || armed);
+    const json error = gps_logging_json_or_null(source, "error");
+
+    int severity = 0;
+    std::string summary = "GPS Logging ist inaktiv";
+    if (!error.is_null() || state == "error") {
+        severity = 4;
+        summary = "GPS Logging meldet einen Fehler";
+    } else if (running) {
+        severity = 1;
+        summary = "GPS-Aufzeichnung läuft";
+    } else if (armed) {
+        severity = 1;
+        summary = "GPS-Aufzeichnung ist vorgemerkt";
+    } else if (state == "finished") {
+        summary = "GPS-Aufzeichnung wurde beendet";
+    }
+
+    json root = {
+        {"schema", "openmower.gps_state.logging.v1"},
+        {"type", "status"},
+        {"published_at", ros::Time::now().toSec()},
+        {"status", state},
+        {"severity", severity},
+        {"summary", summary},
+        {"runtime", {
+            {"state", state},
+            {"request_active", request_active},
+            {"request_origin", gps_logging_json_or_null(source, "request_origin")},
+            {"armed", armed},
+            {"running", running},
+            {"pid", gps_logging_json_or_null(source, "pid")},
+            {"session_id", gps_logging_json_or_null(source, "session_id")},
+            {"requested_at", gps_logging_json_or_null(source, "requested_at")},
+            {"started_at", gps_logging_json_or_null(source, "started_at")},
+            {"finished_at", gps_logging_json_or_null(source, "finished_at")},
+            {"duration_s", gps_logging_duration_seconds(source)},
+            {"stop_reason", gps_logging_json_or_null(source, "stop_reason")}
+        }},
+        {"request", {
+            {"trigger", gps_logging_json_or_null(source, "trigger")},
+            {"mode", gps_logging_json_or_null(source, "mode")},
+            {"target_area_id", gps_logging_json_or_null(source, "target_area_id")}
+        }},
+        {"storage", {
+            {"ram_path", gps_logging_json_or_null(source, "ram_path")},
+            {"output_path", gps_logging_json_or_null(source, "output_path")},
+            {"files", source.contains("files") ? source["files"] : json::array()}
+        }},
+        {"implementation", {
+            {"script_path", gps_logging_json_or_null(source, "script_path")},
+            {"container_name", gps_logging_json_or_null(source, "container_name")},
+            {"legacy_setting_enabled", source.value("enabled", false)}
+        }},
+        {"error", error}
+    };
+
+    // Stable top-level compatibility fields make simple clients possible while
+    // the structured blocks are preferred for new app implementations.
+    root["state"] = state;
+    root["request_active"] = request_active;
+    root["armed"] = armed;
+    root["running"] = running;
+    root["session_id"] = gps_logging_json_or_null(source, "session_id");
+    root["started_at"] = gps_logging_json_or_null(source, "started_at");
+    root["finished_at"] = gps_logging_json_or_null(source, "finished_at");
+    root["stop_reason"] = gps_logging_json_or_null(source, "stop_reason");
+    return root;
+}
+
+static bool gps_logging_status_is_completed(const json &status) {
+    if (!status.is_object() || !status.contains("runtime") || !status["runtime"].is_object()) return false;
+    const json &runtime = status["runtime"];
+    return !runtime.value("running", false) &&
+           runtime.contains("session_id") && !runtime["session_id"].is_null() &&
+           runtime.contains("finished_at") && !runtime["finished_at"].is_null();
+}
+
+static json build_gps_logging_last_payload(const json &status) {
+    const json &runtime = status["runtime"];
+    const json &request = status["request"];
+    const json &storage = status["storage"];
+    const json error = status.value("error", json(nullptr));
+    const std::string stop_reason = runtime.contains("stop_reason") && runtime["stop_reason"].is_string()
+        ? runtime["stop_reason"].get<std::string>() : std::string();
+    std::string result = "finished";
+    if (!error.is_null() || status.value("status", std::string()) == "error") result = "error";
+    else if (stop_reason == "cancelled") result = "cancelled";
+
+    return {
+        {"schema", "openmower.gps_state.logging.last.v1"},
+        {"type", "last"},
+        {"published_at", ros::Time::now().toSec()},
+        {"result", result},
+        {"session_id", runtime.value("session_id", json(nullptr))},
+        {"requested_at", runtime.value("requested_at", json(nullptr))},
+        {"started_at", runtime.value("started_at", json(nullptr))},
+        {"finished_at", runtime.value("finished_at", json(nullptr))},
+        {"duration_s", runtime.value("duration_s", json(nullptr))},
+        {"stop_reason", runtime.value("stop_reason", json(nullptr))},
+        {"trigger", request.value("trigger", json(nullptr))},
+        {"mode", request.value("mode", json(nullptr))},
+        {"target_area_id", request.value("target_area_id", json(nullptr))},
+        {"output_path", storage.value("output_path", json(nullptr))},
+        {"files", storage.value("files", json::array())},
+        {"error", error}
+    };
+}
+
+void publish_gps_logging_status() {
+    std::lock_guard<std::mutex> lk(gps_logging_status_mutex);
+    if (latest_gps_logging_status_available) {
+        try_publish("gps_state/logging/status/json", latest_gps_logging_status.dump(), true);
+    }
+}
+
+void publish_gps_logging_last() {
+    std::lock_guard<std::mutex> lk(gps_logging_status_mutex);
+    if (last_completed_gps_logging_available) {
+        try_publish("gps_state/logging/last/json", last_completed_gps_logging.dump(), true);
+    }
+}
+
+void handle_gps_logging_control_payload(const std::string &payload_text) {
+    json validation = {
+        {"schema", "openmower.gps_state.logging.validation.v1"},
+        {"type", "control"},
+        {"valid", false},
+        {"accepted", json::array()},
+        {"rejected", json::array()},
+        {"published_at", ros::Time::now().toSec()}
+    };
+
+    try {
+        const json payload = json::parse(payload_text.empty() ? "{}" : payload_text);
+        if (!payload.is_object()) {
+            validation["rejected"].push_back({{"field", "$"}, {"reason", "payload must be a JSON object"}});
+        } else if (!payload.contains("command") || !payload["command"].is_string()) {
+            validation["rejected"].push_back({{"field", "command"}, {"reason", "command must be a string"}});
+        } else {
+            const std::string command = payload["command"].get<std::string>();
+            if (command != "start" && command != "stop" && command != "cancel") {
+                validation["rejected"].push_back({{"field", "command"}, {"reason", "unsupported command"}});
+            }
+            if (command == "start") {
+                {
+                    std::lock_guard<std::mutex> lk(gps_logging_status_mutex);
+                    if (latest_gps_logging_status_available &&
+                        latest_gps_logging_status.contains("runtime") &&
+                        latest_gps_logging_status["runtime"].is_object()) {
+                        const json &runtime = latest_gps_logging_status["runtime"];
+                        if (runtime.value("request_active", false) || runtime.value("armed", false) ||
+                            runtime.value("running", false)) {
+                            validation["rejected"].push_back(
+                                {{"field", "command"}, {"reason", "a logging request is already active"}});
+                        }
+                    }
+                }
+                if (payload.contains("trigger")) {
+                    if (!payload["trigger"].is_string() ||
+                        std::set<std::string>{"next_cycle", "ad_hoc", "area_id"}.count(payload["trigger"].get<std::string>()) == 0) {
+                        validation["rejected"].push_back({{"field", "trigger"}, {"reason", "unsupported trigger"}});
+                    }
+                }
+                if (payload.contains("mode")) {
+                    if (!payload["mode"].is_string() ||
+                        std::set<std::string>{"from_start_to_docking", "from_docking_to_docking", "until_docking", "manual", "area_only", "area_to_docking"}.count(payload["mode"].get<std::string>()) == 0) {
+                        validation["rejected"].push_back({{"field", "mode"}, {"reason", "unsupported mode"}});
+                    }
+                }
+                if (payload.contains("area_id") && !payload["area_id"].is_string() && !payload["area_id"].is_number_integer()) {
+                    validation["rejected"].push_back({{"field", "area_id"}, {"reason", "area_id must be a string or integer"}});
+                }
+            }
+            if (payload.contains("request_id")) validation["request_id"] = payload["request_id"];
+
+            if (validation["rejected"].empty()) {
+                validation["valid"] = true;
+                validation["accepted"].push_back({{"command", command}});
+                validation["status"] = "forwarded";
+                std_msgs::String msg;
+                msg.data = payload.dump();
+                mower_logic_satellite_logging_control_pub.publish(msg);
+            }
+        }
+    } catch (const json::exception &e) {
+        validation["rejected"].push_back({{"field", "$"}, {"reason", std::string("Error decoding JSON: ") + e.what()}});
+    }
+
+    if (!validation.contains("status")) validation["status"] = "rejected";
+    try_publish("gps_state/logging/validation/json", validation.dump(), false);
 }
 
 
@@ -2831,15 +3304,132 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
 }
 
 void mower_logic_settings_status_json_callback(const std_msgs::String::ConstPtr &msg) {
-    try_publish("settings/mower_logic/json", msg->data, true);
+    try {
+        json payload = json::parse(msg->data);
+        {
+            std::lock_guard<std::mutex> lk(mower_logic_settings_cache_mutex);
+            latest_mower_logic_settings_payload = payload;
+            latest_mower_logic_settings_available = true;
+        }
+
+        json filtered = payload;
+        if (filtered.is_object() && filtered.contains("settings") && filtered["settings"].is_object()) {
+            std::vector<std::string> keys_to_remove;
+            for (auto it = filtered["settings"].begin(); it != filtered["settings"].end(); ++it) {
+                if (is_gps_logging_internal_setting(it.key())) keys_to_remove.push_back(it.key());
+            }
+            for (const auto &key : keys_to_remove) filtered["settings"].erase(key);
+        }
+        try_publish("settings/mower_logic/json", filtered.dump(), true);
+        publish_gps_state_settings();
+
+        json pending;
+        bool pending_persistent = false;
+        {
+            std::lock_guard<std::mutex> lk(gps_logging_pending_mutex);
+            pending = pending_gps_logging_settings;
+            pending_persistent = pending_gps_logging_settings_persistent;
+        }
+        if (pending.is_object() && !pending.empty()) {
+            bool all_match = true;
+            json accepted = json::object();
+            for (auto it = pending.begin(); it != pending.end(); ++it) {
+                const auto mapping = gps_logging_public_to_internal_settings().find(it.key());
+                if (mapping == gps_logging_public_to_internal_settings().end()) continue;
+                const json internal = gps_logging_cached_internal_entry(mapping->second);
+                const char *field = pending_persistent ? "persistent" : "active";
+                if (!internal.is_object() || !internal.contains(field) || internal[field] != it.value()) {
+                    all_match = false;
+                    break;
+                }
+                accepted[it.key()] = json::array({"value"});
+            }
+            if (all_match) {
+                {
+                    std::lock_guard<std::mutex> lk(gps_logging_pending_mutex);
+                    pending_gps_logging_settings = json::object();
+                }
+                publish_gps_state_validation({
+                    {"valid", true},
+                    {"namespace", GPS_STATE_NAMESPACE},
+                    {"mode", pending_persistent ? "persistent" : "session"},
+                    {"status", "applied"},
+                    {"pending", false},
+                    {"accepted", accepted},
+                    {"rejected", json::object()},
+                    {"remarks", json::array({"GPS logging settings were applied by mower_logic."})}
+                });
+            }
+        }
+    } catch (const json::exception &e) {
+        ROS_WARN_STREAM("Could not transform mower_logic settings payload: " << e.what());
+        try_publish("settings/mower_logic/json", msg->data, true);
+    }
 }
 
 void mower_logic_settings_validation_json_callback(const std_msgs::String::ConstPtr &msg) {
     try_publish("settings/mower_logic/validation/json", msg->data, true);
+    try {
+        const json source = json::parse(msg->data);
+        json accepted = json::object();
+        json rejected = json::object();
+        if (source.contains("accepted") && source["accepted"].is_array()) {
+            for (const auto &item : source["accepted"]) {
+                if (!item.is_object() || !item.contains("key") || !item["key"].is_string()) continue;
+                const std::string public_key = gps_logging_public_key_for_internal(item["key"].get<std::string>());
+                if (!public_key.empty()) accepted[public_key] = item.value("fields", json::array({"value"}));
+            }
+        }
+        if (source.contains("rejected") && source["rejected"].is_array()) {
+            for (const auto &item : source["rejected"]) {
+                if (!item.is_object() || !item.contains("key") || !item["key"].is_string()) continue;
+                const std::string public_key = gps_logging_public_key_for_internal(item["key"].get<std::string>());
+                if (!public_key.empty()) rejected[public_key] = item.value("reason", std::string("mower_logic rejected the setting"));
+            }
+        }
+        if (!accepted.empty() || !rejected.empty()) {
+            if (!rejected.empty()) {
+                std::lock_guard<std::mutex> lk(gps_logging_pending_mutex);
+                pending_gps_logging_settings = json::object();
+            }
+            publish_gps_state_validation({
+                {"valid", !accepted.empty() && rejected.empty()},
+                {"namespace", GPS_STATE_NAMESPACE},
+                {"mode", source.value("mode", std::string("unknown"))},
+                {"status", rejected.empty() ? "accepted_by_mower_logic" : "rejected"},
+                {"pending", rejected.empty()},
+                {"accepted", accepted},
+                {"rejected", rejected},
+                {"remarks", json::array()}
+            });
+        }
+    } catch (const json::exception &) {
+    }
 }
 
 void mower_logic_satellite_logging_status_json_callback(const std_msgs::String::ConstPtr &msg) {
     try_publish("settings/mower_logic/satellite_logging/json", msg->data, true);
+    try {
+        const json source = json::parse(msg->data);
+        const json transformed = build_gps_logging_status_payload(source);
+        bool publish_last = false;
+        json last;
+        {
+            std::lock_guard<std::mutex> lk(gps_logging_status_mutex);
+            latest_gps_logging_status = transformed;
+            latest_gps_logging_status_available = true;
+            if (gps_logging_status_is_completed(transformed)) {
+                last = build_gps_logging_last_payload(transformed);
+                last_completed_gps_logging = last;
+                last_completed_gps_logging_available = true;
+                publish_last = true;
+            }
+        }
+        try_publish("gps_state/logging/status/json", transformed.dump(), true);
+        if (publish_last) try_publish("gps_state/logging/last/json", last.dump(), true);
+    } catch (const json::exception &e) {
+        ROS_WARN_STREAM("Could not transform satellite logging status: " << e.what());
+    }
 }
 
 void load_factor_computed_callback(const std_msgs::Float32::ConstPtr &msg) {

@@ -15,9 +15,10 @@ usage() {
   cat <<USAGE
 Usage: $0 [--session-id ID] [--ram-path PATH] [--output-path PATH] [--container-name NAME]
 
-Options override the SAT_LOG_* environment variables. OpenMower passes these
-values from settings/mower_logic so the script has no hard-coded active
-configuration of its own.
+Options override the SAT_LOG_* environment variables. The public configuration
+is exposed below gps_state/settings and is mapped to the internal mower_logic
+runtime fields before this script is started. The script therefore has no
+hard-coded active configuration of its own.
 USAGE
 }
 

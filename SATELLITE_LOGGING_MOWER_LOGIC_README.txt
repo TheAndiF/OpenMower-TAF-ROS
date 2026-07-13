@@ -1,92 +1,46 @@
-OpenMower MQTT Satellite Logging - mower_logic integration
+OpenMower GPS Logging - gps_state public API with mower_logic runtime integration
 
-Canonical placement
--------------------
-Satellite logging is handled under mower_logic only. There are no active compatibility topics for satellite_logger/... and no separate settings/satellite_logging namespace.
+Canonical public placement
+--------------------------
+GPS logging is exposed to MQTT clients and the app below gps_state. The public
+configuration, command, runtime status, validation and last-session data are:
 
-Settings/defaults
------------------
-The persistent/default options are regular settings/mower_logic entries. They are published with all other mower_logic settings:
+  gps_state/settings/json
+  gps_state/settings/set/session/json
+  gps_state/settings/set/persistent/json
+  gps_state/settings/set/renew/json
+  gps_state/logging/set/control/json
+  gps_state/logging/set/renew/json
+  gps_state/logging/status/json
+  gps_state/logging/last/json
+  gps_state/logging/validation/json
 
-  settings/mower_logic/json
+The internal mower_logic implementation remains cycle-aware and owns the process
+lifecycle. This keeps docking, active-work and area-id decisions close to the
+mower state while presenting one coherent GPS API to the app.
 
-They are changed through the normal mower_logic settings endpoints:
+Public settings
+---------------
+The gps_state/settings/json payload contains these GPS logging settings:
 
-  settings/mower_logic/set/session/json
-  settings/mower_logic/set/persistent/json
-  settings/mower_logic/set/renew/json
+  logging_default_trigger
+  logging_default_mode
+  logging_default_area_id
+  logging_script_path
+  logging_ram_path
+  logging_output_path
+  logging_container_name
 
-Relevant keys in the settings object:
-
-  satellite_logging_enabled
-  satellite_logging_default_trigger
-  satellite_logging_default_mode
-  satellite_logging_default_area_id
-  satellite_logging_script_path
-  satellite_logging_ram_path
-  satellite_logging_output_path
-  satellite_logging_container_name
-
-Enable-switch behavior
-----------------------
-satellite_logging_enabled is the normal user-facing start/stop switch.
-
-When satellite_logging_enabled becomes true, mower_logic checks the configured script path, makes the script executable if needed, and then starts or arms logging according to the currently configured MQTT settings:
-
-  satellite_logging_default_trigger
-  satellite_logging_default_mode
-  satellite_logging_default_area_id
-
-When satellite_logging_enabled becomes false, mower_logic stops a running log process and cancels any armed logging request.
-
-When the configured end condition is reached, mower_logic stops the log process and automatically sets satellite_logging_enabled back to false so the app/MQTT setting visibly returns to Off.
-
-Start variants
---------------
-  ad_hoc
-    Start immediately when satellite_logging_enabled is switched on.
-
-  next_cycle
-    Arm logging and start automatically on the next matching mowing cycle.
-
-  area_id
-    Arm logging and start when the current mowing area matches satellite_logging_default_area_id.
-
-End/mode variants
------------------
-  until_docking
-    Keep logging until the mower docks.
-
-  from_start_to_docking
-    Start with active mowing work and stop when the mower docks.
-
-  from_docking_to_docking
-    Start when the mower leaves docking and stop when the mower docks again.
-
-Expert/runtime paths
---------------------
-  satellite_logging_script_path
-    Script started by mower_logic. Default:
-    /home/openmower/scripts/record_satellites.sh
-
-  satellite_logging_ram_path
-    RAM directory for live logs. Default:
-    /dev/shm/openmower_satellite_logs
-
-  satellite_logging_output_path
-    Persistent output directory. Default:
-    /home/openmower/recordings/logs
-
-  satellite_logging_container_name
-    Optional ROS container override. Leave empty for auto-detection.
-    If empty, record_satellites.sh runs directly when already inside a container. On a host with Docker, it tries to find the ROS container automatically, preferring names such as openmower-open_mower_ros-1 or OpenMowerROS.
+The path and container settings are expert settings. The public keys are mapped
+to the existing internal mower_logic dynamic_reconfigure keys. The internal
+satellite_logging_enabled field is intentionally not exposed as an app toggle.
+Start, stop and cancel are commands and must not be persisted as a boolean state.
 
 Runtime control
 ---------------
-The runtime control endpoint remains available for advanced/manual control:
+Use:
 
-  mower_logic/satellite_logging/set/control/json
-  mower_logic/satellite_logging/set/renew/json
+  gps_state/logging/set/control/json
 
 Examples:
 
@@ -96,18 +50,98 @@ Examples:
   {"command":"stop"}
   {"command":"cancel"}
 
-Normal app usage should use satellite_logging_enabled and the default settings; the control endpoint is not required for ordinary start/stop operation.
+If trigger, mode or area_id are omitted, the configured defaults are used. An
+explicit command creates an independent runtime request and does not require the
+legacy satellite_logging_enabled flag.
 
 Runtime status
 --------------
-The current status is published as a mower_logic current value:
+The retained gps_state/logging/status/json payload uses schema:
 
-  mower_logic/satellite_logging/json
+  openmower.gps_state.logging.v1
 
-The status contains state, trigger, mode, target_area_id, armed/running, session_id, timestamps, generated filenames, RAM path, output path, script path, container override and error.
+It contains:
+
+  status, severity, summary
+  runtime.state
+  runtime.request_active
+  runtime.request_origin
+  runtime.armed
+  runtime.running
+  runtime.pid
+  runtime.session_id
+  runtime.requested_at
+  runtime.started_at
+  runtime.finished_at
+  runtime.duration_s
+  runtime.stop_reason
+  request.trigger
+  request.mode
+  request.target_area_id
+  storage.ram_path
+  storage.output_path
+  storage.files
+  implementation.script_path
+  implementation.container_name
+  implementation.legacy_setting_enabled
+  error
+
+Frequently used compatibility fields such as state, armed, running, session_id,
+started_at, finished_at and stop_reason are also present at the top level.
+
+Last completed session
+----------------------
+The retained gps_state/logging/last/json payload uses schema:
+
+  openmower.gps_state.logging.last.v1
+
+It is updated after a session has a session_id and finished_at timestamp. It
+contains result, stop reason, request parameters, timestamps, duration, output
+path, files and error.
+
+Validation
+----------
+Control validation is published non-retained on:
+
+  gps_state/logging/validation/json
+
+GPS logging setting writes use the normal GPS-state validation topic:
+
+  gps_state/settings/validation/json
+
+A proxied setting update is first reported as forwarded/pending. The bridge then
+republishes gps_state/settings/json from the confirmed mower_logic state and
+publishes an applied validation result when active or persistent values match.
+
+App implementation rules
+------------------------
+1. Build the GPS logging settings screen dynamically from the logging group in
+   gps_state/settings/json.
+2. Render logging_control as a command action, not as a persistent switch.
+3. Subscribe to gps_state/logging/status/json before showing action buttons.
+4. Use runtime.running and runtime.armed for button state; do not infer state
+   from the last command sent.
+5. Display error prominently whenever severity is 4 or error is non-null.
+6. Use gps_state/logging/last/json for the last completed recording card.
+7. Keep implementation and path fields in an expert section.
+8. After a settings write, wait for pending=false or confirm the requested value
+   in gps_state/settings/json.
+9. Treat request_id in command validation as an optional correlation value.
+10. Do not depend on the deprecated settings/mower_logic satellite logging topics.
+
+Compatibility
+-------------
+The former MQTT topics below settings/mower_logic/satellite_logging remain as
+migration aliases. The former satellite_logging_* fields are removed from the
+published settings/mower_logic/json payload to avoid duplicate app controls.
+They remain internal dynamic_reconfigure fields so existing installations and
+legacy clients can continue to operate during migration.
 
 Responsibility split
 --------------------
-settings/mower_logic: user-facing switch, defaults and expert paths.
-mower_logic node: validates script path, starts/arms/stops logging, decides start and end from mower state.
-record_satellites.sh: auto-detects the ROS container when needed, records into RAM and flushes to persistent storage when terminated.
+gps_state MQTT API: public settings, commands, validation, status and last session.
+xbot_monitoring: validation, public/internal key mapping, schema transformation,
+                  retained MQTT publication and compatibility aliases.
+mower_logic: cycle-aware arming, start/stop decisions and logger process lifecycle.
+record_satellites.sh: records ROS topics in RAM and copies files to persistent
+                      storage when the process is terminated.

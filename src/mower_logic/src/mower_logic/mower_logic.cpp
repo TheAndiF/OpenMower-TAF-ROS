@@ -420,10 +420,20 @@ class SatelliteLoggingController {
       const bool enabled = last_config.satellite_logging_enabled;
 
       if (!enabled) {
-        if (pid_ > 0) stopLocked();
-        armed_ = false;
-        if (state_ == "armed") state_ = "idle";
+        // The legacy dynamic_reconfigure flag is retained for backwards
+        // compatibility. It only owns requests that were created through the
+        // legacy setting. Explicit gps_state/logging commands remain active
+        // until they are stopped or cancelled explicitly.
+        if (request_origin_ == "legacy_setting") {
+          if (pid_ > 0) stopLocked("legacy_disabled");
+          request_active_ = false;
+          armed_ = false;
+          if (state_ == "armed") state_ = "idle";
+        }
       } else if (!last_enabled_) {
+        request_active_ = true;
+        request_origin_ = "legacy_setting";
+        requested_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
         startOrArmFromConfigLocked();
         disable_setting_after = state_ == "error";
       }
@@ -442,10 +452,11 @@ class SatelliteLoggingController {
       std::lock_guard<std::mutex> lk(mutex_);
 
       if (state_ == "running" && docked && mode_ != "manual" && mode_ != "area_only") {
-        stopLocked();
+        stopLocked("docked");
+        request_active_ = false;
         publish_after = true;
-        disable_setting_after = true;
-      } else if (armed_ && pid_ <= 0 && last_config.satellite_logging_enabled) {
+        disable_setting_after = request_origin_ == "legacy_setting";
+      } else if (armed_ && pid_ <= 0 && request_active_) {
         const bool left_dock = has_last_docked_ && last_docked_ && !docked;
         const bool area_match = !target_area_id_.empty() && area_id == target_area_id_;
         const bool should_start =
@@ -522,9 +533,9 @@ class SatelliteLoggingController {
 
   bool applyRequestedStartLocked(const std::string& requested_trigger, const std::string& requested_mode,
                                  const std::string& requested_area) {
-    if (!last_config.satellite_logging_enabled) {
+    if (!request_active_) {
       state_ = "idle";
-      error_ = "satellite_logging_enabled is false";
+      error_ = "logging request is not active";
       return false;
     }
     if (!triggerSupported(requested_trigger)) {
@@ -550,6 +561,7 @@ class SatelliteLoggingController {
     started_at_.clear();
     finished_at_.clear();
     session_id_.clear();
+    stop_reason_.clear();
     error_.clear();
     files_.clear();
     if (trigger_ == "ad_hoc") {
@@ -577,10 +589,10 @@ class SatelliteLoggingController {
 
   void startLocked() {
     if (pid_ > 0 || state_ == "running") return;
-    if (!last_config.satellite_logging_enabled) {
+    if (!request_active_) {
       state_ = "idle";
       armed_ = false;
-      error_ = "satellite_logging_enabled is false";
+      error_ = "logging request is not active";
       return;
     }
     if (!ensureScriptReadyLocked()) {
@@ -591,6 +603,7 @@ class SatelliteLoggingController {
     session_id_ = mower_logic_now_compact();
     started_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
     finished_at_.clear();
+    stop_reason_.clear();
     error_.clear();
     files_ = expectedFiles(session_id_);
 
@@ -615,7 +628,7 @@ class SatelliteLoggingController {
     armed_ = false;
   }
 
-  void stopLocked() {
+  void stopLocked(const std::string& reason) {
     if (pid_ <= 0) return;
     kill(-pid_, SIGTERM);
     bool exited = false;
@@ -632,6 +645,7 @@ class SatelliteLoggingController {
     pid_ = -1;
     finished_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
     state_ = exited ? "finished" : "error";
+    stop_reason_ = exited ? reason : "error";
     if (!exited) error_ = "logger did not stop after SIGTERM and was killed";
   }
 
@@ -657,14 +671,31 @@ class SatelliteLoggingController {
 
       const std::string command = payload.value("command", std::string("start"));
       if (command == "stop") {
-        stopLocked();
+        if (pid_ > 0) {
+          stopLocked("manual_stop");
+        } else if (armed_) {
+          state_ = "idle";
+          stop_reason_ = "manual_stop";
+        }
+        request_active_ = false;
         armed_ = false;
       } else if (command == "cancel") {
-        if (pid_ > 0) stopLocked();
+        if (pid_ > 0) stopLocked("cancelled");
+        request_active_ = false;
         armed_ = false;
         state_ = "idle";
+        stop_reason_ = "cancelled";
         error_.clear();
       } else if (command == "start") {
+        if (pid_ > 0 || armed_ || request_active_) {
+          // Keep the currently confirmed runtime state intact. A duplicate
+          // start must never clear the active session id or file list.
+          publishStatusLocked();
+          return;
+        }
+        request_active_ = true;
+        request_origin_ = "command";
+        requested_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
         const std::string requested_trigger = payload.value("trigger", last_config.satellite_logging_default_trigger);
         const std::string requested_mode = payload.value("mode", requested_trigger == "ad_hoc" ?
                                                         std::string("until_docking") :
@@ -678,6 +709,7 @@ class SatelliteLoggingController {
           }
         }
         applyRequestedStartLocked(requested_trigger, requested_mode, requested_area);
+        if (state_ == "error") request_active_ = false;
       } else {
         state_ = "error";
         error_ = "unsupported command: " + command;
@@ -700,6 +732,8 @@ class SatelliteLoggingController {
     }
     json payload = json::object();
     payload["enabled"] = last_config.satellite_logging_enabled;
+    payload["request_active"] = request_active_;
+    payload["request_origin"] = request_origin_.empty() ? json(nullptr) : json(request_origin_);
     payload["state"] = state_;
     payload["trigger"] = trigger_;
     payload["mode"] = mode_;
@@ -707,8 +741,10 @@ class SatelliteLoggingController {
     payload["armed"] = armed_;
     payload["running"] = pid_ > 0;
     payload["pid"] = pid_ > 0 ? json(pid_) : json(nullptr);
+    payload["requested_at"] = requested_at_.empty() ? json(nullptr) : json(requested_at_);
     payload["started_at"] = started_at_.empty() ? json(nullptr) : json(started_at_);
     payload["finished_at"] = finished_at_.empty() ? json(nullptr) : json(finished_at_);
+    payload["stop_reason"] = stop_reason_.empty() ? json(nullptr) : json(stop_reason_);
     payload["session_id"] = session_id_.empty() ? json(nullptr) : json(session_id_);
     payload["files"] = files_;
     payload["ram_path"] = last_config.satellite_logging_ram_path;
@@ -730,11 +766,15 @@ class SatelliteLoggingController {
   std::string trigger_ = "next_cycle";
   std::string mode_ = "from_start_to_docking";
   std::string target_area_id_;
+  bool request_active_ = false;
+  std::string request_origin_;
   bool armed_ = false;
   pid_t pid_ = -1;
+  std::string requested_at_;
   std::string session_id_;
   std::string started_at_;
   std::string finished_at_;
+  std::string stop_reason_;
   std::vector<std::string> files_;
   std::string error_;
   bool last_docked_ = true;
