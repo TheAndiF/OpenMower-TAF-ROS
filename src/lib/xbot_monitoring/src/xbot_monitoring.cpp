@@ -284,6 +284,12 @@ std::string external_mqtt_topic_prefix = "";
 std::string external_mqtt_port = "";
 std::string version_string = "";
 
+// Forward declarations for restart status state used by MqttCallback::connected().
+// The corresponding definitions remain with the GPS-state globals below.
+extern std::mutex gps_restart_status_mutex;
+extern json last_completed_gps_restart;
+extern bool last_completed_gps_restart_available;
+
 class MqttCallback : public mqtt::callback {
 
     void connected(const mqtt::string &string) override {
