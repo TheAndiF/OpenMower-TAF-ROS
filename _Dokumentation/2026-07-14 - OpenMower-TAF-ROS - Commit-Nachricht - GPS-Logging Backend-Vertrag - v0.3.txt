@@ -1,0 +1,20 @@
+BL_Align GPS logging backend contract
+Date: 2026-07-14
+
+Summary:
+- Aligned the ROS/MQTT backend with the GPS logging settings contract used by the app.
+- Added enum metadata and contract-compatible defaults for trigger and recording mode.
+- Allowed null to clear the default target area and normalized empty area values to null in the public settings payload.
+- Restricted public modes to manual, until_docking, from_start_to_docking and from_docking_to_docking.
+- Resolved start requests without explicit trigger or mode from the active backend settings and kept explicit values as one-shot overrides.
+- Updated the GPS logging API documentation.
+
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/GPS_LOGGING_API.md
+- src/mower_logic/cfg/MowerLogic.cfg
+- src/mower_logic/src/mower_logic/mower_logic.cpp
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-Logging Backend-Vertrag - v0.3.docx
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-Logging Backend-Vertrag - v0.3.pdf
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Patch - GPS-Logging Backend-Vertrag - v0.3.patch
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Commit-Nachricht - GPS-Logging Backend-Vertrag - v0.3.txt

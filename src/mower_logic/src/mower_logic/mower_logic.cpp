@@ -649,9 +649,9 @@ class SatelliteLoggingController {
         request_active_ = true;
         requested_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
         const std::string requested_trigger = payload.value("trigger", last_config.satellite_logging_default_trigger);
-        const std::string requested_mode = payload.value("mode", requested_trigger == "ad_hoc" ?
-                                                        std::string("until_docking") :
-                                                        last_config.satellite_logging_default_mode);
+        // Resolve omitted values strictly from the currently active settings.
+        // Explicit trigger/mode fields remain one-shot overrides for this request.
+        const std::string requested_mode = payload.value("mode", last_config.satellite_logging_default_mode);
         std::string requested_area = last_config.satellite_logging_default_area_id;
         if (payload.contains("area_id")) {
           if (payload["area_id"].is_string()) {

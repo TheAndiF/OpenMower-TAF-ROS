@@ -1081,19 +1081,30 @@ static json build_gps_state_settings_payload() {
         "satellite_logging_default_trigger",
         "Logging Standard-Startart",
         "Standard-Trigger, wenn ein Startbefehl trigger nicht explizit angibt.",
-        310, "next_cycle", false,
-        json::array({"next_cycle", "ad_hoc", "area_id"}));
+        10, "ad_hoc", false,
+        json::array({"ad_hoc", "next_cycle", "area_id"}));
+    root["settings"]["logging_default_trigger"]["type"] = "enum";
+    root["settings"]["logging_default_trigger"]["options"] = json::array({"ad_hoc", "next_cycle", "area_id"});
     root["settings"]["logging_default_mode"] = gps_logging_string_setting_entry(
         "satellite_logging_default_mode",
         "Logging Standard-Modus",
         "Standard-Endbedingung, wenn ein Startbefehl mode nicht explizit angibt.",
-        320, "from_start_to_docking", false,
-        json::array({"from_start_to_docking", "from_docking_to_docking", "until_docking", "manual", "area_only", "area_to_docking"}));
+        20, "until_docking", false,
+        json::array({"manual", "until_docking", "from_start_to_docking", "from_docking_to_docking"}));
+    root["settings"]["logging_default_mode"]["type"] = "enum";
+    root["settings"]["logging_default_mode"]["options"] = json::array({"manual", "until_docking", "from_start_to_docking", "from_docking_to_docking"});
     root["settings"]["logging_default_area_id"] = gps_logging_string_setting_entry(
         "satellite_logging_default_area_id",
         "Logging Ziel-Flächen-ID",
         "Standard-Fläche für trigger=area_id. Ein leerer Wert erfordert area_id im Startbefehl.",
-        330, "", false);
+        30, "", false);
+    for (const char *field : {"value", "active", "persistent", "default"}) {
+        if (root["settings"]["logging_default_area_id"].contains(field) &&
+            root["settings"]["logging_default_area_id"][field].is_string() &&
+            root["settings"]["logging_default_area_id"][field].get<std::string>().empty()) {
+            root["settings"]["logging_default_area_id"][field] = nullptr;
+        }
+    }
     root["settings"]["logging_output_path"] = gps_logging_string_setting_entry(
         "satellite_logging_output_path",
         "Logging Zielpfad",
@@ -1121,7 +1132,7 @@ static json build_gps_state_settings_payload() {
         {"properties", {
             {"command", {{"type", "string"}, {"enum", json::array({"start", "stop", "cancel"})}}},
             {"trigger", {{"type", "string"}, {"enum", json::array({"next_cycle", "ad_hoc", "area_id"})}}},
-            {"mode", {{"type", "string"}, {"enum", json::array({"from_start_to_docking", "from_docking_to_docking", "until_docking", "manual", "area_only", "area_to_docking"})}}},
+            {"mode", {{"type", "string"}, {"enum", json::array({"manual", "until_docking", "from_start_to_docking", "from_docking_to_docking"})}}},
             {"area_id", {{"oneOf", json::array({json{{"type", "string"}}, json{{"type", "integer"}}})}}},
             {"request_id", {{"description", "Optional correlation value echoed by validation."}}}
         }},
@@ -1343,7 +1354,11 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
                 } else if (key == "logging_default_mode") {
                     accepted = gps_state_validate_string_setting(
                         entry, string_value, reason,
-                        {"from_start_to_docking", "from_docking_to_docking", "until_docking", "manual", "area_only", "area_to_docking"}, false);
+                        {"manual", "until_docking", "from_start_to_docking", "from_docking_to_docking"}, false);
+                } else if (key == "logging_default_area_id" && entry.is_object() &&
+                           entry.contains("value") && entry["value"].is_null()) {
+                    string_value.clear();
+                    accepted = true;
                 } else if (key == "logging_script_path" || key == "logging_ram_path" || key == "logging_output_path") {
                     accepted = gps_state_validate_string_setting(entry, string_value, reason, {}, false);
                 } else {
@@ -1608,7 +1623,7 @@ void handle_gps_logging_control_payload(const std::string &payload_text) {
                 }
                 if (payload.contains("mode")) {
                     if (!payload["mode"].is_string() ||
-                        std::set<std::string>{"from_start_to_docking", "from_docking_to_docking", "until_docking", "manual", "area_only", "area_to_docking"}.count(payload["mode"].get<std::string>()) == 0) {
+                        std::set<std::string>{"manual", "until_docking", "from_start_to_docking", "from_docking_to_docking"}.count(payload["mode"].get<std::string>()) == 0) {
                         validation["rejected"].push_back({{"field", "mode"}, {"reason", "unsupported mode"}});
                     }
                 }

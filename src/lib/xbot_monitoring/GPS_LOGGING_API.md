@@ -4,7 +4,7 @@
 
 The app and MQTT API is available **only** below `gps_state`. `mower_logic` remains the internal cycle-aware executor, but its internal logging fields and ROS topics are not part of the app contract.
 
-This document describes package version v0.2 and the status schema `openmower.gps_state.logging.v2`. The API deliberately contains no compatibility topics or compatibility fields.
+This document describes package version v0.3 and the status schema `openmower.gps_state.logging.v2`. The API deliberately contains no compatibility topics or compatibility fields.
 
 ## Topic contract
 
@@ -34,9 +34,9 @@ The app must not probe that namespace, subscribe to it or publish to it. Failure
 
 The app should discover these entries from `gps_state/settings/json` rather than hard-coding labels, ordering or expert visibility:
 
-- `logging_default_trigger`
-- `logging_default_mode`
-- `logging_default_area_id`
+- `logging_default_trigger` (`ad_hoc`, `next_cycle`, `area_id`)
+- `logging_default_mode` (`manual`, `until_docking`, `from_start_to_docking`, `from_docking_to_docking`)
+- `logging_default_area_id` (string or `null`)
 - `logging_output_path`
 - `logging_ram_path`
 - `logging_script_path`
@@ -50,6 +50,24 @@ The app should discover these entries from `gps_state/settings/json` rather than
 `logging_default_trigger` and `logging_default_mode` contain an `enum` array. Render them as selectors. Path and container fields have `expert=true`.
 
 There is no logging enable setting. Runtime activation is command-based.
+
+
+### Start resolution
+
+A start payload may contain only `command` and an optional `request_id`:
+
+```json
+{"command":"start","request_id":"ui-42"}
+```
+
+For omitted logging fields, the runtime controller creates an immutable request snapshot from the currently active settings. Resolution order is:
+
+1. Explicit fields in the start command (one-shot override).
+2. Active session values.
+3. Persistent values after restart.
+4. Backend defaults (`ad_hoc` and `until_docking`).
+
+Changing settings while a request is armed or running does not modify that request snapshot.
 
 ## Control payloads
 
