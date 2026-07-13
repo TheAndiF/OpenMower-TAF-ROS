@@ -265,6 +265,7 @@ State 0 remains split into static and live data so long descriptions do not have
 
 `xbot_positioning` publishes the auxiliary ROS topic `/xbot_positioning/gps_debug_state` as retained JSON. `xbot_monitoring` uses it to fill State 0 stages that are otherwise internal to `xbot_positioning`, especially `gps_enabled`, `valid_gps_samples`, `has_gps`, outlier count and the age of the last accepted GPS update.
 
+
 ## GPS logging under GPS State
 
 The canonical app-facing GPS logging API now lives below `gps_state`. The detailed contract, payload examples, state machine and app implementation guidance are documented in [GPS_LOGGING_API.md](GPS_LOGGING_API.md).
@@ -281,4 +282,4 @@ Logging defaults and expert paths are part of the `logging` group in `gps_state/
 
 Start, stop and cancel are commands. The app must not represent runtime control as a persistent boolean switch. `gps_state/logging/status/json` is retained and is the source of truth for button state. `gps_state/logging/last/json` is retained separately so the last completed recording remains visible after the live runtime returns to an idle state.
 
-For migration, the old `settings/mower_logic/satellite_logging/...` topics remain available as compatibility aliases. Internal logging fields are removed from the published `settings/mower_logic/json` payload so a dynamically generated app does not render duplicate controls.
+No MQTT aliases below `settings/mower_logic/satellite_logging/...` are supported. Internal logging configuration fields remain filtered from the published `settings/mower_logic/json` payload so a dynamically generated app renders the single canonical `gps_state` logging group. The app must parse the structured `openmower.gps_state.logging.v2` status payload and must not implement fallback topic or fallback field handling.

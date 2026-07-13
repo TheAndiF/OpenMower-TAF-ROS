@@ -343,8 +343,6 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "map/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "map/mowing_progress/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "statustransition_log/set/renew/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/satellite_logging/set/control/json", 0);
-        client_->subscribe(this->mqtt_topic_prefix + "settings/mower_logic/satellite_logging/set/renew/json", 0);
         // settings/mow_load_factor is deprecated and is no longer published.
         // Load regulation settings are exposed exclusively through settings/mower_logic
         // to avoid duplicate UI groups.
@@ -495,13 +493,6 @@ public:
                 }
             }
             publish_statustransition_log(requested_limit);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/satellite_logging/set/control/json") {
-            std_msgs::String msg;
-            msg.data = ptr->get_payload_str();
-            mower_logic_satellite_logging_control_pub.publish(msg);
-        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/satellite_logging/set/renew/json") {
-            std_msgs::Empty msg;
-            mower_logic_satellite_logging_renew_pub.publish(msg);
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "settings/mower_logic/set/session/json") {
             std_msgs::String msg;
             msg.data = ptr->get_payload_str();
@@ -892,7 +883,6 @@ static const std::map<std::string, std::string> &gps_logging_public_to_internal_
 }
 
 static bool is_gps_logging_internal_setting(const std::string &key) {
-    if (key == "satellite_logging_enabled") return true;
     for (const auto &entry : gps_logging_public_to_internal_settings()) {
         if (entry.second == key) return true;
     }
@@ -1483,7 +1473,7 @@ static json build_gps_logging_status_payload(const json &source) {
     }
 
     json root = {
-        {"schema", "openmower.gps_state.logging.v1"},
+        {"schema", "openmower.gps_state.logging.v2"},
         {"type", "status"},
         {"published_at", ros::Time::now().toSec()},
         {"status", state},
@@ -1492,7 +1482,6 @@ static json build_gps_logging_status_payload(const json &source) {
         {"runtime", {
             {"state", state},
             {"request_active", request_active},
-            {"request_origin", gps_logging_json_or_null(source, "request_origin")},
             {"armed", armed},
             {"running", running},
             {"pid", gps_logging_json_or_null(source, "pid")},
@@ -1515,22 +1504,11 @@ static json build_gps_logging_status_payload(const json &source) {
         }},
         {"implementation", {
             {"script_path", gps_logging_json_or_null(source, "script_path")},
-            {"container_name", gps_logging_json_or_null(source, "container_name")},
-            {"legacy_setting_enabled", source.value("enabled", false)}
+            {"container_name", gps_logging_json_or_null(source, "container_name")}
         }},
         {"error", error}
     };
 
-    // Stable top-level compatibility fields make simple clients possible while
-    // the structured blocks are preferred for new app implementations.
-    root["state"] = state;
-    root["request_active"] = request_active;
-    root["armed"] = armed;
-    root["running"] = running;
-    root["session_id"] = gps_logging_json_or_null(source, "session_id");
-    root["started_at"] = gps_logging_json_or_null(source, "started_at");
-    root["finished_at"] = gps_logging_json_or_null(source, "finished_at");
-    root["stop_reason"] = gps_logging_json_or_null(source, "stop_reason");
     return root;
 }
 
@@ -1554,7 +1532,7 @@ static json build_gps_logging_last_payload(const json &status) {
     else if (stop_reason == "cancelled") result = "cancelled";
 
     return {
-        {"schema", "openmower.gps_state.logging.last.v1"},
+        {"schema", "openmower.gps_state.logging.last.v2"},
         {"type", "last"},
         {"published_at", ros::Time::now().toSec()},
         {"result", result},
@@ -3408,7 +3386,6 @@ void mower_logic_settings_validation_json_callback(const std_msgs::String::Const
 }
 
 void mower_logic_satellite_logging_status_json_callback(const std_msgs::String::ConstPtr &msg) {
-    try_publish("settings/mower_logic/satellite_logging/json", msg->data, true);
     try {
         const json source = json::parse(msg->data);
         const json transformed = build_gps_logging_status_payload(source);

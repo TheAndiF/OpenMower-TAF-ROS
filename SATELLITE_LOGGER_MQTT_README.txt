@@ -1,9 +1,9 @@
 MQTT GPS Logging
 ================
 
-Canonical API
--------------
-GPS logging is exposed to the app below gps_state:
+Canonical API only
+------------------
+GPS logging is exposed to the app exclusively below gps_state:
 
 - gps_state/settings/json
 - gps_state/settings/set/session/json
@@ -14,6 +14,9 @@ GPS logging is exposed to the app below gps_state:
 - gps_state/logging/status/json
 - gps_state/logging/last/json
 - gps_state/logging/validation/json
+
+No MQTT alias below settings/mower_logic/satellite_logging is subscribed or
+published. App implementations must use the gps_state topics directly.
 
 Start, stop and cancel are commands. Do not implement them as a persistent
 boolean switch. The retained runtime status is the source of truth for the app.
@@ -39,12 +42,11 @@ The logging group in gps_state/settings/json contains defaults and expert paths:
 - logging_output_path
 - logging_container_name
 
-Compatibility
--------------
-The previous settings/mower_logic/satellite_logging topics remain temporary
-compatibility aliases. The internal satellite_logging_* dynamic_reconfigure
-fields remain in mower_logic but are filtered from settings/mower_logic/json so
-new dynamic app pages do not render duplicate controls.
+Runtime schema
+--------------
+gps_state/logging/status/json uses openmower.gps_state.logging.v2. Runtime data
+is available only in the structured runtime, request, storage and implementation
+objects. Removed compatibility fields are not duplicated at the top level.
 
 See:
 

@@ -1,0 +1,35 @@
+BL_Remove legacy GPS logging compatibility
+Date: 2026-07-13
+
+Summary:
+- Made gps_state/settings/* and gps_state/logging/* the only app-facing GPS logging API.
+- Removed the former settings/mower_logic/satellite_logging MQTT subscriptions, publications, and fallback behavior.
+- Removed the satellite_logging_enabled dynamic setting and all runtime behavior tied to it.
+- Removed request_origin, legacy_setting_enabled, and duplicated top-level runtime fields from the public status payload.
+- Bumped the GPS logging status and last-session schemas to v2.
+- Updated the API and app integration documentation for a coordinated backend/app deployment without legacy compatibility.
+- Removed obsolete v0.1 GPS logging delivery documents that described the transitional compatibility layer.
+
+Modified files:
+- SATELLITE_LOGGER_MQTT_README.txt
+- SATELLITE_LOGGING_MOWER_LOGIC_README.txt
+- src/lib/xbot_monitoring/GPS_LOGGING_API.md
+- src/lib/xbot_monitoring/README.md
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/mower_logic/cfg/MowerLogic.cfg
+- src/mower_logic/src/mower_logic/mower_logic.cpp
+
+Added files:
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS Logging unter GPS State ohne Legacy - v0.2.docx
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS Logging unter GPS State ohne Legacy - v0.2.pdf
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Entfernungsliste - GPS Logging unter GPS State ohne Legacy - v0.2.txt
+
+Deleted files:
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Commit-Nachricht - GPS Logging unter GPS State - v0.1.txt
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Patch - GPS Logging unter GPS State - v0.1.patch
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS Logging unter GPS State - v0.1.docx
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS Logging unter GPS State - v0.1.pdf
+
+Delivery artifacts:
+- 2026-07-13 - OpenMower-TAF-ROS - Patch - GPS Logging unter GPS State ohne Legacy - v0.2.patch
+- 2026-07-13 - OpenMower-TAF-ROS - Commit-Nachricht - GPS Logging unter GPS State ohne Legacy - v0.2.txt

@@ -1,9 +1,10 @@
-OpenMower GPS Logging - gps_state public API with mower_logic runtime integration
+OpenMower GPS Logging - canonical gps_state API with mower_logic execution
 
 Canonical public placement
 --------------------------
-GPS logging is exposed to MQTT clients and the app below gps_state. The public
-configuration, command, runtime status, validation and last-session data are:
+GPS logging is exposed to MQTT clients and the app exclusively below gps_state.
+The public configuration, command, runtime status, validation and last-session
+data are:
 
   gps_state/settings/json
   gps_state/settings/set/session/json
@@ -15,6 +16,11 @@ configuration, command, runtime status, validation and last-session data are:
   gps_state/logging/last/json
   gps_state/logging/validation/json
 
+No settings/mower_logic/satellite_logging MQTT aliases exist. The app must not
+subscribe to, publish to or probe those former topic names.
+
+Responsibility split
+--------------------
 The internal mower_logic implementation remains cycle-aware and owns the process
 lifecycle. This keeps docking, active-work and area-id decisions close to the
 mower state while presenting one coherent GPS API to the app.
@@ -31,10 +37,13 @@ The gps_state/settings/json payload contains these GPS logging settings:
   logging_output_path
   logging_container_name
 
-The path and container settings are expert settings. The public keys are mapped
-to the existing internal mower_logic dynamic_reconfigure keys. The internal
-satellite_logging_enabled field is intentionally not exposed as an app toggle.
-Start, stop and cancel are commands and must not be persisted as a boolean state.
+The path and container settings are expert settings. Public logging_* keys are
+mapped internally to mower_logic dynamic_reconfigure fields. Those internal
+satellite_logging_* names are implementation details and are filtered from the
+public settings/mower_logic/json payload.
+
+There is no satellite_logging_enabled field. Start, stop and cancel are commands
+and must not be persisted as a boolean state.
 
 Runtime control
 ---------------
@@ -50,22 +59,21 @@ Examples:
   {"command":"stop"}
   {"command":"cancel"}
 
-If trigger, mode or area_id are omitted, the configured defaults are used. An
-explicit command creates an independent runtime request and does not require the
-legacy satellite_logging_enabled flag.
+The command field is mandatory. If trigger, mode or area_id are omitted from a
+start command, the confirmed GPS-State defaults are used. A duplicate start is
+rejected while a request is active, armed or running.
 
 Runtime status
 --------------
 The retained gps_state/logging/status/json payload uses schema:
 
-  openmower.gps_state.logging.v1
+  openmower.gps_state.logging.v2
 
-It contains:
+It contains only the structured public contract:
 
   status, severity, summary
   runtime.state
   runtime.request_active
-  runtime.request_origin
   runtime.armed
   runtime.running
   runtime.pid
@@ -83,17 +91,17 @@ It contains:
   storage.files
   implementation.script_path
   implementation.container_name
-  implementation.legacy_setting_enabled
   error
 
-Frequently used compatibility fields such as state, armed, running, session_id,
-started_at, finished_at and stop_reason are also present at the top level.
+There are no duplicated top-level state, armed, running, session_id or timestamp
+fields. There is no request_origin and no legacy setting field. App code must
+read the structured objects.
 
 Last completed session
 ----------------------
 The retained gps_state/logging/last/json payload uses schema:
 
-  openmower.gps_state.logging.last.v1
+  openmower.gps_state.logging.last.v2
 
 It is updated after a session has a session_id and finished_at timestamp. It
 contains result, stop reason, request parameters, timestamps, duration, output
@@ -105,7 +113,7 @@ Control validation is published non-retained on:
 
   gps_state/logging/validation/json
 
-GPS logging setting writes use the normal GPS-state validation topic:
+GPS logging setting writes use:
 
   gps_state/settings/validation/json
 
@@ -118,30 +126,25 @@ App implementation rules
 1. Build the GPS logging settings screen dynamically from the logging group in
    gps_state/settings/json.
 2. Render logging_control as a command action, not as a persistent switch.
-3. Subscribe to gps_state/logging/status/json before showing action buttons.
-4. Use runtime.running and runtime.armed for button state; do not infer state
-   from the last command sent.
-5. Display error prominently whenever severity is 4 or error is non-null.
-6. Use gps_state/logging/last/json for the last completed recording card.
+3. Subscribe to gps_state/logging/status/json and last/json before enabling
+   actions.
+4. Use runtime.request_active, runtime.armed and runtime.running for button state.
+5. Do not infer runtime state from the most recently published command.
+6. Display error prominently whenever severity is 4 or error is non-null.
 7. Keep implementation and path fields in an expert section.
 8. After a settings write, wait for pending=false or confirm the requested value
    in gps_state/settings/json.
-9. Treat request_id in command validation as an optional correlation value.
-10. Do not depend on the deprecated settings/mower_logic satellite logging topics.
+9. Use request_id in control validation as an optional correlation value.
+10. Parse openmower.gps_state.logging.v2 and read only structured fields.
+11. Do not implement fallback topic probing or fallback field parsing.
 
-Compatibility
--------------
-The former MQTT topics below settings/mower_logic/satellite_logging remain as
-migration aliases. The former satellite_logging_* fields are removed from the
-published settings/mower_logic/json payload to avoid duplicate app controls.
-They remain internal dynamic_reconfigure fields so existing installations and
-legacy clients can continue to operate during migration.
+Breaking change from package v0.1
+---------------------------------
+- Removed MQTT aliases below settings/mower_logic/satellite_logging.
+- Removed the internal satellite_logging_enabled dynamic setting.
+- Removed request_origin and legacy_setting_enabled from the public status.
+- Removed duplicated top-level runtime fields.
+- Bumped status and last-session schemas to v2.
 
-Responsibility split
---------------------
-gps_state MQTT API: public settings, commands, validation, status and last session.
-xbot_monitoring: validation, public/internal key mapping, schema transformation,
-                  retained MQTT publication and compatibility aliases.
-mower_logic: cycle-aware arming, start/stop decisions and logger process lifecycle.
-record_satellites.sh: records ROS topics in RAM and copies files to persistent
-                      storage when the process is terminated.
+Internal ROS topics below /mower_logic/satellite_logging remain an implementation
+boundary between xbot_monitoring and mower_logic. They are not an app API.

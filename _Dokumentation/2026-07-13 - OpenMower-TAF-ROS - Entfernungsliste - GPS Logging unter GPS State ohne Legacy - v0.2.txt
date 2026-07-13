@@ -1,0 +1,13 @@
+OpenMower-TAF-ROS - Entfernungsliste - GPS Logging unter GPS State ohne Legacy
+Date: 2026-07-13
+Version: v0.2
+Status: Implemented
+
+The following obsolete v0.1 delivery files were removed from the full project package because they document the transitional legacy-compatible API:
+
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Commit-Nachricht - GPS Logging unter GPS State - v0.1.txt
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Patch - GPS Logging unter GPS State - v0.1.patch
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS Logging unter GPS State - v0.1.docx
+- _Dokumentation/2026-07-13 - OpenMower-TAF-ROS - Änderungsdokumentation - GPS Logging unter GPS State - v0.1.pdf
+
+When applying only the changed-files ZIP as an overlay, remove these four files manually. The full v0.2 code package already excludes them.

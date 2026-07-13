@@ -414,69 +414,35 @@ class SatelliteLoggingController {
   }
 
   void notifyConfigChanged() {
-    bool disable_setting_after = false;
-    {
-      std::lock_guard<std::mutex> lk(mutex_);
-      const bool enabled = last_config.satellite_logging_enabled;
-
-      if (!enabled) {
-        // The legacy dynamic_reconfigure flag is retained for backwards
-        // compatibility. It only owns requests that were created through the
-        // legacy setting. Explicit gps_state/logging commands remain active
-        // until they are stopped or cancelled explicitly.
-        if (request_origin_ == "legacy_setting") {
-          if (pid_ > 0) stopLocked("legacy_disabled");
-          request_active_ = false;
-          armed_ = false;
-          if (state_ == "armed") state_ = "idle";
-        }
-      } else if (!last_enabled_) {
-        request_active_ = true;
-        request_origin_ = "legacy_setting";
-        requested_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
-        startOrArmFromConfigLocked();
-        disable_setting_after = state_ == "error";
-      }
-
-      last_enabled_ = enabled;
-      publishStatusLocked();
-    }
-
-    if (disable_setting_after) setEnabledSession(false);
+    std::lock_guard<std::mutex> lk(mutex_);
+    publishStatusLocked();
   }
 
   void updateFromMowerState(bool docked, bool active_work, const std::string& area_id) {
+    std::lock_guard<std::mutex> lk(mutex_);
+
     bool publish_after = false;
-    bool disable_setting_after = false;
-    {
-      std::lock_guard<std::mutex> lk(mutex_);
-
-      if (state_ == "running" && docked && mode_ != "manual" && mode_ != "area_only") {
-        stopLocked("docked");
-        request_active_ = false;
+    if (state_ == "running" && docked && mode_ != "manual" && mode_ != "area_only") {
+      stopLocked("docked");
+      request_active_ = false;
+      publish_after = true;
+    } else if (armed_ && pid_ <= 0 && request_active_) {
+      const bool left_dock = has_last_docked_ && last_docked_ && !docked;
+      const bool area_match = !target_area_id_.empty() && area_id == target_area_id_;
+      const bool should_start =
+          (trigger_ == "next_cycle" && mode_ == "from_docking_to_docking" && left_dock) ||
+          (trigger_ == "next_cycle" && mode_ == "from_start_to_docking" && !docked && active_work) ||
+          (trigger_ == "next_cycle" && mode_ == "until_docking" && !docked && active_work) ||
+          (trigger_ == "area_id" && area_match && !docked && active_work);
+      if (should_start) {
+        startLocked();
         publish_after = true;
-        disable_setting_after = request_origin_ == "legacy_setting";
-      } else if (armed_ && pid_ <= 0 && request_active_) {
-        const bool left_dock = has_last_docked_ && last_docked_ && !docked;
-        const bool area_match = !target_area_id_.empty() && area_id == target_area_id_;
-        const bool should_start =
-            (trigger_ == "next_cycle" && mode_ == "from_docking_to_docking" && left_dock) ||
-            (trigger_ == "next_cycle" && mode_ == "from_start_to_docking" && !docked && active_work) ||
-            (trigger_ == "next_cycle" && mode_ == "until_docking" && !docked && active_work) ||
-            (trigger_ == "area_id" && area_match && !docked && active_work);
-        if (should_start) {
-          startLocked();
-          publish_after = true;
-          disable_setting_after = state_ == "error";
-        }
       }
-
-      last_docked_ = docked;
-      has_last_docked_ = true;
-      if (publish_after) publishStatusLocked();
     }
 
-    if (disable_setting_after) setEnabledSession(false);
+    last_docked_ = docked;
+    has_last_docked_ = true;
+    if (publish_after) publishStatusLocked();
   }
 
  private:
@@ -487,13 +453,6 @@ class SatelliteLoggingController {
   static bool modeSupported(const std::string& mode) {
     return mode == "from_start_to_docking" || mode == "from_docking_to_docking" ||
            mode == "until_docking" || mode == "manual" || mode == "area_only" || mode == "area_to_docking";
-  }
-
-  static void setEnabledSession(bool enabled) {
-    mower_logic::MowerLogicConfig cfg = getConfig();
-    if (cfg.satellite_logging_enabled == enabled) return;
-    cfg.satellite_logging_enabled = enabled;
-    setConfig(cfg);
   }
 
   bool ensureScriptReadyLocked() {
@@ -571,12 +530,6 @@ class SatelliteLoggingController {
       armed_ = true;
     }
     return state_ != "error";
-  }
-
-  void startOrArmFromConfigLocked() {
-    applyRequestedStartLocked(last_config.satellite_logging_default_trigger,
-                              last_config.satellite_logging_default_mode,
-                              last_config.satellite_logging_default_area_id);
   }
 
   static std::vector<std::string> expectedFiles(const std::string& session_id) {
@@ -669,7 +622,7 @@ class SatelliteLoggingController {
         return;
       }
 
-      const std::string command = payload.value("command", std::string("start"));
+      const std::string command = payload.value("command", std::string());
       if (command == "stop") {
         if (pid_ > 0) {
           stopLocked("manual_stop");
@@ -694,7 +647,6 @@ class SatelliteLoggingController {
           return;
         }
         request_active_ = true;
-        request_origin_ = "command";
         requested_at_ = mower_logic_utc_timestamp_iso8601(std::chrono::system_clock::now());
         const std::string requested_trigger = payload.value("trigger", last_config.satellite_logging_default_trigger);
         const std::string requested_mode = payload.value("mode", requested_trigger == "ad_hoc" ?
@@ -731,9 +683,7 @@ class SatelliteLoggingController {
       mode_ = last_config.satellite_logging_default_mode;
     }
     json payload = json::object();
-    payload["enabled"] = last_config.satellite_logging_enabled;
     payload["request_active"] = request_active_;
-    payload["request_origin"] = request_origin_.empty() ? json(nullptr) : json(request_origin_);
     payload["state"] = state_;
     payload["trigger"] = trigger_;
     payload["mode"] = mode_;
@@ -767,7 +717,6 @@ class SatelliteLoggingController {
   std::string mode_ = "from_start_to_docking";
   std::string target_area_id_;
   bool request_active_ = false;
-  std::string request_origin_;
   bool armed_ = false;
   pid_t pid_ = -1;
   std::string requested_at_;
@@ -779,7 +728,6 @@ class SatelliteLoggingController {
   std::string error_;
   bool last_docked_ = true;
   bool has_last_docked_ = false;
-  bool last_enabled_ = false;
 };
 
 void updateUI(const ros::TimerEvent& timer_event) {
@@ -1210,7 +1158,6 @@ class MowerLogicSettingsBridge {
     if (key == "outline_simplify_min_distance_factor") return "Minimaler Outline-Abstandsfaktor";
     if (key == "outline_simplify_affects_next_offset") return "Progressive Outline-Glättung";
     if (key == "mow_motor_direction_mode") return "Mähmotor-Drehrichtungsmodus";
-    if (key == "satellite_logging_enabled") return "Satelliten-Logging aktiv";
     if (key == "satellite_logging_default_trigger") return "Satelliten-Logging Standard-Startart";
     if (key == "satellite_logging_default_mode") return "Satelliten-Logging Standard-Modus";
     if (key == "satellite_logging_default_area_id") return "Satelliten-Logging Ziel-Flächen-ID";
