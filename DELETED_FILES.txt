@@ -1,0 +1,2 @@
+src/mower_logic/scripts/record_satellites.sh
+src/lib/xbot_monitoring/scripts/record_satellites.sh

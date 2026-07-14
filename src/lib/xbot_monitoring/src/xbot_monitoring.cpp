@@ -1119,7 +1119,7 @@ static json build_gps_state_settings_payload() {
         "satellite_logging_script_path",
         "Logging Skriptpfad",
         "Pfad zum ausführbaren GPS-Logging-Skript.",
-        360, "/home/openmower/scripts/record_satellites.sh", true);
+        360, "/opt/open_mower_ros/scripts/record_satellites.sh", true);
     root["settings"]["logging_container_name"] = gps_logging_string_setting_entry(
         "satellite_logging_container_name",
         "Logging ROS-Container",

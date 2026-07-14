@@ -68,6 +68,15 @@ RUN apt-get -o Acquire::Retries=5 --error-on=any update && \
 
 COPY --link ./ /opt/open_mower_ros
 
+# Install runtime scripts at one canonical location. The repository keeps one
+# authoritative source under utils/scripts; the source copy is removed from the
+# final image after installation so only the stable runtime path remains.
+RUN install -d -m 0755 /opt/open_mower_ros/scripts && \
+    install -m 0755 \
+      /opt/open_mower_ros/utils/scripts/record_satellites.sh \
+      /opt/open_mower_ros/scripts/record_satellites.sh && \
+    rm -f /opt/open_mower_ros/utils/scripts/record_satellites.sh
+
 # delete prebuilt libs (so that they won't shadow the preinstalled ones)
 RUN rm -rf /opt/open_mower_ros/src/lib/slic3r_coverage_planner /apt-install_list
 

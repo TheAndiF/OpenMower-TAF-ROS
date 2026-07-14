@@ -1,0 +1,574 @@
+--- a/.dockerignore
++++ b/.dockerignore
+@@ -0,0 +1,3 @@
++build/
++devel/
++install/
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -68,6 +68,15 @@
+ 
+ COPY --link ./ /opt/open_mower_ros
+ 
++# Install runtime scripts at one canonical location. The repository keeps one
++# authoritative source under utils/scripts; the source copy is removed from the
++# final image after installation so only the stable runtime path remains.
++RUN install -d -m 0755 /opt/open_mower_ros/scripts && \
++    install -m 0755 \
++      /opt/open_mower_ros/utils/scripts/record_satellites.sh \
++      /opt/open_mower_ros/scripts/record_satellites.sh && \
++    rm -f /opt/open_mower_ros/utils/scripts/record_satellites.sh
++
+ # delete prebuilt libs (so that they won't shadow the preinstalled ones)
+ RUN rm -rf /opt/open_mower_ros/src/lib/slic3r_coverage_planner /apt-install_list
+ 
+--- a/src/mower_logic/CMakeLists.txt
++++ b/src/mower_logic/CMakeLists.txt
+@@ -211,13 +211,6 @@
+ # all install targets should use catkin DESTINATION variables
+ # See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
+ 
+-## Mark executable scripts (Python etc.) for installation
+-## in contrast to setup.py, you can choose the destination
+-catkin_install_python(PROGRAMS
+-        scripts/record_satellites.sh
+-        DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+-)
+-
+ ## Mark executables for installation
+ ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html
+ # install(TARGETS ${PROJECT_NAME}_node
+--- a/src/mower_logic/cfg/MowerLogic.cfg
++++ b/src/mower_logic/cfg/MowerLogic.cfg
+@@ -75,7 +75,7 @@
+ gen.add("satellite_logging_default_trigger", str_t, 0, "Satellite logging default trigger: ad_hoc, next_cycle, area_id", "ad_hoc")
+ gen.add("satellite_logging_default_mode", str_t, 0, "Satellite logging default mode: manual, until_docking, from_start_to_docking, from_docking_to_docking", "until_docking")
+ gen.add("satellite_logging_default_area_id", str_t, 0, "Satellite logging target area id for area_id trigger", "")
+-gen.add("satellite_logging_script_path", str_t, 0, "Satellite logging script path", "/home/openmower/scripts/record_satellites.sh")
++gen.add("satellite_logging_script_path", str_t, 0, "Satellite logging script path", "/opt/open_mower_ros/scripts/record_satellites.sh")
+ gen.add("satellite_logging_ram_path", str_t, 0, "Satellite logging RAM directory", "/dev/shm/openmower_satellite_logs")
+ gen.add("satellite_logging_output_path", str_t, 0, "Satellite logging persistent output directory", "/home/openmower/recordings/logs")
+ gen.add("satellite_logging_container_name", str_t, 0, "Optional ROS container name for satellite logging script. Leave empty for auto-detection", "")
+--- a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
++++ b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+@@ -1119,7 +1119,7 @@
+         "satellite_logging_script_path",
+         "Logging Skriptpfad",
+         "Pfad zum ausführbaren GPS-Logging-Skript.",
+-        360, "/home/openmower/scripts/record_satellites.sh", true);
++        360, "/opt/open_mower_ros/scripts/record_satellites.sh", true);
+     root["settings"]["logging_container_name"] = gps_logging_string_setting_entry(
+         "satellite_logging_container_name",
+         "Logging ROS-Container",
+--- a/src/lib/xbot_monitoring/GPS_LOGGING_API.md
++++ b/src/lib/xbot_monitoring/GPS_LOGGING_API.md
+@@ -162,7 +162,7 @@
+     "files": []
+   },
+   "implementation": {
+-    "script_path": "/home/openmower/scripts/record_satellites.sh",
++    "script_path": "/opt/open_mower_ros/scripts/record_satellites.sh",
+     "container_name": null
+   },
+   "error": null
+--- a/utils/scripts/record_satellites.sh
++++ b/utils/scripts/record_satellites.sh
+@@ -3,24 +3,113 @@
+ 
+ # Satellite/GPS logger for OpenMower.
+ # The live logs are written to RAM first and are copied to persistent storage
+-# only when this script is stopped, e.g. by the MQTT cycle controller at docking.
++# only when this script is stopped by OpenMower, e.g. at docking/charging.
++# The script intentionally does not decide start/end conditions itself.
+ 
+ SESSION_ID="${SAT_LOG_SESSION_ID:-$(date -u +%Y%m%d_%H%M%S)}"
+ RAM_BASE="${SAT_LOG_RAM_DIR:-/dev/shm/openmower_satellite_logs}"
+ OUTPUT_DIR="${SAT_LOG_OUTPUT_DIR:-/home/openmower/recordings/logs}"
+ CONTAINER_NAME="${SAT_LOG_CONTAINER:-}"
+-SESSION_RAM_DIR="${RAM_BASE}/${SESSION_ID}"
+ 
++usage() {
++  cat <<USAGE
++Usage: $0 [--session-id ID] [--ram-path PATH] [--output-path PATH] [--container-name NAME]
++
++Options override the SAT_LOG_* environment variables. The public configuration
++is exposed below gps_state/settings and is mapped to the internal mower_logic
++runtime fields before this script is started. The script therefore has no
++hard-coded active configuration of its own.
++USAGE
++}
++
++while [ "$#" -gt 0 ]; do
++  case "$1" in
++    --session-id)
++      SESSION_ID="${2:-}"
++      shift 2
++      ;;
++    --ram-path)
++      RAM_BASE="${2:-}"
++      shift 2
++      ;;
++    --output-path)
++      OUTPUT_DIR="${2:-}"
++      shift 2
++      ;;
++    --container-name)
++      CONTAINER_NAME="${2:-}"
++      shift 2
++      ;;
++    --help|-h)
++      usage
++      exit 0
++      ;;
++    *)
++      echo "Unknown argument: $1" >&2
++      usage >&2
++      exit 2
++      ;;
++  esac
++done
++
++
++running_inside_container() {
++  [ -f /.dockerenv ] && return 0
++  grep -qaE '/docker/|/kubepods/|/containerd/' /proc/1/cgroup 2>/dev/null
++}
++
++pick_first_matching_container() {
++  local pattern="$1"
++  docker ps --format '{{.Names}}' 2>/dev/null | grep -E "$pattern" | head -n 1
++}
++
++auto_detect_container() {
++  if [ -n "${CONTAINER_NAME}" ]; then
++    return
++  fi
++  if running_inside_container; then
++    return
++  fi
++  if ! command -v docker >/dev/null 2>&1; then
++    return
++  fi
++
++  local candidate=""
++  candidate="$(pick_first_matching_container '^openmower-open_mower_ros-1$')"
++  if [ -z "${candidate}" ]; then
++    candidate="$(pick_first_matching_container '^OpenMowerROS$')"
++  fi
++  if [ -z "${candidate}" ]; then
++    candidate="$(pick_first_matching_container '(^|[-_])open_?mower_?ros($|[-_])')"
++  fi
++  if [ -z "${candidate}" ]; then
++    candidate="$(pick_first_matching_container 'openmower.*ros|ros.*openmower')"
++  fi
++
++  if [ -n "${candidate}" ]; then
++    CONTAINER_NAME="${candidate}"
++  fi
++}
++
++if [ -z "${SESSION_ID}" ] || [ -z "${RAM_BASE}" ] || [ -z "${OUTPUT_DIR}" ]; then
++  echo "session-id, ram-path and output-path must not be empty" >&2
++  exit 2
++fi
++
++auto_detect_container
++
++SESSION_RAM_DIR="${RAM_BASE}/${SESSION_ID}"
+ mkdir -p "${SESSION_RAM_DIR}"
+ 
+ SAT_FILE="gps_satellite_list_${SESSION_ID}.log"
+ POS_FILE="gps_position_${SESSION_ID}.log"
+ ACC_FILE="gps_accuracy_${SESSION_ID}.log"
+ RTCM_FILE="gps_rtcm_hz_${SESSION_ID}.log"
+-META_FILE="satellite_logger_${SESSION_ID}.meta.json"
++META_FILE="satellite_logging_${SESSION_ID}.meta.json"
+ 
+ PIDS=()
+ STOPPED=0
++STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ 
+ log_info() {
+   echo "$*"
+@@ -28,20 +117,24 @@
+ 
+ copy_to_persistent() {
+   mkdir -p "${OUTPUT_DIR}"
+-  cp -f "${SESSION_RAM_DIR}/${SAT_FILE}" "${OUTPUT_DIR}/${SAT_FILE}" 2>/dev/null || true
+-  cp -f "${SESSION_RAM_DIR}/${POS_FILE}" "${OUTPUT_DIR}/${POS_FILE}" 2>/dev/null || true
+-  cp -f "${SESSION_RAM_DIR}/${ACC_FILE}" "${OUTPUT_DIR}/${ACC_FILE}" 2>/dev/null || true
+-  cp -f "${SESSION_RAM_DIR}/${RTCM_FILE}" "${OUTPUT_DIR}/${RTCM_FILE}" 2>/dev/null || true
++  for file in "${SAT_FILE}" "${POS_FILE}" "${ACC_FILE}" "${RTCM_FILE}"; do
++    if [ -f "${SESSION_RAM_DIR}/${file}" ]; then
++      cp -f "${SESSION_RAM_DIR}/${file}" "${OUTPUT_DIR}/${file}"
++    fi
++  done
+   cat > "${OUTPUT_DIR}/${META_FILE}" <<META
+ {
+   "session_id": "${SESSION_ID}",
++  "started_at": "${STARTED_AT}",
++  "finished_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+   "ram_path": "${SESSION_RAM_DIR}",
+-  "path": "${OUTPUT_DIR}",
++  "output_path": "${OUTPUT_DIR}",
+   "files": [
+     "${SAT_FILE}",
+     "${POS_FILE}",
+     "${ACC_FILE}",
+-    "${RTCM_FILE}"
++    "${RTCM_FILE}",
++    "${META_FILE}"
+   ]
+ }
+ META
+@@ -86,15 +179,20 @@
+ }
+ 
+ log_info "Starte GPS-/RTK-Mitschnitt in den Arbeitsspeicher"
++log_info "Session: ${SESSION_ID}"
+ log_info "RAM-Verzeichnis: ${SESSION_RAM_DIR}"
+ log_info "Persistentes Ziel beim Stoppen: ${OUTPUT_DIR}"
++if [ -n "${CONTAINER_NAME}" ]; then
++  log_info "ROS-Container: ${CONTAINER_NAME}"
++else
++  log_info "ROS-Container: keiner/direkt"
++fi
+ log_info "Dateien:"
+ log_info "  ${SAT_FILE}"
+ log_info "  ${POS_FILE}"
+ log_info "  ${ACC_FILE}"
+ log_info "  ${RTCM_FILE}"
+ 
+-# These topics match the existing manual satellite logging workflow.
+ run_rostopic_echo "/ll/position/gps/satellites" "${SAT_FILE}"
+ run_rostopic_echo "/ll/position/gps" "${POS_FILE}"
+ run_rostopic_echo "/xbot_positioning/xb_pose" "${ACC_FILE}"
+@@ -102,9 +200,4 @@
+ 
+ while true; do
+   sleep 1
+-  for pid in "${PIDS[@]}"; do
+-    if ! kill -0 "${pid}" 2>/dev/null; then
+-      log_info "Warnung: ein Logger-Prozess ist nicht mehr aktiv. Mitschnitt bleibt bis zum Stoppen offen."
+-    fi
+-  done
+ done
+--- a/src/mower_logic/scripts/record_satellites.sh
++++ b/src/mower_logic/scripts/record_satellites.sh
+@@ -1,203 +0,0 @@
+-#!/usr/bin/env bash
+-set -u
+-
+-# Satellite/GPS logger for OpenMower.
+-# The live logs are written to RAM first and are copied to persistent storage
+-# only when this script is stopped by OpenMower, e.g. at docking/charging.
+-# The script intentionally does not decide start/end conditions itself.
+-
+-SESSION_ID="${SAT_LOG_SESSION_ID:-$(date -u +%Y%m%d_%H%M%S)}"
+-RAM_BASE="${SAT_LOG_RAM_DIR:-/dev/shm/openmower_satellite_logs}"
+-OUTPUT_DIR="${SAT_LOG_OUTPUT_DIR:-/home/openmower/recordings/logs}"
+-CONTAINER_NAME="${SAT_LOG_CONTAINER:-}"
+-
+-usage() {
+-  cat <<USAGE
+-Usage: $0 [--session-id ID] [--ram-path PATH] [--output-path PATH] [--container-name NAME]
+-
+-Options override the SAT_LOG_* environment variables. The public configuration
+-is exposed below gps_state/settings and is mapped to the internal mower_logic
+-runtime fields before this script is started. The script therefore has no
+-hard-coded active configuration of its own.
+-USAGE
+-}
+-
+-while [ "$#" -gt 0 ]; do
+-  case "$1" in
+-    --session-id)
+-      SESSION_ID="${2:-}"
+-      shift 2
+-      ;;
+-    --ram-path)
+-      RAM_BASE="${2:-}"
+-      shift 2
+-      ;;
+-    --output-path)
+-      OUTPUT_DIR="${2:-}"
+-      shift 2
+-      ;;
+-    --container-name)
+-      CONTAINER_NAME="${2:-}"
+-      shift 2
+-      ;;
+-    --help|-h)
+-      usage
+-      exit 0
+-      ;;
+-    *)
+-      echo "Unknown argument: $1" >&2
+-      usage >&2
+-      exit 2
+-      ;;
+-  esac
+-done
+-
+-
+-running_inside_container() {
+-  [ -f /.dockerenv ] && return 0
+-  grep -qaE '/docker/|/kubepods/|/containerd/' /proc/1/cgroup 2>/dev/null
+-}
+-
+-pick_first_matching_container() {
+-  local pattern="$1"
+-  docker ps --format '{{.Names}}' 2>/dev/null | grep -E "$pattern" | head -n 1
+-}
+-
+-auto_detect_container() {
+-  if [ -n "${CONTAINER_NAME}" ]; then
+-    return
+-  fi
+-  if running_inside_container; then
+-    return
+-  fi
+-  if ! command -v docker >/dev/null 2>&1; then
+-    return
+-  fi
+-
+-  local candidate=""
+-  candidate="$(pick_first_matching_container '^openmower-open_mower_ros-1$')"
+-  if [ -z "${candidate}" ]; then
+-    candidate="$(pick_first_matching_container '^OpenMowerROS$')"
+-  fi
+-  if [ -z "${candidate}" ]; then
+-    candidate="$(pick_first_matching_container '(^|[-_])open_?mower_?ros($|[-_])')"
+-  fi
+-  if [ -z "${candidate}" ]; then
+-    candidate="$(pick_first_matching_container 'openmower.*ros|ros.*openmower')"
+-  fi
+-
+-  if [ -n "${candidate}" ]; then
+-    CONTAINER_NAME="${candidate}"
+-  fi
+-}
+-
+-if [ -z "${SESSION_ID}" ] || [ -z "${RAM_BASE}" ] || [ -z "${OUTPUT_DIR}" ]; then
+-  echo "session-id, ram-path and output-path must not be empty" >&2
+-  exit 2
+-fi
+-
+-auto_detect_container
+-
+-SESSION_RAM_DIR="${RAM_BASE}/${SESSION_ID}"
+-mkdir -p "${SESSION_RAM_DIR}"
+-
+-SAT_FILE="gps_satellite_list_${SESSION_ID}.log"
+-POS_FILE="gps_position_${SESSION_ID}.log"
+-ACC_FILE="gps_accuracy_${SESSION_ID}.log"
+-RTCM_FILE="gps_rtcm_hz_${SESSION_ID}.log"
+-META_FILE="satellite_logging_${SESSION_ID}.meta.json"
+-
+-PIDS=()
+-STOPPED=0
+-STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+-
+-log_info() {
+-  echo "$*"
+-}
+-
+-copy_to_persistent() {
+-  mkdir -p "${OUTPUT_DIR}"
+-  for file in "${SAT_FILE}" "${POS_FILE}" "${ACC_FILE}" "${RTCM_FILE}"; do
+-    if [ -f "${SESSION_RAM_DIR}/${file}" ]; then
+-      cp -f "${SESSION_RAM_DIR}/${file}" "${OUTPUT_DIR}/${file}"
+-    fi
+-  done
+-  cat > "${OUTPUT_DIR}/${META_FILE}" <<META
+-{
+-  "session_id": "${SESSION_ID}",
+-  "started_at": "${STARTED_AT}",
+-  "finished_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+-  "ram_path": "${SESSION_RAM_DIR}",
+-  "output_path": "${OUTPUT_DIR}",
+-  "files": [
+-    "${SAT_FILE}",
+-    "${POS_FILE}",
+-    "${ACC_FILE}",
+-    "${RTCM_FILE}",
+-    "${META_FILE}"
+-  ]
+-}
+-META
+-}
+-
+-stop_logger() {
+-  if [ "${STOPPED}" -eq 1 ]; then
+-    return
+-  fi
+-  STOPPED=1
+-  log_info "Stoppe Satelliten-/GPS-Mitschnitt und schreibe Logs in den festen Speicher..."
+-  for pid in "${PIDS[@]}"; do
+-    kill "${pid}" 2>/dev/null || true
+-  done
+-  for pid in "${PIDS[@]}"; do
+-    wait "${pid}" 2>/dev/null || true
+-  done
+-  copy_to_persistent
+-  log_info "Logs gespeichert unter: ${OUTPUT_DIR}"
+-}
+-
+-trap stop_logger EXIT INT TERM
+-
+-run_rostopic_echo() {
+-  local topic="$1"
+-  local file="$2"
+-  if [ -n "${CONTAINER_NAME}" ]; then
+-    docker exec "${CONTAINER_NAME}" bash -lc "source /opt/ros/noetic/setup.bash >/dev/null 2>&1 || true; rostopic echo -p '${topic}'" > "${SESSION_RAM_DIR}/${file}" 2>&1 &
+-  else
+-    bash -lc "source /opt/ros/noetic/setup.bash >/dev/null 2>&1 || true; rostopic echo -p '${topic}'" > "${SESSION_RAM_DIR}/${file}" 2>&1 &
+-  fi
+-  PIDS+=("$!")
+-}
+-
+-run_rtcm_hz() {
+-  if [ -n "${CONTAINER_NAME}" ]; then
+-    docker exec "${CONTAINER_NAME}" bash -lc "source /opt/ros/noetic/setup.bash >/dev/null 2>&1 || true; rostopic hz /ll/position/gps/rtcm" > "${SESSION_RAM_DIR}/${RTCM_FILE}" 2>&1 &
+-  else
+-    bash -lc "source /opt/ros/noetic/setup.bash >/dev/null 2>&1 || true; rostopic hz /ll/position/gps/rtcm" > "${SESSION_RAM_DIR}/${RTCM_FILE}" 2>&1 &
+-  fi
+-  PIDS+=("$!")
+-}
+-
+-log_info "Starte GPS-/RTK-Mitschnitt in den Arbeitsspeicher"
+-log_info "Session: ${SESSION_ID}"
+-log_info "RAM-Verzeichnis: ${SESSION_RAM_DIR}"
+-log_info "Persistentes Ziel beim Stoppen: ${OUTPUT_DIR}"
+-if [ -n "${CONTAINER_NAME}" ]; then
+-  log_info "ROS-Container: ${CONTAINER_NAME}"
+-else
+-  log_info "ROS-Container: keiner/direkt"
+-fi
+-log_info "Dateien:"
+-log_info "  ${SAT_FILE}"
+-log_info "  ${POS_FILE}"
+-log_info "  ${ACC_FILE}"
+-log_info "  ${RTCM_FILE}"
+-
+-run_rostopic_echo "/ll/position/gps/satellites" "${SAT_FILE}"
+-run_rostopic_echo "/ll/position/gps" "${POS_FILE}"
+-run_rostopic_echo "/xbot_positioning/xb_pose" "${ACC_FILE}"
+-run_rtcm_hz
+-
+-while true; do
+-  sleep 1
+-done
+--- a/src/lib/xbot_monitoring/scripts/record_satellites.sh
++++ b/src/lib/xbot_monitoring/scripts/record_satellites.sh
+@@ -1,110 +0,0 @@
+-#!/usr/bin/env bash
+-set -u
+-
+-# Satellite/GPS logger for OpenMower.
+-# The live logs are written to RAM first and are copied to persistent storage
+-# only when this script is stopped, e.g. by the MQTT cycle controller at docking.
+-
+-SESSION_ID="${SAT_LOG_SESSION_ID:-$(date -u +%Y%m%d_%H%M%S)}"
+-RAM_BASE="${SAT_LOG_RAM_DIR:-/dev/shm/openmower_satellite_logs}"
+-OUTPUT_DIR="${SAT_LOG_OUTPUT_DIR:-/home/openmower/recordings/logs}"
+-CONTAINER_NAME="${SAT_LOG_CONTAINER:-}"
+-SESSION_RAM_DIR="${RAM_BASE}/${SESSION_ID}"
+-
+-mkdir -p "${SESSION_RAM_DIR}"
+-
+-SAT_FILE="gps_satellite_list_${SESSION_ID}.log"
+-POS_FILE="gps_position_${SESSION_ID}.log"
+-ACC_FILE="gps_accuracy_${SESSION_ID}.log"
+-RTCM_FILE="gps_rtcm_hz_${SESSION_ID}.log"
+-META_FILE="satellite_logger_${SESSION_ID}.meta.json"
+-
+-PIDS=()
+-STOPPED=0
+-
+-log_info() {
+-  echo "$*"
+-}
+-
+-copy_to_persistent() {
+-  mkdir -p "${OUTPUT_DIR}"
+-  cp -f "${SESSION_RAM_DIR}/${SAT_FILE}" "${OUTPUT_DIR}/${SAT_FILE}" 2>/dev/null || true
+-  cp -f "${SESSION_RAM_DIR}/${POS_FILE}" "${OUTPUT_DIR}/${POS_FILE}" 2>/dev/null || true
+-  cp -f "${SESSION_RAM_DIR}/${ACC_FILE}" "${OUTPUT_DIR}/${ACC_FILE}" 2>/dev/null || true
+-  cp -f "${SESSION_RAM_DIR}/${RTCM_FILE}" "${OUTPUT_DIR}/${RTCM_FILE}" 2>/dev/null || true
+-  cat > "${OUTPUT_DIR}/${META_FILE}" <<META
+-{
+-  "session_id": "${SESSION_ID}",
+-  "ram_path": "${SESSION_RAM_DIR}",
+-  "path": "${OUTPUT_DIR}",
+-  "files": [
+-    "${SAT_FILE}",
+-    "${POS_FILE}",
+-    "${ACC_FILE}",
+-    "${RTCM_FILE}"
+-  ]
+-}
+-META
+-}
+-
+-stop_logger() {
+-  if [ "${STOPPED}" -eq 1 ]; then
+-    return
+-  fi
+-  STOPPED=1
+-  log_info "Stoppe Satelliten-/GPS-Mitschnitt und schreibe Logs in den festen Speicher..."
+-  for pid in "${PIDS[@]}"; do
+-    kill "${pid}" 2>/dev/null || true
+-  done
+-  for pid in "${PIDS[@]}"; do
+-    wait "${pid}" 2>/dev/null || true
+-  done
+-  copy_to_persistent
+-  log_info "Logs gespeichert unter: ${OUTPUT_DIR}"
+-}
+-
+-trap stop_logger EXIT INT TERM
+-
+-run_rostopic_echo() {
+-  local topic="$1"
+-  local file="$2"
+-  if [ -n "${CONTAINER_NAME}" ]; then
+-    docker exec "${CONTAINER_NAME}" bash -lc "source /opt/ros/noetic/setup.bash >/dev/null 2>&1 || true; rostopic echo -p '${topic}'" > "${SESSION_RAM_DIR}/${file}" 2>&1 &
+-  else
+-    bash -lc "source /opt/ros/noetic/setup.bash >/dev/null 2>&1 || true; rostopic echo -p '${topic}'" > "${SESSION_RAM_DIR}/${file}" 2>&1 &
+-  fi
+-  PIDS+=("$!")
+-}
+-
+-run_rtcm_hz() {
+-  if [ -n "${CONTAINER_NAME}" ]; then
+-    docker exec "${CONTAINER_NAME}" bash -lc "source /opt/ros/noetic/setup.bash >/dev/null 2>&1 || true; rostopic hz /ll/position/gps/rtcm" > "${SESSION_RAM_DIR}/${RTCM_FILE}" 2>&1 &
+-  else
+-    bash -lc "source /opt/ros/noetic/setup.bash >/dev/null 2>&1 || true; rostopic hz /ll/position/gps/rtcm" > "${SESSION_RAM_DIR}/${RTCM_FILE}" 2>&1 &
+-  fi
+-  PIDS+=("$!")
+-}
+-
+-log_info "Starte GPS-/RTK-Mitschnitt in den Arbeitsspeicher"
+-log_info "RAM-Verzeichnis: ${SESSION_RAM_DIR}"
+-log_info "Persistentes Ziel beim Stoppen: ${OUTPUT_DIR}"
+-log_info "Dateien:"
+-log_info "  ${SAT_FILE}"
+-log_info "  ${POS_FILE}"
+-log_info "  ${ACC_FILE}"
+-log_info "  ${RTCM_FILE}"
+-
+-# These topics match the existing manual satellite logging workflow.
+-run_rostopic_echo "/ll/position/gps/satellites" "${SAT_FILE}"
+-run_rostopic_echo "/ll/position/gps" "${POS_FILE}"
+-run_rostopic_echo "/xbot_positioning/xb_pose" "${ACC_FILE}"
+-run_rtcm_hz
+-
+-while true; do
+-  sleep 1
+-  for pid in "${PIDS[@]}"; do
+-    if ! kill -0 "${pid}" 2>/dev/null; then
+-      log_info "Warnung: ein Logger-Prozess ist nicht mehr aktiv. Mitschnitt bleibt bis zum Stoppen offen."
+-    fi
+-  done
+-done

@@ -162,7 +162,7 @@ Use the confirmed status topic, not the last command sent, as the source of trut
     "files": []
   },
   "implementation": {
-    "script_path": "/home/openmower/scripts/record_satellites.sh",
+    "script_path": "/opt/open_mower_ros/scripts/record_satellites.sh",
     "container_name": null
   },
   "error": null

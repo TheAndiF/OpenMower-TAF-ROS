@@ -1,0 +1,25 @@
+BL_Centralize GPS logging runtime script
+Date: 2026-07-14
+
+Summary:
+- Consolidated the GPS/RTK logging script into one authoritative repository source.
+- Installed the script at /opt/open_mower_ros/scripts/record_satellites.sh during the Docker image build.
+- Removed duplicate package copies and the Catkin-generated runtime copy.
+- Updated ROS, MQTT and API defaults to the canonical runtime path.
+- Excluded generated Catkin build directories from the Docker build context.
+- Added PDF and DOCX change documentation.
+
+Changed files:
+- .dockerignore
+- docker/Dockerfile
+- src/mower_logic/CMakeLists.txt
+- src/mower_logic/cfg/MowerLogic.cfg
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/GPS_LOGGING_API.md
+- utils/scripts/record_satellites.sh
+- src/mower_logic/scripts/record_satellites.sh (deleted)
+- src/lib/xbot_monitoring/scripts/record_satellites.sh (deleted)
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Änderungsdokumentation - Zentraler GPS-Logging-Skriptpfad - v0.1.docx
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Änderungsdokumentation - Zentraler GPS-Logging-Skriptpfad - v0.1.pdf
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Commit-Nachricht - Zentraler GPS-Logging-Skriptpfad - v0.1.txt
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Patch - Zentraler GPS-Logging-Skriptpfad - v0.1.patch
