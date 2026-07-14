@@ -1,0 +1,88 @@
+--- a/src/lib/xbot_driver_gps/src/driver_gps_node.cpp
++++ b/src/lib/xbot_driver_gps/src/driver_gps_node.cpp
+@@ -268,8 +268,12 @@
+     } else if (reset_mode == "hardware" || reset_mode == "watchdog" || reset_mode == "hardware_watchdog") {
+         reset_mode = "hardware_watchdog";
+         reset_mode_value = 0x00;
++    } else if (reset_mode == "hardware_after_shutdown" || reset_mode == "hardware_shutdown" ||
++               reset_mode == "watchdog_after_shutdown" || reset_mode == "controlled_hardware") {
++        reset_mode = "hardware_after_shutdown";
++        reset_mode_value = 0x04;
+     } else {
+-        reason = "unknown reset_mode; allowed: controlled_software, gnss_only, hardware_watchdog";
++        reason = "unknown reset_mode; allowed: controlled_software, gnss_only, hardware_watchdog, hardware_after_shutdown";
+         return false;
+     }
+     return true;
+--- a/src/lib/xbot_driver_gps/README.md
++++ b/src/lib/xbot_driver_gps/README.md
+@@ -80,6 +80,9 @@
+ - `controlled_software` -> `resetMode=0x01`
+ - `gnss_only` -> `resetMode=0x02`
+ - `hardware_watchdog` -> `resetMode=0x00`
++- `hardware_after_shutdown` -> `resetMode=0x04`
++
++`hardware_after_shutdown` performs an orderly receiver shutdown followed by an internal watchdog hardware reset. It is fully available through UBX and does not require the external `RESET_N` pin. External `RESET_N` and a true GPS power cycle remain unavailable on the current OpenMower mainboard because the reset pin is not connected and the GPS 5 V supply is not separately switchable.
+ 
+ The driver sends UBX-CFG-RST directly through the existing UBX device path. It does not wait for an ACK because the receiver can reset before an acknowledgement is returned.
+ 
+--- a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
++++ b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+@@ -1167,18 +1167,20 @@
+ 
+     root["settings"]["f9p_restart"] = gps_state_command_entry(
+         "F9P Neustart auslösen",
+-        "Sendet eine UBX-CFG-RST-Neustartanforderung an den u-blox/ZED-F9P. Unterstützt hot_start, warm_start und cold_start. Standard ist reset_mode=controlled_software; Experten können gnss_only oder hardware_watchdog angeben.",
++        "Sendet eine UBX-CFG-RST-Neustartanforderung an den u-blox/ZED-F9P. Unterstützt hot_start, warm_start und cold_start. Standard ist reset_mode=controlled_software; Experten können gnss_only, hardware_watchdog oder hardware_after_shutdown angeben.",
+         210, "gps_state/restart/set/json",
+         json{{"type", "object"},
+              {"required", json::array({"mode"})},
+              {"properties", {
+                  {"mode", {{"type", "string"}, {"enum", json::array({"hot_start", "warm_start", "cold_start"})}}},
+-                 {"reset_mode", {{"type", "string"}, {"default", "controlled_software"}, {"enum", json::array({"controlled_software", "gnss_only", "hardware_watchdog"})}}}
++                 {"reset_mode", {{"type", "string"}, {"default", "controlled_software"}, {"enum", json::array({"controlled_software", "gnss_only", "hardware_watchdog", "hardware_after_shutdown"})}}}
+              }},
+              {"examples", json::array({
+                  json{{"mode", "hot_start"}},
+                  json{{"mode", "warm_start"}},
+-                 json{{"mode", "cold_start"}}
++                 json{{"mode", "cold_start"}},
++                 json{{"mode", "warm_start"}, {"reset_mode", "hardware_after_shutdown"}},
++                 json{{"mode", "cold_start"}, {"reset_mode", "hardware_after_shutdown"}}
+              })}},
+         true);
+     root["settings"]["f9p_restart_status"] = gps_state_descriptor_entry(
+@@ -1722,8 +1724,12 @@
+     } else if (reset_mode == "hardware" || reset_mode == "watchdog" || reset_mode == "hardware_watchdog") {
+         reset_mode = "hardware_watchdog";
+         reset_mode_value = 0x00;
++    } else if (reset_mode == "hardware_after_shutdown" || reset_mode == "hardware_shutdown" ||
++               reset_mode == "watchdog_after_shutdown" || reset_mode == "controlled_hardware") {
++        reset_mode = "hardware_after_shutdown";
++        reset_mode_value = 0x04;
+     } else {
+-        reason = "unknown reset_mode; allowed: controlled_software, gnss_only, hardware_watchdog";
++        reason = "unknown reset_mode; allowed: controlled_software, gnss_only, hardware_watchdog, hardware_after_shutdown";
+         return false;
+     }
+     return true;
+@@ -1739,7 +1745,7 @@
+         {"ros_request_topic", "/ll/position/gps/restart_request"},
+         {"ros_status_topic", "/ll/position/gps/restart_status"},
+         {"modes", json::array({"hot_start", "warm_start", "cold_start"})},
+-        {"reset_modes", json::array({"controlled_software", "gnss_only", "hardware_watchdog"})},
++        {"reset_modes", json::array({"controlled_software", "gnss_only", "hardware_watchdog", "hardware_after_shutdown"})},
+         {"note", "UBX-CFG-RST may reset the receiver before an ACK is returned"}
+     };
+ }
+--- a/src/lib/xbot_monitoring/README.md
++++ b/src/lib/xbot_monitoring/README.md
+@@ -168,7 +168,7 @@
+ }
+ ```
+ 
+-Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The default `reset_mode` is `controlled_software`. Expert clients may set `reset_mode` to `gnss_only` or `hardware_watchdog` if that behavior is explicitly desired.
++Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The default `reset_mode` is `controlled_software`. Expert clients may set `reset_mode` to `gnss_only`, `hardware_watchdog` or `hardware_after_shutdown` if that behavior is explicitly desired. `hardware_after_shutdown` maps to UBX-CFG-RST `resetMode=0x04` and does not require the external RESET_N pin.
+ 
+ The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.
+ 

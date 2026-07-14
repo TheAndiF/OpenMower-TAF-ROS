@@ -1,0 +1,16 @@
+BL_Add extended F9P reset mode
+Date: 2026-07-14
+Summary:
+- Added UBX-CFG-RST resetMode 0x04 as hardware_after_shutdown.
+- Added aliases for the new reset mode in the GPS driver and MQTT validation.
+- Extended MQTT schema, examples, default status metadata, and README documentation.
+- Documented that the new mode works without RESET_N, while external reset and GPS power-cycle remain unavailable without hardware changes.
+Changed files:
+- src/lib/xbot_driver_gps/src/driver_gps_node.cpp
+- src/lib/xbot_driver_gps/README.md
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/README.md
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Aenderungsdokumentation - Erweiterte F9P Resetvarianten - v0.1.docx
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Aenderungsdokumentation - Erweiterte F9P Resetvarianten - v0.1.pdf
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Patch - Erweiterte F9P Resetvarianten - v0.1.patch
+- _Dokumentation/2026-07-14 - OpenMower-TAF-ROS - Commit-Nachricht - Erweiterte F9P Resetvarianten - v0.1.txt

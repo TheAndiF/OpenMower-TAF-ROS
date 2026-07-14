@@ -168,7 +168,7 @@ Example hot start request:
 }
 ```
 
-Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The default `reset_mode` is `controlled_software`. Expert clients may set `reset_mode` to `gnss_only` or `hardware_watchdog` if that behavior is explicitly desired.
+Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The default `reset_mode` is `controlled_software`. Expert clients may set `reset_mode` to `gnss_only`, `hardware_watchdog` or `hardware_after_shutdown` if that behavior is explicitly desired. `hardware_after_shutdown` maps to UBX-CFG-RST `resetMode=0x04` and does not require the external RESET_N pin.
 
 The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.
 

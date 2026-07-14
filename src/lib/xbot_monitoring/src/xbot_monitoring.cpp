@@ -1167,18 +1167,20 @@ static json build_gps_state_settings_payload() {
 
     root["settings"]["f9p_restart"] = gps_state_command_entry(
         "F9P Neustart auslösen",
-        "Sendet eine UBX-CFG-RST-Neustartanforderung an den u-blox/ZED-F9P. Unterstützt hot_start, warm_start und cold_start. Standard ist reset_mode=controlled_software; Experten können gnss_only oder hardware_watchdog angeben.",
+        "Sendet eine UBX-CFG-RST-Neustartanforderung an den u-blox/ZED-F9P. Unterstützt hot_start, warm_start und cold_start. Standard ist reset_mode=controlled_software; Experten können gnss_only, hardware_watchdog oder hardware_after_shutdown angeben.",
         210, "gps_state/restart/set/json",
         json{{"type", "object"},
              {"required", json::array({"mode"})},
              {"properties", {
                  {"mode", {{"type", "string"}, {"enum", json::array({"hot_start", "warm_start", "cold_start"})}}},
-                 {"reset_mode", {{"type", "string"}, {"default", "controlled_software"}, {"enum", json::array({"controlled_software", "gnss_only", "hardware_watchdog"})}}}
+                 {"reset_mode", {{"type", "string"}, {"default", "controlled_software"}, {"enum", json::array({"controlled_software", "gnss_only", "hardware_watchdog", "hardware_after_shutdown"})}}}
              }},
              {"examples", json::array({
                  json{{"mode", "hot_start"}},
                  json{{"mode", "warm_start"}},
-                 json{{"mode", "cold_start"}}
+                 json{{"mode", "cold_start"}},
+                 json{{"mode", "warm_start"}, {"reset_mode", "hardware_after_shutdown"}},
+                 json{{"mode", "cold_start"}, {"reset_mode", "hardware_after_shutdown"}}
              })}},
         true);
     root["settings"]["f9p_restart_status"] = gps_state_descriptor_entry(
@@ -1722,8 +1724,12 @@ static bool normalize_f9p_restart_request(const json &payload,
     } else if (reset_mode == "hardware" || reset_mode == "watchdog" || reset_mode == "hardware_watchdog") {
         reset_mode = "hardware_watchdog";
         reset_mode_value = 0x00;
+    } else if (reset_mode == "hardware_after_shutdown" || reset_mode == "hardware_shutdown" ||
+               reset_mode == "watchdog_after_shutdown" || reset_mode == "controlled_hardware") {
+        reset_mode = "hardware_after_shutdown";
+        reset_mode_value = 0x04;
     } else {
-        reason = "unknown reset_mode; allowed: controlled_software, gnss_only, hardware_watchdog";
+        reason = "unknown reset_mode; allowed: controlled_software, gnss_only, hardware_watchdog, hardware_after_shutdown";
         return false;
     }
     return true;
@@ -1739,7 +1745,7 @@ static json default_gps_restart_status_payload() {
         {"ros_request_topic", "/ll/position/gps/restart_request"},
         {"ros_status_topic", "/ll/position/gps/restart_status"},
         {"modes", json::array({"hot_start", "warm_start", "cold_start"})},
-        {"reset_modes", json::array({"controlled_software", "gnss_only", "hardware_watchdog"})},
+        {"reset_modes", json::array({"controlled_software", "gnss_only", "hardware_watchdog", "hardware_after_shutdown"})},
         {"note", "UBX-CFG-RST may reset the receiver before an ACK is returned"}
     };
 }
