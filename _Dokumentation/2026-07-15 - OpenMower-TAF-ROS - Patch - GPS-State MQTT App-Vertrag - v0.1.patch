@@ -1,0 +1,358 @@
+--- /mnt/data/original_xbot_monitoring.cpp	2026-07-14 23:27:25.312361277 +0000
++++ /mnt/data/work_ros/OpenMower-TAF-ROS/src/lib/xbot_monitoring/src/xbot_monitoring.cpp	2026-07-14 23:26:02.984451584 +0000
+@@ -92,6 +92,8 @@
+ void publish_latest_gps_state_payloads(bool force = false);
+ void publish_gps_state_definitions();
+ void handle_gps_state_renew_payload(const std::string &payload_text);
++void handle_gps_state_view_request(int state, const std::string &payload_text);
++void publish_active_gps_state_views();
+ void publish_gps_state0_snapshot();
+ void handle_gps_restart_set_payload(const std::string &payload_text);
+ void publish_gps_restart_validation(const json &validation);
+@@ -354,6 +356,10 @@
+         client_->subscribe(this->mqtt_topic_prefix + "gps_state/set/renew/json", 0);
+         // Deprecated compatibility alias. New clients use gps_state/set/renew/json.
+         client_->subscribe(this->mqtt_topic_prefix + "gps_state/state0/set/renew/json", 0);
++        client_->subscribe(this->mqtt_topic_prefix + "gps_state/state01/request", 1);
++        client_->subscribe(this->mqtt_topic_prefix + "gps_state/state2/request", 1);
++        client_->subscribe(this->mqtt_topic_prefix + "gps_state/state3/request", 1);
++        client_->subscribe(this->mqtt_topic_prefix + "gps_state/state4/request", 1);
+         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/renew/json", 0);
+         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/session/json", 0);
+         client_->subscribe(this->mqtt_topic_prefix + "gps_state/settings/set/persistent/json", 0);
+@@ -513,6 +519,14 @@
+         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/state0/set/renew/json") {
+             ROS_WARN_STREAM("Deprecated GPS-State renew topic used; switch to gps_state/set/renew/json");
+             publish_gps_state0_snapshot();
++        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/state01/request") {
++            handle_gps_state_view_request(1, ptr->get_payload_str());
++        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/state2/request") {
++            handle_gps_state_view_request(2, ptr->get_payload_str());
++        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/state3/request") {
++            handle_gps_state_view_request(3, ptr->get_payload_str());
++        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/state4/request") {
++            handle_gps_state_view_request(4, ptr->get_payload_str());
+         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/settings/set/renew/json") {
+             std_msgs::Empty mower_logic_renew;
+             mower_logic_settings_renew_pub.publish(mower_logic_renew);
+@@ -748,6 +762,22 @@
+ bool latest_gps_state_available = false;
+ ros::Time last_gps_state_publish_time;
+ 
++struct GpsStateViewLease {
++    std::string request_id;
++    int interval_ms = 1000;
++    ros::Time expires_at;
++    ros::Time last_published_at;
++    std::string satellite_mode = "used";
++};
++
++std::mutex gps_state_view_mutex;
++std::map<int, std::map<std::string, GpsStateViewLease>> gps_state_view_leases;
++std::map<int, uint64_t> gps_state_view_sequences;
++constexpr int GPS_STATE_VIEW_MIN_INTERVAL_MS = 250;
++constexpr int GPS_STATE_VIEW_MAX_INTERVAL_MS = 10000;
++constexpr int GPS_STATE_VIEW_DEFAULT_LEASE_MS = 15000;
++constexpr int GPS_STATE_VIEW_MAX_LEASE_MS = 60000;
++
+ std::mutex gps_state_pose_mutex;
+ xbot_msgs::AbsolutePose latest_ll_gps_pose;
+ xbot_msgs::AbsolutePose latest_xb_pose;
+@@ -1019,13 +1049,13 @@
+         "Live-Werte der 12 Entscheidungsknoten fuer die sofortige Beurteilung der Fahrfaehigkeit. Enthält Status, aktuellen Wert, Grenzwert, Abweichung und blockierende Stufe.",
+         2, "gps_state/state0/status", true);
+     root["settings"]["state1_definition"] = gps_state_descriptor_entry(
+-        "GPS State 1 Definition",
++        "GPS State01 Definition",
+         "Statische Felddefinition des kompakten Bedienerstatus.",
+-        10, "gps_state/state1/definition", false);
++        10, "gps_state/state01/definition", false);
+     root["settings"]["state1_status"] = gps_state_descriptor_entry(
+-        "GPS State 1 Status",
++        "GPS State01 Status",
+         "Dynamischer Bedienerstatus zur GPS-Fahrfreigabe.",
+-        11, "gps_state/state1/status", false);
++        11, "gps_state/state01/status", false);
+     root["settings"]["state2_definition"] = gps_state_descriptor_entry(
+         "GPS State 2 Definition",
+         "Statische Felddefinition der technischen GNSS- und Pose-Zusammenfassung.",
+@@ -1034,6 +1064,15 @@
+         "GPS State 2 Status",
+         "Dynamische technische GNSS- und Pose-Zusammenfassung ohne Satellitenliste.",
+         21, "gps_state/state2/status", false);
++    root["settings"]["state2_request"] = gps_state_command_entry(
++        "GPS State 2 Ansicht steuern",
++        "Aktiviert, erneuert oder beendet die lease-gesteuerte State2-Veröffentlichung.",
++        22, "gps_state/state2/request",
++        json{{"type","object"},{"required",json::array({"command","request_id"})}}, false, "states");
++    root["settings"]["state2_satellites"] = gps_state_descriptor_entry(
++        "GPS State 2 Satellitenliste",
++        "Separate bedarfsgesteuerte Satellitenliste (used oder visible).",
++        23, "gps_state/state2/satellites", false);
+     root["settings"]["state3_definition"] = gps_state_descriptor_entry(
+         "GPS State 3 Definition",
+         "Statische Felddefinition der Liste aktuell verwendeter Satelliten.",
+@@ -1042,6 +1081,11 @@
+         "GPS State 3 Status",
+         "Dynamische Liste der aktuell verwendeten Satelliten.",
+         31, "gps_state/state3/status", false);
++    root["settings"]["state3_request"] = gps_state_command_entry(
++        "GPS State 3 Ansicht steuern",
++        "Aktiviert, erneuert oder beendet die lease-gesteuerte State3-Veröffentlichung.",
++        32, "gps_state/state3/request",
++        json{{"type","object"},{"required",json::array({"command","request_id"})}}, false, "states");
+     root["settings"]["state4_definition"] = gps_state_descriptor_entry(
+         "GPS State 4 Definition",
+         "Statische Felddefinition der vollständigen Experten-Satellitenliste.",
+@@ -1050,6 +1094,11 @@
+         "GPS State 4 Status",
+         "Dynamische vollständige Satelliten-Diagnose mit allen sichtbaren Satelliten.",
+         41, "gps_state/state4/status", true);
++    root["settings"]["state4_request"] = gps_state_command_entry(
++        "GPS State 4 Ansicht steuern",
++        "Aktiviert, erneuert oder beendet die lease-gesteuerte State4-Veröffentlichung.",
++        42, "gps_state/state4/request",
++        json{{"type","object"},{"required",json::array({"command","request_id"})}}, true, "states");
+     root["settings"]["renew"] = gps_state_descriptor_entry(
+         "GPS States aktualisieren",
+         "Zentrale Aktualisierung. Leerer Inhalt oder {} aktualisiert Definition und Status aller aktivierten States. Optional koennen states und parts angegeben werden.",
+@@ -2822,16 +2871,26 @@
+     return payloads;
+ }
+ 
++static std::string gps_state_api_name(int state) {
++    return state == 1 ? "state01" : "state" + std::to_string(state);
++}
++
+ static std::string gps_state_definition_topic(int state) {
+-    return "gps_state/state" + std::to_string(state) + "/definition";
++    return "gps_state/" + gps_state_api_name(state) + "/definition";
+ }
+ 
+ static std::string gps_state_status_topic(int state) {
+-    return "gps_state/state" + std::to_string(state) + "/status";
++    return "gps_state/" + gps_state_api_name(state) + "/status";
++}
++
++static std::string gps_state_satellites_topic(int state) {
++    return "gps_state/" + gps_state_api_name(state) + "/satellites";
+ }
+ 
+ static bool gps_state_status_retained(int state) {
+-    return state >= 0 && state <= 2;
++    // State01 is the compact always-on drive-readiness snapshot. Detail views
++    // (State2-State4) are lease controlled and must never leave stale retained data.
++    return state == 1;
+ }
+ 
+ static bool gps_state_enabled_for_regular_publish(const GpsStateSettings &cfg, int state) {
+@@ -2992,9 +3051,9 @@
+ static std::set<int> gps_state_regular_states(const GpsStateSettings &cfg) {
+     std::set<int> states;
+     if (!cfg.enabled) return states;
+-    for (int state = 0; state <= 4; ++state) {
+-        if (gps_state_enabled_for_regular_publish(cfg, state)) states.insert(state);
+-    }
++    // State01 remains continuously available. Detail states are explicitly
++    // activated by the App through their request topics.
++    states.insert(1);
+     return states;
+ }
+ 
+@@ -3012,6 +3071,179 @@
+     return true;
+ }
+ 
++
++static int gps_state_request_int(const json &request, const char *key, int fallback, int min_value, int max_value) {
++    if (!request.contains(key) || !request[key].is_number_integer()) return fallback;
++    return std::max(min_value, std::min(max_value, request[key].get<int>()));
++}
++
++static void prune_gps_state_view_leases_locked(const ros::Time &now) {
++    for (auto &state_entry : gps_state_view_leases) {
++        for (auto it = state_entry.second.begin(); it != state_entry.second.end();) {
++            if (it->second.expires_at <= now) it = state_entry.second.erase(it);
++            else ++it;
++        }
++    }
++}
++
++static json gps_state_view_metadata_locked(int state, const ros::Time &now) {
++    json active_clients = json::array();
++    int interval_ms = GPS_STATE_VIEW_MAX_INTERVAL_MS;
++    long long lease_remaining_ms = 0;
++    std::string requested_by;
++    std::string satellite_mode = "used";
++    const auto state_it = gps_state_view_leases.find(state);
++    if (state_it != gps_state_view_leases.end()) {
++        for (const auto &entry : state_it->second) {
++            active_clients.push_back(entry.first);
++            interval_ms = std::min(interval_ms, entry.second.interval_ms);
++            lease_remaining_ms = std::max(
++                lease_remaining_ms,
++                static_cast<long long>(std::max(0.0, (entry.second.expires_at - now).toSec()) * 1000.0));
++            if (requested_by.empty()) requested_by = entry.first;
++            if (entry.second.satellite_mode == "visible") satellite_mode = "visible";
++        }
++    }
++    const bool active = !active_clients.empty();
++    if (!active) interval_ms = 0;
++    return {
++        {"active", active},
++        {"requested_by", requested_by.empty() ? json(nullptr) : json(requested_by)},
++        {"active_clients", active_clients},
++        {"interval_ms", interval_ms},
++        {"lease_remaining_ms", lease_remaining_ms},
++        {"mode", satellite_mode}
++    };
++}
++
++void handle_gps_state_view_request(int state, const std::string &payload_text) {
++    if (state < 1 || state > 4) return;
++    json request = json::parse(payload_text, nullptr, false);
++    if (!request.is_object()) {
++        publish_gps_state_validation({{"valid", false}, {"namespace", GPS_STATE_NAMESPACE},
++                                      {"state", gps_state_api_name(state)}, {"reason", "invalid JSON object"}});
++        return;
++    }
++
++    const std::string command = request.value("command", std::string());
++    std::string request_id = request.value("request_id", std::string());
++    if (request_id.empty()) request_id = "anonymous-" + gps_state_api_name(state);
++    const ros::Time now = ros::Time::now();
++    bool publish_now = false;
++
++    {
++        std::lock_guard<std::mutex> lk(gps_state_view_mutex);
++        prune_gps_state_view_leases_locked(now);
++        auto &leases = gps_state_view_leases[state];
++
++        if (command == "set_active") {
++            const bool active = request.value("active", false);
++            if (active) {
++                GpsStateViewLease &lease = leases[request_id];
++                lease.request_id = request_id;
++                lease.interval_ms = gps_state_request_int(
++                    request, "interval_ms", state == 2 ? 500 : 1000,
++                    GPS_STATE_VIEW_MIN_INTERVAL_MS, GPS_STATE_VIEW_MAX_INTERVAL_MS);
++                const int lease_ms = gps_state_request_int(
++                    request, "lease_ms", GPS_STATE_VIEW_DEFAULT_LEASE_MS,
++                    1000, GPS_STATE_VIEW_MAX_LEASE_MS);
++                lease.expires_at = now + ros::Duration(static_cast<double>(lease_ms) / 1000.0);
++                if (request.contains("satellite_mode") && request["satellite_mode"].is_string()) {
++                    const std::string mode = request["satellite_mode"].get<std::string>();
++                    lease.satellite_mode = mode == "visible" ? "visible" : (mode == "off" ? "off" : "used");
++                }
++                publish_now = true;
++            } else {
++                leases.erase(request_id);
++            }
++        } else if (command == "publish_now") {
++            publish_now = true;
++        } else if (command == "subscribe_view" && state == 2) {
++            GpsStateViewLease &lease = leases[request_id];
++            lease.request_id = request_id;
++            lease.interval_ms = gps_state_request_int(
++                request, "interval_ms", 1000, GPS_STATE_VIEW_MIN_INTERVAL_MS, GPS_STATE_VIEW_MAX_INTERVAL_MS);
++            lease.expires_at = now + ros::Duration(static_cast<double>(GPS_STATE_VIEW_DEFAULT_LEASE_MS) / 1000.0);
++            lease.satellite_mode = request.value("mode", std::string("used")) == "visible" ? "visible" : "used";
++            publish_now = true;
++        } else if (command == "set_satellite_mode" && state == 2) {
++            GpsStateViewLease &lease = leases[request_id];
++            lease.request_id = request_id;
++            lease.interval_ms = gps_state_request_int(
++                request, "interval_ms", 1000, GPS_STATE_VIEW_MIN_INTERVAL_MS, GPS_STATE_VIEW_MAX_INTERVAL_MS);
++            lease.expires_at = now + ros::Duration(static_cast<double>(GPS_STATE_VIEW_DEFAULT_LEASE_MS) / 1000.0);
++            lease.satellite_mode = request.value("mode", std::string("used")) == "visible" ? "visible" : "used";
++            publish_now = true;
++        } else if (command == "unsubscribe_view" && state == 2) {
++            leases.erase(request_id);
++        } else {
++            publish_gps_state_validation({{"valid", false}, {"namespace", GPS_STATE_NAMESPACE},
++                                          {"state", gps_state_api_name(state)}, {"request_id", request_id},
++                                          {"reason", "unsupported command"}});
++            return;
++        }
++    }
++
++    if (publish_now) {
++        const json snapshot = current_gps_state_payload_snapshot(now);
++        publish_gps_state_status(state, gps_state_raw_status_from_snapshot(snapshot, state));
++    }
++    publish_gps_state_validation({{"valid", true}, {"namespace", GPS_STATE_NAMESPACE},
++                                  {"state", gps_state_api_name(state)}, {"request_id", request_id},
++                                  {"command", command}});
++}
++
++void publish_active_gps_state_views() {
++    const ros::Time now = ros::Time::now();
++    std::vector<int> due_states;
++    std::map<int, json> metadata;
++    {
++        std::lock_guard<std::mutex> lk(gps_state_view_mutex);
++        prune_gps_state_view_leases_locked(now);
++        for (int state = 2; state <= 4; ++state) {
++            json meta = gps_state_view_metadata_locked(state, now);
++            if (!meta.value("active", false)) continue;
++            const int interval_ms = meta.value("interval_ms", 1000);
++            auto &leases = gps_state_view_leases[state];
++            bool due = false;
++            for (auto &entry : leases) {
++                if (entry.second.last_published_at.isZero() ||
++                    (now - entry.second.last_published_at).toSec() * 1000.0 >= interval_ms) {
++                    due = true;
++                    entry.second.last_published_at = now;
++                }
++            }
++            if (due) {
++                due_states.push_back(state);
++                metadata[state] = meta;
++            }
++        }
++    }
++    if (due_states.empty()) return;
++    const json snapshot = current_gps_state_payload_snapshot(now);
++    for (const int state : due_states) {
++        json raw = gps_state_raw_status_from_snapshot(snapshot, state);
++        raw["view"] = metadata[state];
++        publish_gps_state_status(state, raw);
++        if (state == 2) {
++            const std::string mode = metadata[state].value("mode", std::string("used"));
++            if (mode != "off") {
++                json source = snapshot.value(mode == "visible" ? "state4" : "state3", json::object());
++                json list = {
++                    {"schema", "gps_state.state2.satellites.v1"},
++                    {"state", "state2"},
++                    {"sequence", ++gps_state_view_sequences[20]},
++                    {"updated_at", source.value("updated_at", now.toSec())},
++                    {"mode", mode},
++                    {"count", source.value(mode == "visible" ? "visible_count" : "used_count", 0)},
++                    {"satellites", source.value("satellites", json::array())}
++                };
++                try_publish(gps_state_satellites_topic(2), list.dump(), false);
++            }
++        }
++    }
++}
++
+ void handle_gps_state_renew_payload(const std::string &payload_text) {
+     const GpsStateSettings cfg = current_gps_state_settings();
+     std::set<int> states = gps_state_regular_states(cfg);
+@@ -3100,11 +3332,12 @@
+     if (!cfg.enabled && !force) return;
+ 
+     const json snapshot = current_gps_state_payload_snapshot(ros::Time::now());
+-    for (int state = 0; state <= 4; ++state) {
+-        if (force || gps_state_enabled_for_regular_publish(cfg, state)) {
+-            publish_gps_state_status(state, gps_state_raw_status_from_snapshot(snapshot, state));
+-        }
++    // State01 is the compact dynamic base status and stays available continuously.
++    publish_gps_state_status(1, gps_state_raw_status_from_snapshot(snapshot, 1));
++    if (force) {
++        publish_gps_state_definition(1);
+     }
++    publish_active_gps_state_views();
+ }
+ 
+ void gps_state_satellites_callback(const xbot_msgs::GnssSatelliteArray::ConstPtr &msg) {

@@ -1,0 +1,16 @@
+BL_Rename GPS State01 to State1
+Date: 2026-07-15
+Summary:
+- Renamed the temporary canonical GPS State01 MQTT interface to State1.
+- Renamed definition, status and request topics from gps_state/state01 to gps_state/state1.
+- Renamed JSON state values, internal payload keys and helper functions from state01 to state1.
+- Removed acceptance of the temporary state01 and 01 selectors.
+- Kept State2 through State4, restart, logging and GPS settings behavior unchanged.
+- Updated the monitoring README and App integration documentation.
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/README.md
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Aenderungsdokumentation - Umbenennung GPS State01 in State1 - v0.3.docx
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Aenderungsdokumentation - Umbenennung GPS State01 in State1 - v0.3.pdf
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Patch - Umbenennung GPS State01 in State1 - v0.3.patch
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Commit-Nachricht - Umbenennung GPS State01 in State1 - v0.3.txt

@@ -172,70 +172,53 @@ Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The defa
 
 The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.
 
-## GPS State standardized topics
+## GPS State MQTT topics
 
-The GPS MQTT payloads use schema `gps_state.v3`. All five states use the same topic structure and a common status envelope. Static field metadata and dynamic values are separated consistently.
+The GPS MQTT API exposes only the canonical states `state1`, `state2`, `state3` and `state4`. The former State0, standalone State1 and temporary State01 interfaces are not available.
 
-For every state the canonical topics are:
+Canonical topics:
 
-- `gps_state/state0/definition` and `gps_state/state0/status`
-- `gps_state/state1/definition` and `gps_state/state1/status`
-- `gps_state/state2/definition` and `gps_state/state2/status`
-- `gps_state/state3/definition` and `gps_state/state3/status`
-- `gps_state/state4/definition` and `gps_state/state4/status`
+- `gps_state/state1/definition`, `gps_state/state1/status`, `gps_state/state1/request`
+- `gps_state/state2/definition`, `gps_state/state2/status`, `gps_state/state2/satellites`, `gps_state/state2/request`
+- `gps_state/state3/definition`, `gps_state/state3/status`, `gps_state/state3/request`
+- `gps_state/state4/definition`, `gps_state/state4/status`, `gps_state/state4/request`
 
-All definition topics are retained. State 0 to State 2 status topics are retained. State 3 and State 4 status topics are not retained because their satellite lists are short-lived snapshots. During the migration period the former `gps_state/state1` to `gps_state/state4` topics are still published as deprecated compatibility aliases.
+Static definitions are retained. `state1/status` is retained and remains continuously available. Dynamic State2-State4 status and satellite payloads are not retained and are published only while an App lease is active. No compatibility aliases such as `gps_state/state0/*`, `gps_state/state01/*` or the flat `gps_state/stateN` topics are subscribed or published.
 
-Every status contains the shared fields `schema`, `state`, `type`, `definition_version`, `published_at`, `source_at`, `age_ms`, `available`, `stale`, `status`, `severity`, `summary` and `data`. Existing state-specific fields remain available at the top level for compatibility and are additionally grouped below `data`.
+The functional separation is:
 
-The functional separation remains unchanged:
-
-- State 0: complete 12-stage drive-readiness decision chain for expert/debug use.
-- State 1: compact operator status for GPS drive readiness.
-- State 2: technical GNSS and pose summary without a satellite list.
-- State 3: currently used satellites only.
-- State 4: complete expert/debug list of all visible satellites.
+- State1: combined GPS drive-readiness result and complete decision chain.
+- State2: technical GNSS, RTK and pose summary with an optional separate satellite list.
+- State3: currently used satellites.
+- State4: all visible satellites and extended diagnostics.
 
 ## Central GPS State refresh
 
-Manual refresh requests use one central topic:
-
-- `gps_state/set/renew/json`
-
-An empty payload or `{}` republishes definition and status for all currently enabled states. A request can select states and payload parts explicitly:
+Manual refresh requests use `gps_state/set/renew/json`. An empty payload republishes settings plus the supported definitions and statuses. A request can select states and payload parts explicitly:
 
 ```json
 {
-  "states": [0, 2],
+  "states": ["state1", "state2"],
   "parts": ["status"]
 }
 ```
 
-```json
-{
-  "states": [0, 1, 2, 3, 4],
-  "parts": ["definition"]
-}
-```
+Supported state selectors are `state1`, `state2`, `state3`, `state4`, the integers `1` to `4`, and `all`. State0, State01 and the former standalone State1 contract are rejected.
 
-State values may be integers from `0` to `4`, strings such as `state2`, or the string `all`. `parts` accepts `definition` and `status`. Explicitly selected states are published independently of their regular publish switches. The central request recalculates time-dependent drive status from the latest ROS inputs and uses an unavailable/empty fallback for states whose satellite snapshot has not arrived yet.
+## GPS State1 drive diagnostics
 
-The former `gps_state/state0/set/renew/json` topic remains as a deprecated compatibility alias and republishes only State 0 definition and status. New clients should use the central topic.
+The canonical State1 combines the former State0 decision chain and the former standalone State1 summary. It remains split into static and live data:
 
-## GPS State 0 drive diagnostics
-
-State 0 remains split into static and live data so long descriptions do not have to be sent repeatedly.
-
-- `gps_state/state0/definition` contains the retained static definition of the 12 decision stages.
-- `gps_state/state0/status` contains the retained live state, current values, thresholds, severity and the first blocking stage.
-- `gps_state/settings/json` contains `publish_state0` and `publish_rate_hz` for regular publication.
+- `gps_state/state1/definition` contains the retained static definition of the decision stages.
+- `gps_state/state1/status` contains the retained full snapshot, current values, thresholds, severity and first blocking stage.
+- `gps_state/state1/request` accepts `{"command":"publish_now","request_id":"..."}` for an immediate snapshot.
+- `gps_state/settings/json` no longer contains `publish_state0` or `publish_state1` switches.
 
 ### Update behavior
 
-- Static definitions are published on MQTT connection, settings refresh/change and central renew requests; they are not repeated in every regular 1 Hz cycle.
-- Dynamic status payloads follow the configured publish rate and event-driven updates such as GNSS fix-state changes.
-- `publish_rate_hz` defaults to `1.0 Hz` and accepts `0.1` to `5.0 Hz`, corresponding to intervals from 10 seconds to 0.2 seconds.
-- The central renew request is answered immediately and does not request a new physical measurement from the F9P. It evaluates the latest ROS inputs.
+- Static definitions are published on MQTT connection, settings refresh/change and renew requests.
+- State1 dynamic status follows the configured publish rate and relevant event-driven changes.
+- State2-State4 are activated and stopped through their request topics with per-client leases.
 - Session changes use `gps_state/settings/set/session/json`; persistent changes use `gps_state/settings/set/persistent/json`.
 
 ### Status values

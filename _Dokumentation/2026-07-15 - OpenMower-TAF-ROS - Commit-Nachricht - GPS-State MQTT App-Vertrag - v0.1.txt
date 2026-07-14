@@ -1,0 +1,16 @@
+BL_Add lease-controlled GPS state MQTT views
+Date: 2026-07-15
+Summary:
+- Added canonical State01 MQTT topics for the compact drive-readiness view.
+- Added request topics and per-client leases for State2, State3 and State4.
+- Added automatic publication stop after deactivation or lease expiry.
+- Added immediate publish_now snapshots and State2 used/visible satellite list control.
+- Kept legacy GPS-state aliases for backward compatibility.
+- Extended GPS-state settings metadata with the new canonical topics and commands.
+- Added PDF and DOCX integration documentation for the app, including restart, logging and settings.
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State MQTT App-Vertrag - v0.1.docx
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State MQTT App-Vertrag - v0.1.pdf
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Patch - GPS-State MQTT App-Vertrag - v0.1.patch
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Commit-Nachricht - GPS-State MQTT App-Vertrag - v0.1.txt
