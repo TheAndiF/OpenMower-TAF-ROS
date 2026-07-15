@@ -1,28 +1,28 @@
 // Timetable service for OpenMower
 // Manages the resource "time" similar to the map service managing the resource "area".
 
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <cstdlib>
+#include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <nlohmann/json.hpp>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
 #include "mower_msgs/HighLevelControlSrv.h"
 #include "mower_msgs/HighLevelStatus.h"
 #include "ros/ros.h"
 #include "std_msgs/Bool.h"
 #include "std_msgs/String.h"
 #include "std_srvs/Trigger.h"
-
-#include <nlohmann/json.hpp>
-
-#include <algorithm>
-#include <cerrno>
-#include <cstdlib>
-#include <ctime>
-#include <cctype>
-#include <fstream>
-#include <iomanip>
-#include <set>
-#include <sstream>
-#include <string>
-#include <vector>
-#include <sys/stat.h>
-#include <sys/types.h>
 
 // RPC, used analog to mower_map_service. This is optional for the first file based test,
 // but gives us a ready JSON input path for the later MQTT/RPC wiring.
@@ -91,7 +91,8 @@ std::string trim(const std::string& in) {
 
 bool parseTimeHHMM(const std::string& text, int& minutes) {
   if (text.size() != 5 || text[2] != ':') return false;
-  if (!std::isdigit(text[0]) || !std::isdigit(text[1]) || !std::isdigit(text[3]) || !std::isdigit(text[4])) return false;
+  if (!std::isdigit(text[0]) || !std::isdigit(text[1]) || !std::isdigit(text[3]) || !std::isdigit(text[4]))
+    return false;
   const int h = std::stoi(text.substr(0, 2));
   const int m = std::stoi(text.substr(3, 2));
   if (h < 0 || h > 23 || m < 0 || m > 59) return false;
@@ -100,7 +101,7 @@ bool parseTimeHHMM(const std::string& text, int& minutes) {
 }
 
 bool isValidDay(const std::string& day) {
-  static const std::set<std::string> days = {"Monday", "Tuesday", "Wednesday", "Thursday",
+  static const std::set<std::string> days = {"Monday", "Tuesday",  "Wednesday", "Thursday",
                                              "Friday", "Saturday", "Sunday"};
   return days.count(day) > 0;
 }
@@ -209,29 +210,27 @@ bool isValidSuspensionMode(const std::string& mode) {
 json createFallbackTimetableJson() {
   return {
       {"version", 1},
-      {"metadata", {
-          {"created_by", "timetable_service_fallback"},
-          {"created_at", formatLocalTimestamp(std::time(nullptr))},
-          {"description", "Automatically created fallback timetable"}
-      }},
-      {"timeSettings", {
-          {"timezone", "Europe/Berlin"},
-          {"allowed_sources", {"ntp", "gps", "manual", "system"}},
-          {"active_source", "system"},
-          {"manual", {{"datetime", nullptr}}},
-          {"ntp", {{"server", "pool.ntp.org"}}},
-          {"gps", json::object()}
-      }},
-      {"timetable", {{"fallback_monday_1000_1200", {
-          {"day", "Monday"},
+      {"metadata",
+       {{"created_by", "timetable_service_fallback"},
+        {"created_at", formatLocalTimestamp(std::time(nullptr))},
+        {"description", "Automatically created fallback timetable"}}},
+      {"timeSettings",
+       {{"timezone", "Europe/Berlin"},
+        {"allowed_sources", {"ntp", "gps", "manual", "system"}},
+        {"active_source", "system"},
+        {"manual", {{"datetime", nullptr}}},
+        {"ntp", {{"server", "pool.ntp.org"}}},
+        {"gps", json::object()}}},
+      {"timetable",
+       {{"fallback_monday_1000_1200",
+         {{"day", "Monday"},
           {"start", "10:00"},
           {"end", "12:00"},
           {"end_behavior", "return_to_dock"},
           {"enabled", true},
           {"auto_start", true},
           {"minimum_remaining_window_minutes", 1},
-          {"required_battery_state", "sufficient"}
-      }}}},
+          {"required_battery_state", "sufficient"}}}}},
   };
 }
 
@@ -241,7 +240,8 @@ class TimetableService {
  public:
   TimetableService() : nh_(), private_nh_("~"), rpc_provider_("timetable_service", {}) {
     private_nh_.param<std::string>("timetable_file", timetable_file_, DEFAULT_TIMETABLE_FILE);
-    private_nh_.param<std::string>("suspension_file", suspension_file_, std::string("/data/ros/timetable_suspension.json"));
+    private_nh_.param<std::string>("suspension_file", suspension_file_,
+                                   std::string("/data/ros/timetable_suspension.json"));
     private_nh_.param<double>("check_rate_hz", check_rate_hz_, 1.0);
     private_nh_.param<double>("battery_full_threshold", battery_full_threshold_, 0.98);
     private_nh_.param<double>("battery_sufficient_threshold", battery_sufficient_threshold_, 0.30);
@@ -259,45 +259,48 @@ class TimetableService {
 
     reload_srv_ = nh_.advertiseService("timetable/reload", &TimetableService::reloadService, this);
 
-    rpc_provider_.addMethod({"timetable.replace", [this](const std::string&, const nlohmann::basic_json<>& params) {
-      if (!params.is_array() || params.size() != 1) {
-        json response = {{"valid", false}, {"remarks", {"Missing timetable parameter"}}};
-        throw xbot_rpc::RpcException(xbot_rpc::RpcError::ERROR_INVALID_PARAMS, response.dump());
-      }
-      std::vector<std::string> remarks;
-      TimetableConfig candidate;
-      if (!parseTimetableJson(params[0], candidate, remarks)) {
-        json response = {{"valid", false}, {"remarks", remarks}};
-        publishStatus(buildStatusJson(false, remarks, Evaluation{}, nullptr));
-        throw xbot_rpc::RpcException(xbot_rpc::RpcError::ERROR_INVALID_PARAMS, response.dump());
-      }
-      config_ = candidate;
-      valid_ = true;
-      remarks_ = remarks;
-      saveTimetableToFile();
-      evaluateAndPublish();
-      return nlohmann::basic_json<>({{"valid", true}, {"remarks", remarks_}});
-    }});
+    rpc_provider_.addMethod(
+        {"timetable.replace", [this](const std::string&, const nlohmann::basic_json<>& params) {
+           if (!params.is_array() || params.size() != 1) {
+             json response = {{"valid", false}, {"remarks", {"Missing timetable parameter"}}};
+             throw xbot_rpc::RpcException(xbot_rpc::RpcError::ERROR_INVALID_PARAMS, response.dump());
+           }
+           std::vector<std::string> remarks;
+           TimetableConfig candidate;
+           if (!parseTimetableJson(params[0], candidate, remarks)) {
+             json response = {{"valid", false}, {"remarks", remarks}};
+             publishStatus(buildStatusJson(false, remarks, Evaluation{}, nullptr));
+             throw xbot_rpc::RpcException(xbot_rpc::RpcError::ERROR_INVALID_PARAMS, response.dump());
+           }
+           config_ = candidate;
+           valid_ = true;
+           remarks_ = remarks;
+           saveTimetableToFile();
+           evaluateAndPublish();
+           return nlohmann::basic_json<>({{"valid", true}, {"remarks", remarks_}});
+         }});
 
-    rpc_provider_.addMethod({"timetable.suspension_set", [this](const std::string&, const nlohmann::basic_json<>& params) {
-      if (!params.is_array() || params.size() != 1 || !params[0].is_object()) {
-        json response = {{"valid", false}, {"remarks", {"Missing AutoMowSuspension parameter"}}};
-        throw xbot_rpc::RpcException(xbot_rpc::RpcError::ERROR_INVALID_PARAMS, response.dump());
-      }
-      std::vector<std::string> remarks;
-      if (!setSuspensionFromJson(params[0], remarks)) {
-        json response = {{"valid", false}, {"remarks", remarks}};
-        throw xbot_rpc::RpcException(xbot_rpc::RpcError::ERROR_INVALID_PARAMS, response.dump());
-      }
-      saveSuspensionState();
-      remarks_ = remarks;
-      evaluateAndPublish();
-      return nlohmann::basic_json<>({{"valid", true}, {"remarks", remarks_}});
-    }});
+    rpc_provider_.addMethod(
+        {"timetable.suspension_set", [this](const std::string&, const nlohmann::basic_json<>& params) {
+           if (!params.is_array() || params.size() != 1 || !params[0].is_object()) {
+             json response = {{"valid", false}, {"remarks", {"Missing AutoMowSuspension parameter"}}};
+             throw xbot_rpc::RpcException(xbot_rpc::RpcError::ERROR_INVALID_PARAMS, response.dump());
+           }
+           std::vector<std::string> remarks;
+           if (!setSuspensionFromJson(params[0], remarks)) {
+             json response = {{"valid", false}, {"remarks", remarks}};
+             throw xbot_rpc::RpcException(xbot_rpc::RpcError::ERROR_INVALID_PARAMS, response.dump());
+           }
+           saveSuspensionState();
+           remarks_ = remarks;
+           evaluateAndPublish();
+           return nlohmann::basic_json<>({{"valid", true}, {"remarks", remarks_}});
+         }});
     rpc_provider_.init();
 
     reloadFromFile();
-    timer_ = nh_.createTimer(ros::Duration(1.0 / std::max(0.1, check_rate_hz_)), &TimetableService::timerCallback, this);
+    timer_ =
+        nh_.createTimer(ros::Duration(1.0 / std::max(0.1, check_rate_hz_)), &TimetableService::timerCallback, this);
   }
 
  private:
@@ -422,7 +425,8 @@ class TimetableService {
 
     json normalized = json::object();
     normalized["version"] = root.value("version", 1);
-    normalized["metadata"] = root.contains("metadata") && root["metadata"].is_object() ? root["metadata"] : json::object();
+    normalized["metadata"] =
+        root.contains("metadata") && root["metadata"].is_object() ? root["metadata"] : json::object();
 
     if (!root.contains("timeSettings") || !root["timeSettings"].is_object()) {
       // Migration fallback from the early prototype schema. The stored file will be rewritten
@@ -435,8 +439,7 @@ class TimetableService {
             {"active_source", old_time.value("fallback_source", std::string("system"))},
             {"manual", {{"datetime", nullptr}}},
             {"ntp", {{"server", "pool.ntp.org"}}},
-            {"gps", json::object()}
-        };
+            {"gps", json::object()}};
         remarks.emplace_back("Migrated legacy time object to timeSettings");
       } else {
         remarks.emplace_back("timeSettings object is missing");
@@ -510,8 +513,8 @@ class TimetableService {
         entry.enabled = entry_json.value("enabled", true);
         entry.auto_start = entry_json.value("auto_start", out.auto_start);
         entry.required_battery_state = entry_json.value("required_battery_state", out.required_battery_state);
-        entry.minimum_remaining_window_minutes = entry_json.value("minimum_remaining_window_minutes",
-                                                                  out.minimum_remaining_window_minutes);
+        entry.minimum_remaining_window_minutes =
+            entry_json.value("minimum_remaining_window_minutes", out.minimum_remaining_window_minutes);
 
         if (!isValidDay(entry.day)) {
           remarks.emplace_back("timetable." + id + ".day has invalid value: " + entry.day);
@@ -534,8 +537,8 @@ class TimetableService {
           ok = false;
         }
         if (!isValidRequiredBatteryState(entry.required_battery_state)) {
-          remarks.emplace_back("timetable." + id + ".required_battery_state has invalid value: " +
-                               entry.required_battery_state);
+          remarks.emplace_back("timetable." + id +
+                               ".required_battery_state has invalid value: " + entry.required_battery_state);
           ok = false;
         }
         if (entry.minimum_remaining_window_minutes < 0) {
@@ -705,9 +708,11 @@ class TimetableService {
 
   void handleWindowEnd(const Evaluation& e) {
     if (last_evaluation_.active_window && !e.active_window) {
-      const std::string behavior = last_evaluation_.end_behavior.empty() ? config_.default_end_behavior : last_evaluation_.end_behavior;
+      const std::string behavior =
+          last_evaluation_.end_behavior.empty() ? config_.default_end_behavior : last_evaluation_.end_behavior;
       if (behavior == "return_to_dock") {
-        if (has_high_level_status_ && last_high_level_status_.state == mower_msgs::HighLevelStatus::HIGH_LEVEL_STATE_AUTONOMOUS) {
+        if (has_high_level_status_ &&
+            last_high_level_status_.state == mower_msgs::HighLevelStatus::HIGH_LEVEL_STATE_AUTONOMOUS) {
           if (mission_started_by_service_ || control_manual_missions_on_window_end_) {
             requestHome("time window ended");
           }
@@ -727,7 +732,8 @@ class TimetableService {
 
     if (mission_started_by_service_ && has_high_level_status_) {
       const bool idle_and_charging =
-          last_high_level_status_.state == mower_msgs::HighLevelStatus::HIGH_LEVEL_STATE_IDLE && last_high_level_status_.is_charging;
+          last_high_level_status_.state == mower_msgs::HighLevelStatus::HIGH_LEVEL_STATE_IDLE &&
+          last_high_level_status_.is_charging;
 
       if (!idle_and_charging) {
         service_started_mission_left_dock_ = true;
@@ -752,7 +758,8 @@ class TimetableService {
     }
   }
 
-  json buildStatusJson(bool valid, const std::vector<std::string>& remarks, const Evaluation& e, const json* timetable) const {
+  json buildStatusJson(bool valid, const std::vector<std::string>& remarks, const Evaluation& e,
+                       const json* timetable) const {
     json status;
     status["valid"] = valid;
     status["remarks"] = remarks;
@@ -854,7 +861,8 @@ class TimetableService {
     }
 
     const auto& value = payload["AutoMowSuspension"];
-    if ((value.is_number_integer() && value.get<int>() == 0) || (value.is_string() && value.get<std::string>() == "0")) {
+    if ((value.is_number_integer() && value.get<int>() == 0) ||
+        (value.is_string() && value.get<std::string>() == "0")) {
       suspension_active_ = false;
       suspension_until_text_.clear();
       suspension_until_time_ = 0;

@@ -23,13 +23,13 @@
 +- `hardware_after_shutdown` -> `resetMode=0x04`
 +
 +`hardware_after_shutdown` performs an orderly receiver shutdown followed by an internal watchdog hardware reset. It is fully available through UBX and does not require the external `RESET_N` pin. External `RESET_N` and a true GPS power cycle remain unavailable on the current OpenMower mainboard because the reset pin is not connected and the GPS 5 V supply is not separately switchable.
- 
+
  The driver sends UBX-CFG-RST directly through the existing UBX device path. It does not wait for an ACK because the receiver can reset before an acknowledgement is returned.
- 
+
 --- a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
 +++ b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
 @@ -1167,18 +1167,20 @@
- 
+
      root["settings"]["f9p_restart"] = gps_state_command_entry(
          "F9P Neustart auslösen",
 -        "Sendet eine UBX-CFG-RST-Neustartanforderung an den u-blox/ZED-F9P. Unterstützt hot_start, warm_start und cold_start. Standard ist reset_mode=controlled_software; Experten können gnss_only oder hardware_watchdog angeben.",
@@ -80,9 +80,8 @@
 @@ -168,7 +168,7 @@
  }
  ```
- 
+
 -Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The default `reset_mode` is `controlled_software`. Expert clients may set `reset_mode` to `gnss_only` or `hardware_watchdog` if that behavior is explicitly desired.
 +Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The default `reset_mode` is `controlled_software`. Expert clients may set `reset_mode` to `gnss_only`, `hardware_watchdog` or `hardware_after_shutdown` if that behavior is explicitly desired. `hardware_after_shutdown` maps to UBX-CFG-RST `resetMode=0x04` and does not require the external RESET_N pin.
- 
+
  The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.
- 

@@ -3,18 +3,18 @@ index c68becd..792985f 100644
 --- a/src/lib/xbot_monitoring/GPS_LOGGING_API.md
 +++ b/src/lib/xbot_monitoring/GPS_LOGGING_API.md
 @@ -4,7 +4,7 @@
- 
+
  The app and MQTT API is available **only** below `gps_state`. `mower_logic` remains the internal cycle-aware executor, but its internal logging fields and ROS topics are not part of the app contract.
- 
+
 -This document describes package version v0.2 and the status schema `openmower.gps_state.logging.v2`. The API deliberately contains no compatibility topics or compatibility fields.
 +This document describes package version v0.3 and the status schema `openmower.gps_state.logging.v2`. The API deliberately contains no compatibility topics or compatibility fields.
- 
+
  ## Topic contract
- 
+
 @@ -34,9 +34,9 @@ The app must not probe that namespace, subscribe to it or publish to it. Failure
- 
+
  The app should discover these entries from `gps_state/settings/json` rather than hard-coding labels, ordering or expert visibility:
- 
+
 -- `logging_default_trigger`
 -- `logging_default_mode`
 -- `logging_default_area_id`
@@ -25,9 +25,9 @@ index c68becd..792985f 100644
  - `logging_ram_path`
  - `logging_script_path`
 @@ -51,6 +51,24 @@ The app should discover these entries from `gps_state/settings/json` rather than
- 
+
  There is no logging enable setting. Runtime activation is command-based.
- 
+
 +
 +### Start resolution
 +
@@ -47,7 +47,7 @@ index c68becd..792985f 100644
 +Changing settings while a request is armed or running does not modify that request snapshot.
 +
  ## Control payloads
- 
+
  The `command` field is mandatory.
 diff --git a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
 index 1be9395..00e9ab6 100644

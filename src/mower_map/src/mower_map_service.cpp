@@ -34,17 +34,17 @@
 #include "mower_map/ClearMapSrv.h"
 #include "mower_map/ClearNavPointSrv.h"
 #include "mower_map/GetDockingPointSrv.h"
-#include "mower_map/GetMowingAreaSrv.h"
 #include "mower_map/GetMowingAreaByIdSrv.h"
 #include "mower_map/GetMowingAreaListSrv.h"
+#include "mower_map/GetMowingAreaSrv.h"
 #include "mower_map/MowingAreaInfo.h"
 #include "mower_map/SetDockingPointSrv.h"
 #include "mower_map/SetNavPointSrv.h"
 
 // JSON for map storage
 #include <algorithm>
-#include <cmath>
 #include <cfloat>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -115,9 +115,8 @@ struct MapData {
       result.push_back(area);
     }
 
-    std::sort(result.begin(), result.end(), [](const MapArea& a, const MapArea& b) {
-      return a.mowing_order < b.mowing_order;
-    });
+    std::sort(result.begin(), result.end(),
+              [](const MapArea& a, const MapArea& b) { return a.mowing_order < b.mowing_order; });
 
     return result;
   }
@@ -300,7 +299,6 @@ mower_map::MapArea internalMapAreaToMower(const MapArea& area) {
   return result;
 }
 
-
 uint32_t countActiveObstacles() {
   uint32_t count = 0;
   for (const auto& area : map_data.areas) {
@@ -416,13 +414,11 @@ double distancePolygonsSquared(const Polygon& a, const Polygon& b) {
   return best;
 }
 
-
 // Two polygons are considered connected when they touch/overlap or are closer than this tolerance.
 // The tolerance is important because map polygons rarely touch exactly due to GPS/float noise.
 constexpr double MOWING_ORDER_CONNECTION_TOLERANCE = 0.30;  // meters
 
-bool polygonsConnected(const Polygon& a, const Polygon& b,
-                       double tolerance = MOWING_ORDER_CONNECTION_TOLERANCE) {
+bool polygonsConnected(const Polygon& a, const Polygon& b, double tolerance = MOWING_ORDER_CONNECTION_TOLERANCE) {
   if (a.empty() || b.empty()) return false;
   return distancePolygonsSquared(a, b) <= tolerance * tolerance;
 }
@@ -483,8 +479,7 @@ bool mowingAreasConnectedDirectlyOrViaNav(const MapArea& from, const MapArea& to
   return false;
 }
 
-std::vector<MapArea*> getConnectionAnchorsByPriority(MapArea* current_area,
-                                                     const std::vector<MapArea*>& ordered) {
+std::vector<MapArea*> getConnectionAnchorsByPriority(MapArea* current_area, const std::vector<MapArea*>& ordered) {
   std::vector<MapArea*> anchors;
 
   if (current_area != nullptr) {
@@ -559,18 +554,19 @@ std::vector<MapArea*> calculateOrderedMowingAreas() {
 
         if (selection_pool.empty()) continue;
 
-        auto best_it = std::min_element(selection_pool.begin(), selection_pool.end(), [&](const MapArea* a, const MapArea* b) {
-          return distancePolygonsSquared(anchor->outline, a->outline) <
-                 distancePolygonsSquared(anchor->outline, b->outline);
-        });
+        auto best_it =
+            std::min_element(selection_pool.begin(), selection_pool.end(), [&](const MapArea* a, const MapArea* b) {
+              return distancePolygonsSquared(anchor->outline, a->outline) <
+                     distancePolygonsSquared(anchor->outline, b->outline);
+            });
 
         next_area = *best_it;
         break;
       }
 
       if (next_area == nullptr) {
-        ROS_WARN_STREAM("Stopping mowing order calculation: " << candidates.size()
-                        << " enabled mowing area(s) are not connected to the current mowing area "
+        ROS_WARN_STREAM("Stopping mowing order calculation: "
+                        << candidates.size() << " enabled mowing area(s) are not connected to the current mowing area "
                         << "or to any previously ordered mowing area directly or through active nav areas.");
         break;
       }
@@ -629,13 +625,13 @@ bool hasValidMowingOrder() {
 
     if (area.mowing_order <= 0) {
       ROS_WARN_STREAM("Mowing area '" << area.name << "' (" << area.id
-                      << ") has missing/invalid mowing_order=" << area.mowing_order);
+                                      << ") has missing/invalid mowing_order=" << area.mowing_order);
       return false;
     }
 
     if (!used_orders.insert(area.mowing_order).second) {
-      ROS_WARN_STREAM("Duplicate mowing_order=" << area.mowing_order
-                      << " found at mowing area '" << area.name << "' (" << area.id << ")");
+      ROS_WARN_STREAM("Duplicate mowing_order=" << area.mowing_order << " found at mowing area '" << area.name << "' ("
+                                                << area.id << ")");
       return false;
     }
   }
@@ -1004,7 +1000,7 @@ bool getMowingArea(mower_map::GetMowingAreaSrvRequest& req, mower_map::GetMowing
 
   const auto& selected_area = mowing_areas[req.index];
   ROS_INFO_STREAM("Selected mowing area: " << selected_area.name << " id=" << selected_area.id
-                                            << " order=" << selected_area.mowing_order);
+                                           << " order=" << selected_area.mowing_order);
   res.area = internalMapAreaToMower(selected_area);
   res.area_id = selected_area.id;
 
@@ -1012,7 +1008,6 @@ bool getMowingArea(mower_map::GetMowingAreaSrvRequest& req, mower_map::GetMowing
 
   return true;
 }
-
 
 bool getMowingAreaList(mower_map::GetMowingAreaListSrvRequest& req, mower_map::GetMowingAreaListSrvResponse& res) {
   ROS_INFO_STREAM("Got getMowingAreaList call");
@@ -1032,9 +1027,8 @@ bool getMowingAreaById(mower_map::GetMowingAreaByIdSrvRequest& req, mower_map::G
   ROS_INFO_STREAM("Got getMowingAreaById call with area_id: " << req.area_id);
 
   auto mowing_areas = map_data.getMowingAreas();
-  auto it = std::find_if(mowing_areas.begin(), mowing_areas.end(), [&](const MapArea& area) {
-    return area.id == req.area_id;
-  });
+  auto it = std::find_if(mowing_areas.begin(), mowing_areas.end(),
+                         [&](const MapArea& area) { return area.id == req.area_id; });
 
   if (it == mowing_areas.end()) {
     res.success = false;
@@ -1051,7 +1045,6 @@ bool getMowingAreaById(mower_map::GetMowingAreaByIdSrvRequest& req, mower_map::G
   res.message = "Loaded mowing area by id";
   return true;
 }
-
 
 bool setDockingPoint(mower_map::SetDockingPointSrvRequest& req, mower_map::SetDockingPointSrvResponse& res) {
   ROS_INFO_STREAM("Setting Docking Point");
@@ -1239,8 +1232,10 @@ int main(int argc, char** argv) {
 
   ros::ServiceServer add_area_srv = n.advertiseService("mower_map_service/add_mowing_area", addMowingArea);
   ros::ServiceServer get_area_srv = n.advertiseService("mower_map_service/get_mowing_area", getMowingArea);
-  ros::ServiceServer get_area_list_srv = n.advertiseService("mower_map_service/get_mowing_area_list", getMowingAreaList);
-  ros::ServiceServer get_area_by_id_srv = n.advertiseService("mower_map_service/get_mowing_area_by_id", getMowingAreaById);
+  ros::ServiceServer get_area_list_srv =
+      n.advertiseService("mower_map_service/get_mowing_area_list", getMowingAreaList);
+  ros::ServiceServer get_area_by_id_srv =
+      n.advertiseService("mower_map_service/get_mowing_area_by_id", getMowingAreaById);
   ros::ServiceServer set_docking_point_srv = n.advertiseService("mower_map_service/set_docking_point", setDockingPoint);
   ros::ServiceServer get_docking_point_srv = n.advertiseService("mower_map_service/get_docking_point", getDockingPoint);
   ros::ServiceServer set_nav_point_srv = n.advertiseService("mower_map_service/set_nav_point", setNavPoint);

@@ -4,7 +4,7 @@ index 5009ab5..b24be67 100644
 +++ b/src/lib/xbot_monitoring/README.md
 @@ -171,3 +171,39 @@ Example hot start request:
  Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The default `reset_mode` is `controlled_software`. Expert clients may set `reset_mode` to `gnss_only` or `hardware_watchdog` if that behavior is explicitly desired.
- 
+
  The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.
 +
 +## GPS State 0 drive diagnostics
@@ -69,7 +69,7 @@ index 655134c..68599d6 100644
 +json latest_xbot_positioning_gps_debug = json::object();
 +bool latest_xbot_positioning_gps_debug_available = false;
 +ros::Time latest_xbot_positioning_gps_debug_received_at;
- 
+
  std::mutex gps_restart_status_mutex;
  json latest_gps_restart_status = json::object();
 @@ -839,6 +844,7 @@ static void load_gps_state_settings_if_needed() {
@@ -119,7 +119,7 @@ index 655134c..68599d6 100644
 @@ -1322,6 +1343,376 @@ static std::string gps_state_drive_reason_text(const std::string &block_reason,
      return "GPS-Fahrfreigabe konnte nicht bestaetigt werden";
  }
- 
+
 +
 +static json gps_state0_definition_entry(int stage,
 +                                        const std::string &key,
@@ -496,7 +496,7 @@ index 655134c..68599d6 100644
 @@ -1406,9 +1797,18 @@ static json build_gps_drive_status_payload(const ros::Time &now) {
      details["decision_source"] = "xbot_positioning/xb_pose";
      details["rtk_source"] = "ll/position/gps";
- 
+
 +    const json state0_status = build_gps_state0_status_payload(
 +        now, max_position_accuracy, max_gps_accuracy, gps_timeout,
 +        ll_pose, ll_pose_available, ll_received_at,
@@ -512,7 +512,7 @@ index 655134c..68599d6 100644
 +        {"state0_status", state0_status}
      };
  }
- 
+
 @@ -1421,6 +1821,9 @@ static void apply_gps_drive_status_to_payloads(json &payloads, const json &drive
      if (payloads.contains("state2") && payloads["state2"].is_object()) {
          payloads["state2"]["drive_diagnostics"] = drive_status["details"];
@@ -521,11 +521,11 @@ index 655134c..68599d6 100644
 +        payloads["state0_status"] = drive_status["state0_status"];
 +    }
  }
- 
+
  static std::string gps_state_quality(bool available, int used_count, double avg_cn0) {
 @@ -1527,6 +1930,7 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
      state4["satellites"] = all_satellites;
- 
+
      json payloads = {
 +        {"state0_status", drive_status["state0_status"]},
          {"state1", state1},
@@ -534,7 +534,7 @@ index 655134c..68599d6 100644
 @@ -1552,6 +1956,12 @@ void publish_latest_gps_state_payloads(bool force) {
      const json drive_status = build_gps_drive_status_payload(ros::Time::now());
      apply_gps_drive_status_to_payloads(snapshot, drive_status);
- 
+
 +    if (cfg.publish_state0 || force) {
 +        try_publish("gps_state/state0/definition", build_gps_state0_definition_payload().dump(), true);
 +        if (snapshot.contains("state0_status")) {
@@ -547,7 +547,7 @@ index 655134c..68599d6 100644
 @@ -1578,6 +1988,17 @@ void gps_state_satellites_callback(const xbot_msgs::GnssSatelliteArray::ConstPtr
      publish_latest_gps_state_payloads(false);
  }
- 
+
 +void gps_state_positioning_debug_callback(const std_msgs::String::ConstPtr &msg) {
 +    json parsed = json::parse(msg->data, nullptr, false);
 +    if (!parsed.is_object()) {
@@ -569,7 +569,7 @@ index 655134c..68599d6 100644
 +    ros::Subscriber gpsStatePositioningDebugSubscriber = n->subscribe("/xbot_positioning/gps_debug_state", 1, gps_state_positioning_debug_callback);
      ros::Subscriber gpsStateSatellitesSubscriber = n->subscribe("/ll/position/gps/satellites", 1, gps_state_satellites_callback);
      ros::Subscriber gpsRestartStatusSubscriber = n->subscribe("/ll/position/gps/restart_status", 10, gps_restart_status_callback);
- 
+
 diff --git a/src/lib/xbot_positioning/CMakeLists.txt b/src/lib/xbot_positioning/CMakeLists.txt
 index de73933..98ef02f 100644
 --- a/src/lib/xbot_positioning/CMakeLists.txt
@@ -604,7 +604,7 @@ index a0335db..a7950a4 100644
    <exec_depend>xbot_msgs</exec_depend>
    <exec_depend>roscpp</exec_depend>
 +  <exec_depend>std_msgs</exec_depend>
- 
+
    <!-- The export tag contains other, unspecified, tags -->
    <export>
 diff --git a/src/lib/xbot_positioning/src/xbot_positioning.cpp b/src/lib/xbot_positioning/src/xbot_positioning.cpp
@@ -613,7 +613,7 @@ index 06e7df4..e1f465f 100644
 +++ b/src/lib/xbot_positioning/src/xbot_positioning.cpp
 @@ -4,12 +4,17 @@
  //
- 
+
  #include <geometry_msgs/TwistStamped.h>
 +#include <std_msgs/String.h>
  #include <nav_msgs/Odometry.h>
@@ -626,21 +626,21 @@ index 06e7df4..e1f465f 100644
 +#include <iomanip>
 +#include <limits>
 +#include <cmath>
- 
+
  #include "SystemModel.hpp"
  #include "geometry_msgs/PoseWithCovarianceStamped.h"
 @@ -24,6 +29,7 @@
- 
+
  ros::Publisher odometry_pub;
  ros::Publisher xbot_absolute_pose_pub;
 +ros::Publisher gps_debug_state_pub;
- 
+
  // Debug Publishers
  ros::Publisher kalman_state;
 @@ -75,6 +81,76 @@ int gps_message_throttle = 1;
  ros::Time last_gps_time(0.0);
- 
- 
+
+
 +static std::string json_escape_string(const std::string &value) {
 +    std::ostringstream out;
 +    for (const char c : value) {
@@ -715,13 +715,13 @@ index 06e7df4..e1f465f 100644
      if (!has_gyro) {
          if (!skip_gyro_calibration) {
 @@ -207,6 +283,7 @@ void onTwistIn(const geometry_msgs::TwistStamped::ConstPtr &msg) {
- 
+
  bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::GPSControlSrvResponse &res) {
      gps_enabled = req.gps_enabled;
 +    publishGpsDebugState("gps_enabled_changed", gps_enabled ? "enabled" : "disabled");
      return true;
  }
- 
+
 @@ -226,11 +303,13 @@ bool setPose(xbot_positioning::SetPoseSrvRequest &req, xbot_positioning::SetPose
  void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
      if (!gps_enabled) {
@@ -735,7 +735,7 @@ index 06e7df4..e1f465f 100644
 +        publishGpsDebugState("rtk_fixed", "rejected_rtk_fixed_missing", msg.get());
          return;
      }
- 
+
 @@ -238,6 +317,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
          ROS_INFO_STREAM_THROTTLE(
              1, "Dropped GPS update, since it's not accurate enough. Accuracy was: " << msg->position_accuracy <<
@@ -743,7 +743,7 @@ index 06e7df4..e1f465f 100644
 +        publishGpsDebugState("gps_input_accuracy", "rejected_accuracy_too_high", msg.get());
          return;
      }
- 
+
 @@ -250,6 +330,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
          last_gps = *msg;
          // we have GPS for next time
@@ -751,7 +751,7 @@ index 06e7df4..e1f465f 100644
 +        publishGpsDebugState("gps_stream_gap", "reset_after_gap", msg.get());
          return;
      }
- 
+
 @@ -291,10 +372,14 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
                  core.updateOrientation2(msg->motion_vector.x, msg->motion_vector.y, 10000.0);
              }
@@ -768,7 +768,7 @@ index 06e7df4..e1f465f 100644
              ROS_ERROR_STREAM("too many outliers, assuming that the current gps value is valid.");
              // store the gps as last
 @@ -304,6 +389,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
- 
+
              valid_gps_samples = 0;
              gps_outlier_count = 0;
 +            publishGpsDebugState("gps_outlier_reset", "reset_after_too_many_outliers", msg.get(), distance_to_last_gps);
@@ -776,7 +776,7 @@ index 06e7df4..e1f465f 100644
      }
  }
 @@ -349,6 +435,7 @@ int main(int argc, char **argv) {
- 
+
      odometry_pub = paramNh.advertise<nav_msgs::Odometry>("odom_out", 50);
      xbot_absolute_pose_pub = paramNh.advertise<xbot_msgs::AbsolutePose>("xb_pose_out", 50);
 +    gps_debug_state_pub = n.advertise<std_msgs::String>("/xbot_positioning/gps_debug_state", 10, true);

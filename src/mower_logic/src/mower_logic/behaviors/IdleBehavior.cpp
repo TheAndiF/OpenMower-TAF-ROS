@@ -20,8 +20,8 @@
 #include <algorithm>
 
 #include "../utils.h"
-#include "PerimeterDocking.h"
 #include "MowingBehavior.h"
+#include "PerimeterDocking.h"
 
 extern void stopMoving();
 extern void stopBlade();

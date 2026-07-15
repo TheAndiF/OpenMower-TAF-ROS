@@ -1,16 +1,17 @@
+#include <sys/statvfs.h>
+
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
-#include <iomanip>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <sstream>
 #include <string>
-#include <sys/statvfs.h>
 
 #include "ros/ros.h"
 #include "xbot_msgs/SensorDataDouble.h"
@@ -42,56 +43,48 @@ struct SystemSensorConfig {
 
 static std::map<std::string, SystemSensorConfig> sensor_configs = {
     {"om_system_wifi_signal_dbm",
-     {"System WLAN Signal", "dBm", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_DOUBLE, true, -100.0, -30.0, true, -80.0}},
+     {"System WLAN Signal", "dBm", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_DOUBLE,
+      true, -100.0, -30.0, true, -80.0}},
 
     {"om_system_wifi_signal_percent",
-     {"System WLAN Signal", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT,
-      xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 100.0, true, 25.0}},
+     {"System WLAN Signal", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT, xbot_msgs::SensorInfo::TYPE_DOUBLE,
+      true, 0.0, 100.0, true, 25.0}},
 
     {"om_system_wifi_ssid",
-     {"System WLAN Name", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_STRING}},
+     {"System WLAN Name", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_wifi_bssid",
      {"System WLAN Access Point", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
       xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_wifi_band",
-     {"System WLAN Band", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_STRING}},
+     {"System WLAN Band", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_wifi_ip",
-     {"System WLAN IP", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_STRING}},
+     {"System WLAN IP", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_wifi_bitrate",
-     {"System WLAN Bitrate", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_STRING}},
+     {"System WLAN Bitrate", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_disk_free_percent",
-     {"System Free Disk", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT,
-      xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 100.0, true, 10.0}},
+     {"System Free Disk", "%", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_PERCENT, xbot_msgs::SensorInfo::TYPE_DOUBLE,
+      true, 0.0, 100.0, true, 10.0}},
 
     {"om_system_disk_free_gb",
-     {"System Free Disk", "GB", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_DOUBLE, true, 0.0, 0.0, true, 9.0}},
+     {"System Free Disk", "GB", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_DOUBLE,
+      true, 0.0, 0.0, true, 9.0}},
 
     {"om_system_time",
-     {"System Time", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_STRING}},
+     {"System Time", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_date",
-     {"System Date", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_STRING}},
+     {"System Date", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_last_reboot",
-     {"System Last Reboot", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_STRING}},
+     {"System Last Reboot", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 
     {"om_system_uptime_hours",
-     {"System Host Uptime", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN,
-      xbot_msgs::SensorInfo::TYPE_STRING}},
+     {"System Host Uptime", "", xbot_msgs::SensorInfo::VALUE_DESCRIPTION_UNKNOWN, xbot_msgs::SensorInfo::TYPE_STRING}},
 };
 
 static std::string exec_command(const std::string& command) {
@@ -108,7 +101,6 @@ static std::string exec_command(const std::string& command) {
   }
   return result;
 }
-
 
 static std::string trim_copy(const std::string& value);
 
@@ -256,10 +248,9 @@ static bool read_wifi_signal_dbm_from_proc_wireless(const std::string& interface
     }
 
     std::string current_interface = line.substr(0, colon_pos);
-    current_interface.erase(
-        std::remove_if(current_interface.begin(), current_interface.end(),
-                       [](unsigned char c) { return std::isspace(c); }),
-        current_interface.end());
+    current_interface.erase(std::remove_if(current_interface.begin(), current_interface.end(),
+                                           [](unsigned char c) { return std::isspace(c); }),
+                            current_interface.end());
 
     if (current_interface != interface) {
       continue;
@@ -307,10 +298,9 @@ static bool read_wifi_signal_dbm(const std::string& interface, double& signal_db
 }
 
 static std::string trim_copy(const std::string& value) {
-  const auto begin = std::find_if_not(value.begin(), value.end(),
-                                      [](unsigned char c) { return std::isspace(c); });
-  const auto end = std::find_if_not(value.rbegin(), value.rend(),
-                                    [](unsigned char c) { return std::isspace(c); }).base();
+  const auto begin = std::find_if_not(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c); });
+  const auto end =
+      std::find_if_not(value.rbegin(), value.rend(), [](unsigned char c) { return std::isspace(c); }).base();
   if (begin >= end) {
     return "";
   }
@@ -384,7 +374,7 @@ static std::string format_uptime_days_hours() {
 }
 
 static std::string format_time(std::time_t timestamp, const char* format) {
-  std::tm local_tm {};
+  std::tm local_tm{};
   localtime_r(&timestamp, &local_tm);
 
   std::ostringstream out;
@@ -428,7 +418,8 @@ static void register_system_sensors(ros::NodeHandle& nh, const std::string& disk
 
     config.sensor_info.sensor_id = sensor_id;
     config.sensor_info.sensor_name = config.sensor_name;
-    config.sensor_info.sensor_origin = config.sensor_origin.empty() ? xbot_msgs::SensorInfo::ORIGIN_HOST_SYSTEM : config.sensor_origin;
+    config.sensor_info.sensor_origin =
+        config.sensor_origin.empty() ? xbot_msgs::SensorInfo::ORIGIN_HOST_SYSTEM : config.sensor_origin;
     config.sensor_info.unit = config.unit;
     config.sensor_info.value_type = config.value_type;
     config.sensor_info.value_description = config.value_description;
@@ -455,7 +446,7 @@ static void register_system_sensors(ros::NodeHandle& nh, const std::string& disk
         break;
       default:
         ROS_ERROR_STREAM("Invalid system sensor data type for " << sensor_id << ": "
-                         << static_cast<int>(config.value_type));
+                                                                << static_cast<int>(config.value_type));
         break;
     }
 
@@ -503,7 +494,8 @@ static void publish_system_sensor_values(const std::string& wifi_interface, cons
     }
 
     publish_string("om_system_wifi_bssid", wifi_info.bssid.empty() ? "unknown" : wifi_info.bssid);
-    publish_string("om_system_wifi_band", wifi_info.frequency_mhz > 0.0 ? wifi_band_from_frequency(wifi_info.frequency_mhz) : "unknown");
+    publish_string("om_system_wifi_band",
+                   wifi_info.frequency_mhz > 0.0 ? wifi_band_from_frequency(wifi_info.frequency_mhz) : "unknown");
     publish_string("om_system_wifi_bitrate", format_wifi_bitrate(wifi_info));
 
     if (!has_proc_wifi_signal && wifi_info.has_signal_dbm) {
@@ -567,9 +559,8 @@ int main(int argc, char** argv) {
 
   register_system_sensors(nh, disk_path);
 
-  ROS_INFO_STREAM("system_monitor_node started. wifi_interface=" << wifi_interface
-                  << ", disk_path=" << disk_path
-                  << ", publish_rate_hz=" << publish_rate_hz);
+  ROS_INFO_STREAM("system_monitor_node started. wifi_interface=" << wifi_interface << ", disk_path=" << disk_path
+                                                                 << ", publish_rate_hz=" << publish_rate_hz);
 
   // Publish a few initial samples shortly after the latched SensorInfo messages.
   // This reduces the dashboard window where a known sensor is shown with its default value.

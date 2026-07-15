@@ -18,26 +18,27 @@
 #include <cryptopp/hex.h>
 #include <cryptopp/sha.h>
 #include <nav_msgs/Path.h>
-#include <nlohmann/json.hpp>
+#include <rosbag/bag.h>
+#include <rosbag/view.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <nlohmann/json.hpp>
 #include <sstream>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <rosbag/bag.h>
-#include <rosbag/view.h>
 
 #include "mower_logic/CheckPoint.h"
 #include "mower_map/ClearNavPointSrv.h"
-#include "mower_map/GetMowingAreaSrv.h"
 #include "mower_map/GetMowingAreaByIdSrv.h"
 #include "mower_map/GetMowingAreaListSrv.h"
+#include "mower_map/GetMowingAreaSrv.h"
 #include "mower_map/SetNavPointSrv.h"
 #include "mowing_path_order_optimizer/OptimizePaths.h"
 #include "xbot_msgs/AbsolutePose.h"
@@ -128,8 +129,8 @@ void recompute_execution_orientations(slic3r_coverage_planner::Path& path) {
   poses.back().pose.orientation = poses[poses.size() - 2].pose.orientation;
 }
 
-slic3r_coverage_planner::Path make_execution_path_from_slicer(
-    const slic3r_coverage_planner::Path& source, uint8_t path_direction) {
+slic3r_coverage_planner::Path make_execution_path_from_slicer(const slic3r_coverage_planner::Path& source,
+                                                              uint8_t path_direction) {
   slic3r_coverage_planner::Path execution = source;
   if (path_direction == MowingBehavior::PATH_DIRECTION_REVERSE) {
     std::reverse(execution.path.poses.begin(), execution.path.poses.end());
@@ -169,34 +170,25 @@ json path_points_to_json(const MowingBehavior::MowingPathExecutionItem& item, st
 }
 
 json pose_to_json(const geometry_msgs::PoseStamped& pose) {
-  return {{"x", pose.pose.position.x},
-          {"y", pose.pose.position.y},
-          {"z", pose.pose.position.z},
-          {"qx", pose.pose.orientation.x},
-          {"qy", pose.pose.orientation.y},
-          {"qz", pose.pose.orientation.z},
+  return {{"x", pose.pose.position.x},     {"y", pose.pose.position.y},     {"z", pose.pose.position.z},
+          {"qx", pose.pose.orientation.x}, {"qy", pose.pose.orientation.y}, {"qz", pose.pose.orientation.z},
           {"qw", pose.pose.orientation.w}};
 }
 
 std::string mow_status_to_json_string(uint8_t status) {
   switch (status) {
-    case MowingBehavior::MOW_STATUS_DONE:
-      return "mowed";
-    case MowingBehavior::MOW_STATUS_IN_PROGRESS:
-      return "mowing";
+    case MowingBehavior::MOW_STATUS_DONE: return "mowed";
+    case MowingBehavior::MOW_STATUS_IN_PROGRESS: return "mowing";
     case MowingBehavior::MOW_STATUS_OPEN:
-    default:
-      return "unmowed";
+    default: return "unmowed";
   }
 }
 
 std::string path_direction_to_json_string(uint8_t direction) {
   switch (direction) {
-    case MowingBehavior::PATH_DIRECTION_REVERSE:
-      return "reverse";
+    case MowingBehavior::PATH_DIRECTION_REVERSE: return "reverse";
     case MowingBehavior::PATH_DIRECTION_FORWARD:
-    default:
-      return "forward";
+    default: return "forward";
   }
 }
 
@@ -219,7 +211,7 @@ std::vector<std::string> split_transform_flags(const std::string& flags) {
   }
   return result;
 }
-}
+}  // namespace
 
 std::string MowingBehavior::state_name() {
   if (paused) {
@@ -227,7 +219,6 @@ std::string MowingBehavior::state_name() {
   }
   return "MOWING";
 }
-
 
 void MowingBehavior::clear_current_mowing_plan() {
   currentMowingPlan.paths.clear();
@@ -283,10 +274,8 @@ void MowingBehavior::finish_current_mowing_plan_path() {
   }
 }
 
-void MowingBehavior::build_current_mowing_plan(
-    const std::vector<slic3r_coverage_planner::Path>& slicer_paths,
-    const std::string& area_id,
-    const std::string& area_digest) {
+void MowingBehavior::build_current_mowing_plan(const std::vector<slic3r_coverage_planner::Path>& slicer_paths,
+                                               const std::string& area_id, const std::string& area_digest) {
   clear_current_mowing_plan();
   currentMowingPlan.area_id = area_id;
   currentMowingPlan.area_digest = area_digest;
@@ -367,7 +356,7 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
                              });
       if (it == currentMowingPlan.paths.end()) {
         ROS_WARN_STREAM("MowingBehavior: optimizer returned unknown slicer path index " << source_index
-                        << "; keeping slicer order");
+                                                                                        << "; keeping slicer order");
         return true;
       }
       MowingPathExecutionItem item = *it;
@@ -382,9 +371,8 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
         // Defensive fallback for older optimizer responses.
         item.execution.path = make_execution_path_from_slicer(item.slicer_source.path, item.path_direction);
       }
-      item.execution.rotation_offset = (i < optimizeSrv.response.rotation_offsets.size())
-                                           ? optimizeSrv.response.rotation_offsets[i]
-                                           : 0;
+      item.execution.rotation_offset =
+          (i < optimizeSrv.response.rotation_offsets.size()) ? optimizeSrv.response.rotation_offsets[i] : 0;
       item.execution.transform_flags = (i < optimizeSrv.response.transform_flags.size())
                                            ? split_transform_flags(optimizeSrv.response.transform_flags[i])
                                            : std::vector<std::string>();
@@ -420,8 +408,8 @@ bool MowingBehavior::optimize_current_mowing_plan(const geometry_msgs::PoseStamp
 }
 
 bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_file,
-                                                        const std::string& expected_area_id,
-                                                        const std::string& expected_area_digest) {
+                                                       const std::string& expected_area_id,
+                                                       const std::string& expected_area_digest) {
   std::ifstream in(plan_file);
   if (!in.good()) return false;
 
@@ -490,7 +478,8 @@ bool MowingBehavior::load_current_mowing_plan_snapshot(const std::string& plan_f
       const auto& execution = path_json["execution"]["path"];
       item.execution.path.path_type = item.slicer_source.path.path_type;
       item.execution.path.is_outline = item.slicer_source.path.is_outline;
-      item.execution.path.path.header.frame_id = execution.value("frame_id", source.value("frame_id", std::string("map")));
+      item.execution.path.path.header.frame_id =
+          execution.value("frame_id", source.value("frame_id", std::string("map")));
       if (execution.contains("poses") && execution["poses"].is_array()) {
         for (const auto& pose_json : execution["poses"]) {
           geometry_msgs::PoseStamped pose;
@@ -725,7 +714,6 @@ void MowingBehavior::update_actions() {
   registerActions("mower_logic:mowing", actions);
 }
 
-
 std::string MowingBehavior::compute_mowing_area_queue_digest() const {
   CryptoPP::SHA256 hash;
   byte digest[CryptoPP::SHA256::DIGESTSIZE];
@@ -772,13 +760,13 @@ void MowingBehavior::request_direct_mowing_area(const std::string& area_id, cons
   requestedMowingAreaMode = mode.empty() ? "single" : mode;
   if (requestedMowingAreaMode != "single" && requestedMowingAreaMode != "from_here") {
     ROS_WARN_STREAM("MowingBehavior: Unknown direct mowing mode '" << requestedMowingAreaMode
-                    << "', falling back to single");
+                                                                   << "', falling back to single");
     requestedMowingAreaMode = "single";
   }
   directMowingAreaRequested = !requestedMowingAreaId.empty();
   mowingAreaQueueInitialized = false;
   ROS_INFO_STREAM("MowingBehavior: Direct mowing request: area_id=" << requestedMowingAreaId
-                  << " mode=" << requestedMowingAreaMode);
+                                                                    << " mode=" << requestedMowingAreaMode);
 }
 
 bool MowingBehavior::build_mowing_area_queue() {
@@ -786,7 +774,8 @@ bool MowingBehavior::build_mowing_area_queue() {
 
   mower_map::GetMowingAreaListSrv listSrv;
   if (!mapAreaListClient.call(listSrv) || !listSrv.response.success) {
-    ROS_WARN_STREAM("MowingBehavior: Could not load mowing area queue via list service; falling back to legacy index mode");
+    ROS_WARN_STREAM(
+        "MowingBehavior: Could not load mowing area queue via list service; falling back to legacy index mode");
     mowingAreaQueueInitialized = false;
     activeMowingAreaMode = "legacy_index";
     currentMowingAreaQueueDigest.clear();
@@ -814,12 +803,12 @@ bool MowingBehavior::build_mowing_area_queue() {
   activeMowingAreaMode = directMowingAreaRequested ? requestedMowingAreaMode : "normal";
 
   if (directMowingAreaRequested) {
-    auto it = std::find_if(currentMowingAreaQueue.begin(), currentMowingAreaQueue.end(), [&](const MowingAreaQueueEntry& entry) {
-      return entry.area_id == requestedMowingAreaId;
-    });
+    auto it = std::find_if(currentMowingAreaQueue.begin(), currentMowingAreaQueue.end(),
+                           [&](const MowingAreaQueueEntry& entry) { return entry.area_id == requestedMowingAreaId; });
 
     if (it == currentMowingAreaQueue.end()) {
-      ROS_ERROR_STREAM("MowingBehavior: Requested direct mowing area is not valid or not enabled: " << requestedMowingAreaId);
+      ROS_ERROR_STREAM(
+          "MowingBehavior: Requested direct mowing area is not valid or not enabled: " << requestedMowingAreaId);
       currentMowingAreaQueue.clear();
       mowingAreaQueueInitialized = true;
       currentMowingAreaQueueDigest = compute_mowing_area_queue_digest();
@@ -833,8 +822,8 @@ bool MowingBehavior::build_mowing_area_queue() {
       currentMowingAreaQueue.clear();
       currentMowingAreaQueue.push_back(selected);
       currentMowingArea = 0;
-      ROS_INFO_STREAM("MowingBehavior: Direct mowing selected single area_id=" << selected.area_id
-                      << " name=" << selected.name << " order=" << selected.mowing_order);
+      ROS_INFO_STREAM("MowingBehavior: Direct mowing selected single area_id="
+                      << selected.area_id << " name=" << selected.name << " order=" << selected.mowing_order);
     } else {  // from_here
       const std::size_t start = static_cast<std::size_t>(std::distance(currentMowingAreaQueue.begin(), it));
       std::vector<MowingAreaQueueEntry> trimmed;
@@ -854,7 +843,7 @@ bool MowingBehavior::build_mowing_area_queue() {
   currentMowingAreaQueueDigest = compute_mowing_area_queue_digest();
   mowingAreaQueueInitialized = true;
   ROS_INFO_STREAM("MowingBehavior: Built mowing area queue with " << currentMowingAreaQueue.size()
-                  << " entries, mode=" << activeMowingAreaMode);
+                                                                  << " entries, mode=" << activeMowingAreaMode);
   return true;
 }
 
@@ -894,8 +883,8 @@ bool MowingBehavior::create_mowing_plan(int area_index) {
     mower_map::GetMowingAreaByIdSrv mapByIdSrv;
     mapByIdSrv.request.area_id = selected_area_id;
     if (!mapAreaByIdClient.call(mapByIdSrv) || !mapByIdSrv.response.success) {
-      ROS_ERROR_STREAM("MowingBehavior: Error loading mowing area by id: " << selected_area_id
-                       << " message=" << mapByIdSrv.response.message);
+      ROS_ERROR_STREAM("MowingBehavior: Error loading mowing area by id: " << selected_area_id << " message="
+                                                                           << mapByIdSrv.response.message);
       currentAreaId.clear();
       mark_current_area_status("failed");
       return false;
@@ -1416,7 +1405,6 @@ bool MowingBehavior::execute_mowing_plan() {
   return currentMowingPath >= currentMowingPlan.paths.size();
 }
 
-
 void MowingBehavior::ensure_mowing_progress_interface() {
   if (mowing_progress_interface_initialized || n == nullptr) return;
 
@@ -1427,8 +1415,8 @@ void MowingBehavior::ensure_mowing_progress_interface() {
   // This prevents large mowing-progress MQTT messages from delaying robot_state/json pose updates.
   mowing_progress_status_pub = n->advertise<std_msgs::String>("/mower_logic/map/mowing_progress/status/json", 1, true);
 
-  mowing_progress_renew_sub = n->subscribe("/mower_logic/map/mowing_progress/renew", 10,
-                                           &MowingBehavior::mowing_progress_renew_callback, this);
+  mowing_progress_renew_sub =
+      n->subscribe("/mower_logic/map/mowing_progress/renew", 10, &MowingBehavior::mowing_progress_renew_callback, this);
   last_mowing_progress_publish = ros::Time(0.0);
   last_mowing_progress_status_publish = ros::Time(0.0);
   mowing_progress_interface_initialized = true;
@@ -1450,12 +1438,11 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
   payload["area_queue_digest"] = currentMowingAreaQueueDigest;
   payload["area_queue"] = json::array();
   for (const auto& entry : currentMowingAreaQueue) {
-    payload["area_queue"].push_back({
-        {"queue_index", entry.queue_index},
-        {"area_id", entry.area_id},
-        {"name", entry.name},
-        {"mowing_order", entry.mowing_order},
-        {"status", entry.status}});
+    payload["area_queue"].push_back({{"queue_index", entry.queue_index},
+                                     {"area_id", entry.area_id},
+                                     {"name", entry.name},
+                                     {"mowing_order", entry.mowing_order},
+                                     {"status", entry.status}});
   }
   payload["processing_mode"] = static_cast<int>(currentMowingPlan.processing_mode);
   payload["outline_entry_mode"] = static_cast<int>(currentMowingPlan.outline_entry_mode);
@@ -1464,8 +1451,11 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
   if (!currentAreaId.empty()) {
     json area;
     area["area_id"] = currentAreaId;
-    area["state"] = currentMowingPlan.paths.empty() ? "pending" :
-        (currentMowingPath >= static_cast<int>(currentMowingPlan.paths.size()) ? "done" : (paused ? "paused" : "mowing"));
+    area["state"] =
+        currentMowingPlan.paths.empty()
+            ? "pending"
+            : (currentMowingPath >= static_cast<int>(currentMowingPlan.paths.size()) ? "done"
+                                                                                     : (paused ? "paused" : "mowing"));
 
     area["paths"] = json::array();
 
@@ -1484,8 +1474,10 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
         completed_for_path = std::min<std::size_t>(item.current_pose_index, poses.size());
       }
 
-      const double completed_percent = poses.empty() ? 0.0 :
-          std::min(100.0, 100.0 * static_cast<double>(completed_for_path) / static_cast<double>(poses.size()));
+      const double completed_percent =
+          poses.empty()
+              ? 0.0
+              : std::min(100.0, 100.0 * static_cast<double>(completed_for_path) / static_cast<double>(poses.size()));
 
       completed_points += completed_for_path;
 
@@ -1515,8 +1507,10 @@ json MowingBehavior::build_mowing_progress_payload(bool include_paths) {
       area["paths"].push_back(path);
     }
 
-    area["percent"] = total_points == 0 ? 0.0 :
-        std::min(100.0, 100.0 * static_cast<double>(completed_points) / static_cast<double>(total_points));
+    area["percent"] =
+        total_points == 0
+            ? 0.0
+            : std::min(100.0, 100.0 * static_cast<double>(completed_points) / static_cast<double>(total_points));
 
     if (!include_paths) {
       area["current_path"] = currentMowingPath;
@@ -1546,8 +1540,7 @@ void MowingBehavior::publish_mowing_progress(bool force) {
     if ((now - last_mowing_progress_publish) < ros::Duration(30.0)) {
       return;
     }
-    if (currentMowingPath == last_published_mowing_path &&
-        currentMowingPathIndex == last_published_mowing_path_index &&
+    if (currentMowingPath == last_published_mowing_path && currentMowingPathIndex == last_published_mowing_path_index &&
         (now - last_mowing_progress_publish) < ros::Duration(120.0)) {
       return;
     }
@@ -1775,11 +1768,9 @@ bool MowingBehavior::restore_checkpoint() {
       if (cp) {
         ROS_INFO_STREAM("Restoring checkpoint for plan ("
                         << cp->currentMowingPlanDigest << ")"
-                        << " area: " << cp->currentMowingArea
-                        << " area_id: " << cp->currentMowingAreaId << " path: " << cp->currentMowingPath
-                        << " index: " << cp->currentMowingPathIndex
-                        << " plan_id: " << cp->plan_id
-                        << " current_path_id: " << cp->current_path_id
+                        << " area: " << cp->currentMowingArea << " area_id: " << cp->currentMowingAreaId
+                        << " path: " << cp->currentMowingPath << " index: " << cp->currentMowingPathIndex
+                        << " plan_id: " << cp->plan_id << " current_path_id: " << cp->current_path_id
                         << " angle increment sum: " << cp->currentMowingAngleIncrementSum);
         currentMowingPath = cp->currentMowingPath;
         currentMowingArea = cp->currentMowingArea;

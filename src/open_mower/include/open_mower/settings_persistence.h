@@ -1,19 +1,18 @@
 #pragma once
 
-#include <cerrno>
-#include <cstdio>
-#include <fstream>
-#include <map>
-#include <sstream>
-#include <string>
-
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstdio>
+#include <fstream>
+#include <map>
 #include <nlohmann/json.hpp>
+#include <sstream>
+#include <string>
 
 namespace open_mower_settings {
 using json = nlohmann::json;
@@ -37,7 +36,9 @@ class FileLock {
     }
   }
 
-  bool locked() const { return fd_ >= 0; }
+  bool locked() const {
+    return fd_ >= 0;
+  }
 
  private:
   int fd_;
@@ -97,8 +98,8 @@ inline bool writeRootUnlocked(const std::string& path, const json& root) {
   return std::rename(temp_path.c_str(), path.c_str()) == 0;
 }
 
-inline json mergeNamespaceWithSeed(const std::string& path, const std::string& namespace_name,
-                                   const json& seed_entries, bool* wrote_file = nullptr) {
+inline json mergeNamespaceWithSeed(const std::string& path, const std::string& namespace_name, const json& seed_entries,
+                                   bool* wrote_file = nullptr) {
   ensureDataRosDirectory();
   FileLock lock(path + ".lock");
   json root = readRootUnlocked(path);
@@ -134,34 +135,29 @@ inline json mergeNamespaceWithSeed(const std::string& path, const std::string& n
   return namespace_entries;
 }
 
-
 inline bool removeNamespace(const std::string& path, const std::string& namespace_name) {
   ensureDataRosDirectory();
   FileLock lock(path + ".lock");
   json root = readRootUnlocked(path);
-  if (!root.contains("settings") || !root["settings"].is_object() ||
-      !root["settings"].contains(namespace_name)) {
+  if (!root.contains("settings") || !root["settings"].is_object() || !root["settings"].contains(namespace_name)) {
     return false;
   }
   root["settings"].erase(namespace_name);
   return writeRootUnlocked(path, root);
 }
 
-inline bool migratePersistentFieldsAndRemoveNamespace(
-    const std::string& path, const std::string& source_namespace,
-    const std::string& target_namespace,
-    const std::map<std::string, std::string>& persistent_field_map) {
+inline bool migratePersistentFieldsAndRemoveNamespace(const std::string& path, const std::string& source_namespace,
+                                                      const std::string& target_namespace,
+                                                      const std::map<std::string, std::string>& persistent_field_map) {
   ensureDataRosDirectory();
   FileLock lock(path + ".lock");
   json root = readRootUnlocked(path);
-  if (!root.contains("settings") || !root["settings"].is_object() ||
-      !root["settings"].contains(source_namespace) ||
+  if (!root.contains("settings") || !root["settings"].is_object() || !root["settings"].contains(source_namespace) ||
       !root["settings"][source_namespace].is_object()) {
     return false;
   }
 
-  if (!root["settings"].contains(target_namespace) ||
-      !root["settings"][target_namespace].is_object()) {
+  if (!root["settings"].contains(target_namespace) || !root["settings"][target_namespace].is_object()) {
     root["settings"][target_namespace] = json::object();
   }
 
@@ -197,9 +193,7 @@ inline json readNamespace(const std::string& path, const std::string& namespace_
   return root["settings"][namespace_name];
 }
 
-
-inline bool updateNamespace(const std::string& path, const std::string& namespace_name,
-                            const json& namespace_value) {
+inline bool updateNamespace(const std::string& path, const std::string& namespace_name, const json& namespace_value) {
   ensureDataRosDirectory();
   FileLock lock(path + ".lock");
   json root = readRootUnlocked(path);
@@ -210,8 +204,8 @@ inline bool updateNamespace(const std::string& path, const std::string& namespac
   return writeRootUnlocked(path, root);
 }
 
-inline bool updateEntryField(const std::string& path, const std::string& namespace_name,
-                             const std::string& key, const std::string& field, const json& value) {
+inline bool updateEntryField(const std::string& path, const std::string& namespace_name, const std::string& key,
+                             const std::string& field, const json& value) {
   ensureDataRosDirectory();
   FileLock lock(path + ".lock");
   json root = readRootUnlocked(path);
@@ -226,9 +220,8 @@ inline bool updateEntryField(const std::string& path, const std::string& namespa
   return writeRootUnlocked(path, root);
 }
 
-inline bool updateEntryFields(
-    const std::string& path, const std::string& namespace_name,
-    const std::map<std::string, std::map<std::string, json>>& updates) {
+inline bool updateEntryFields(const std::string& path, const std::string& namespace_name,
+                              const std::map<std::string, std::map<std::string, json>>& updates) {
   ensureDataRosDirectory();
   FileLock lock(path + ".lock");
   json root = readRootUnlocked(path);
@@ -265,15 +258,13 @@ inline bool boolOr(const json& object, const std::string& field, bool fallback) 
 }
 
 inline std::string stringOr(const json& object, const std::string& field, const std::string& fallback) {
-  return object.is_object() && object.contains(field) && object[field].is_string()
-             ? object[field].get<std::string>()
-             : fallback;
+  return object.is_object() && object.contains(field) && object[field].is_string() ? object[field].get<std::string>()
+                                                                                   : fallback;
 }
 
 inline int intOr(const json& object, const std::string& field, int fallback) {
-  return object.is_object() && object.contains(field) && object[field].is_number_integer()
-             ? object[field].get<int>()
-             : fallback;
+  return object.is_object() && object.contains(field) && object[field].is_number_integer() ? object[field].get<int>()
+                                                                                           : fallback;
 }
 
 }  // namespace open_mower_settings

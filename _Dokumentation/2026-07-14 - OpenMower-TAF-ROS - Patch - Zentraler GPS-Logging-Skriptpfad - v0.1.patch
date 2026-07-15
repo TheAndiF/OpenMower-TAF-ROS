@@ -7,9 +7,9 @@
 --- a/docker/Dockerfile
 +++ b/docker/Dockerfile
 @@ -68,6 +68,15 @@
- 
+
  COPY --link ./ /opt/open_mower_ros
- 
+
 +# Install runtime scripts at one canonical location. The repository keeps one
 +# authoritative source under utils/scripts; the source copy is removed from the
 +# final image after installation so only the stable runtime path remains.
@@ -21,13 +21,13 @@
 +
  # delete prebuilt libs (so that they won't shadow the preinstalled ones)
  RUN rm -rf /opt/open_mower_ros/src/lib/slic3r_coverage_planner /apt-install_list
- 
+
 --- a/src/mower_logic/CMakeLists.txt
 +++ b/src/mower_logic/CMakeLists.txt
 @@ -211,13 +211,6 @@
  # all install targets should use catkin DESTINATION variables
  # See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
- 
+
 -## Mark executable scripts (Python etc.) for installation
 -## in contrast to setup.py, you can choose the destination
 -catkin_install_python(PROGRAMS
@@ -74,19 +74,19 @@
 --- a/utils/scripts/record_satellites.sh
 +++ b/utils/scripts/record_satellites.sh
 @@ -3,24 +3,113 @@
- 
+
  # Satellite/GPS logger for OpenMower.
  # The live logs are written to RAM first and are copied to persistent storage
 -# only when this script is stopped, e.g. by the MQTT cycle controller at docking.
 +# only when this script is stopped by OpenMower, e.g. at docking/charging.
 +# The script intentionally does not decide start/end conditions itself.
- 
+
  SESSION_ID="${SAT_LOG_SESSION_ID:-$(date -u +%Y%m%d_%H%M%S)}"
  RAM_BASE="${SAT_LOG_RAM_DIR:-/dev/shm/openmower_satellite_logs}"
  OUTPUT_DIR="${SAT_LOG_OUTPUT_DIR:-/home/openmower/recordings/logs}"
  CONTAINER_NAME="${SAT_LOG_CONTAINER:-}"
 -SESSION_RAM_DIR="${RAM_BASE}/${SESSION_ID}"
- 
+
 +usage() {
 +  cat <<USAGE
 +Usage: $0 [--session-id ID] [--ram-path PATH] [--output-path PATH] [--container-name NAME]
@@ -176,22 +176,22 @@
 +
 +SESSION_RAM_DIR="${RAM_BASE}/${SESSION_ID}"
  mkdir -p "${SESSION_RAM_DIR}"
- 
+
  SAT_FILE="gps_satellite_list_${SESSION_ID}.log"
  POS_FILE="gps_position_${SESSION_ID}.log"
  ACC_FILE="gps_accuracy_${SESSION_ID}.log"
  RTCM_FILE="gps_rtcm_hz_${SESSION_ID}.log"
 -META_FILE="satellite_logger_${SESSION_ID}.meta.json"
 +META_FILE="satellite_logging_${SESSION_ID}.meta.json"
- 
+
  PIDS=()
  STOPPED=0
 +STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
- 
+
  log_info() {
    echo "$*"
 @@ -28,20 +117,24 @@
- 
+
  copy_to_persistent() {
    mkdir -p "${OUTPUT_DIR}"
 -  cp -f "${SESSION_RAM_DIR}/${SAT_FILE}" "${OUTPUT_DIR}/${SAT_FILE}" 2>/dev/null || true
@@ -223,7 +223,7 @@
  META
 @@ -86,15 +179,20 @@
  }
- 
+
  log_info "Starte GPS-/RTK-Mitschnitt in den Arbeitsspeicher"
 +log_info "Session: ${SESSION_ID}"
  log_info "RAM-Verzeichnis: ${SESSION_RAM_DIR}"
@@ -238,13 +238,13 @@
  log_info "  ${POS_FILE}"
  log_info "  ${ACC_FILE}"
  log_info "  ${RTCM_FILE}"
- 
+
 -# These topics match the existing manual satellite logging workflow.
  run_rostopic_echo "/ll/position/gps/satellites" "${SAT_FILE}"
  run_rostopic_echo "/ll/position/gps" "${POS_FILE}"
  run_rostopic_echo "/xbot_positioning/xb_pose" "${ACC_FILE}"
 @@ -102,9 +200,4 @@
- 
+
  while true; do
    sleep 1
 -  for pid in "${PIDS[@]}"; do

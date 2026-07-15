@@ -1,14 +1,8 @@
 // Mowing load factor calculation and runtime configuration bridge.
 // The local planner consumes the effective factor as a speed multiplier.
 
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <string>
-
 #include <mower_msgs/HighLevelStatus.h>
 #include <mower_msgs/Status.h>
-#include <nlohmann/json.hpp>
 #include <open_mower/settings_persistence.h>
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
@@ -16,12 +10,24 @@
 #include <std_msgs/Float32.h>
 #include <std_msgs/String.h>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <nlohmann/json.hpp>
+#include <string>
+
 class MowLoadFactorNode {
  public:
   MowLoadFactorNode()
-      : nh_(), last_status_json_publish_wall_time_(), last_param_refresh_wall_time_(),
-        last_factor_current_(1.0), last_factor_motor_temp_(1.0), last_factor_esc_temp_(1.0), last_raw_factor_(1.0),
-        last_computed_factor_(1.0), last_effective_factor_(1.0) {
+      : nh_(),
+        last_status_json_publish_wall_time_(),
+        last_param_refresh_wall_time_(),
+        last_factor_current_(1.0),
+        last_factor_motor_temp_(1.0),
+        last_factor_esc_temp_(1.0),
+        last_raw_factor_(1.0),
+        last_computed_factor_(1.0),
+        last_effective_factor_(1.0) {
     nh_.param("/settings/persistent_file", settings_persistent_path_,
               std::string("/data/ros/settings_persistent.json"));
 
@@ -30,8 +36,10 @@ class MowLoadFactorNode {
 
     computed_pub_ = nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/computed", 1, true);
     effective_pub_ = nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/effective", 1, true);
-    load_factor_computed_pub_ = nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/load_factor_computed", 1, true);
-    load_factor_effective_pub_ = nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/load_factor_effective", 1, true);
+    load_factor_computed_pub_ =
+        nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/load_factor_computed", 1, true);
+    load_factor_effective_pub_ =
+        nh_.advertise<std_msgs::Float32>("/mower_logic/mow_load_factor/load_factor_effective", 1, true);
     status_json_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/mow_load_factor/status_json", 1, true);
 
     status_sub_ = nh_.subscribe("/ll/mower_status", 10, &MowLoadFactorNode::statusCallback, this);
@@ -52,23 +60,26 @@ class MowLoadFactorNode {
                                                       &MowLoadFactorNode::setCurrentStartPersistentCallback, this);
     set_persistent_current_end_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/set_persistent_current_end", 10,
                                                     &MowLoadFactorNode::setCurrentEndPersistentCallback, this);
-    renew_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/renew", 10,
-                               &MowLoadFactorNode::renewCallback, this);
+    renew_sub_ = nh_.subscribe("/mower_logic/mow_load_factor/renew", 10, &MowLoadFactorNode::renewCallback, this);
 
     publishFactorTopics();
     publishStatusJson();
 
-    ROS_INFO_STREAM("Mow load factor node ready: enabled=" << (enabled_ ? "true" : "false")
-                    << ", min_factor=" << min_factor_ << ", current_start=" << current_start_
-                    << ", current_end=" << current_end_ << ", settings_persistent_file="
-                    << settings_persistent_path_);
+    ROS_INFO_STREAM("Mow load factor node ready: enabled="
+                    << (enabled_ ? "true" : "false") << ", min_factor=" << min_factor_
+                    << ", current_start=" << current_start_ << ", current_end=" << current_end_
+                    << ", settings_persistent_file=" << settings_persistent_path_);
   }
 
  private:
   using json = open_mower_settings::json;
 
-  static double minAllowedFactor() { return 0.10; }
-  static double maxAllowedFactor() { return 1.00; }
+  static double minAllowedFactor() {
+    return 0.10;
+  }
+  static double maxAllowedFactor() {
+    return 1.00;
+  }
   static constexpr const char* kNamespace = "mow_load_factor";
 
   void loadBootstrapParameters() {
@@ -88,20 +99,17 @@ class MowLoadFactorNode {
     refreshRuntimeParametersFromParamTree();
 
     if (!std::isfinite(min_factor_) || min_factor_ < minAllowedFactor() || min_factor_ > maxAllowedFactor()) {
-      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_factor_min=" << min_factor_
-                      << ". Falling back to 0.40.");
+      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_factor_min=" << min_factor_ << ". Falling back to 0.40.");
       min_factor_ = 0.40;
       ros::param::set("/mower_logic/mow_load_factor_min", min_factor_);
     }
     if (!std::isfinite(current_start_) || current_start_ < 0.0) {
-      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_current_start=" << current_start_
-                      << ". Falling back to 0.75 A.");
+      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_current_start=" << current_start_ << ". Falling back to 0.75 A.");
       current_start_ = 0.75;
       ros::param::set("/mower_logic/mow_load_current_start", current_start_);
     }
     if (!std::isfinite(current_end_) || current_end_ <= current_start_) {
-      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_current_end=" << current_end_
-                      << ". Falling back to 1.25 A.");
+      ROS_WARN_STREAM("Invalid /mower_logic/mow_load_current_end=" << current_end_ << ". Falling back to 1.25 A.");
       current_end_ = std::max(1.25, current_start_ + 0.01);
       ros::param::set("/mower_logic/mow_load_current_end", current_end_);
     }
@@ -109,7 +117,7 @@ class MowLoadFactorNode {
 
     if (!std::isfinite(status_publish_period_) || status_publish_period_ < 0.05) {
       ROS_WARN_STREAM("Invalid /mower_logic/mow_load_status_publish_period=" << status_publish_period_
-                      << ". Falling back to 0.50 s.");
+                                                                             << ". Falling back to 0.50 s.");
       status_publish_period_ = 0.50;
       ros::param::set("/mower_logic/mow_load_status_publish_period", status_publish_period_);
     }
@@ -151,23 +159,21 @@ class MowLoadFactorNode {
   json seedEntriesFromBootstrap() {
     json seed = json::object();
     seed["enabled"] = makeBooleanEntry("Mäh-Lastfaktor aktiv",
-                                        "Berechneten Mäh-Lastfaktor statt festem Faktor 1.0 verwenden.", 10,
-                                        enabled_);
-    seed["min_factor"] = makeNumberEntry("Minimaler Lastfaktor",
-                                          "Untergrenze des berechneten Mäh-Lastfaktors.", 20, min_factor_,
-                                          minAllowedFactor(), maxAllowedFactor(), "");
-    seed["current_start"] = makeNumberEntry("Strombeginn Derating",
-                                             "Mähmotorstrom, ab dem die Lastfaktor-Absenkung beginnt.", 30,
-                                             current_start_, 0.0, 100.0, "A");
-    seed["current_end"] = makeNumberEntry("Stromende Derating",
-                                           "Mähmotorstrom, bei dem der Minimalfaktor erreicht wird.", 40,
-                                           current_end_, 0.0, 100.0, "A");
+                                       "Berechneten Mäh-Lastfaktor statt festem Faktor 1.0 verwenden.", 10, enabled_);
+    seed["min_factor"] = makeNumberEntry("Minimaler Lastfaktor", "Untergrenze des berechneten Mäh-Lastfaktors.", 20,
+                                         min_factor_, minAllowedFactor(), maxAllowedFactor(), "");
+    seed["current_start"] =
+        makeNumberEntry("Strombeginn Derating", "Mähmotorstrom, ab dem die Lastfaktor-Absenkung beginnt.", 30,
+                        current_start_, 0.0, 100.0, "A");
+    seed["current_end"] =
+        makeNumberEntry("Stromende Derating", "Mähmotorstrom, bei dem der Minimalfaktor erreicht wird.", 40,
+                        current_end_, 0.0, 100.0, "A");
     return seed;
   }
 
   void initializePersistentSettings() {
-    settings_entries_ = open_mower_settings::mergeNamespaceWithSeed(settings_persistent_path_, kNamespace,
-                                                                     seedEntriesFromBootstrap());
+    settings_entries_ =
+        open_mower_settings::mergeNamespaceWithSeed(settings_persistent_path_, kNamespace, seedEntriesFromBootstrap());
     loadPersistentValuesFromEntries(true);
     // The UI/MQTT settings namespace is now consolidated under settings/mower_logic.
     // Keep legacy runtime topics working, but remove the deprecated persisted namespace
@@ -176,8 +182,8 @@ class MowLoadFactorNode {
   }
 
   void reloadPersistentSettingsMetadata() {
-    settings_entries_ = open_mower_settings::mergeNamespaceWithSeed(settings_persistent_path_, kNamespace,
-                                                                     seedEntriesFromBootstrap());
+    settings_entries_ =
+        open_mower_settings::mergeNamespaceWithSeed(settings_persistent_path_, kNamespace, seedEntriesFromBootstrap());
     loadPersistentValuesFromEntries(false);
   }
 
@@ -223,8 +229,7 @@ class MowLoadFactorNode {
                                             persistent_min_factor_);
       repaired = true;
     }
-    if (!std::isfinite(persistent_current_start_) ||
-        persistent_current_start_ < entryMin("current_start", 0.0) ||
+    if (!std::isfinite(persistent_current_start_) || persistent_current_start_ < entryMin("current_start", 0.0) ||
         persistent_current_start_ > entryMax("current_start", 100.0)) {
       persistent_current_start_ = default_current_start;
       settings_entries_["current_start"]["persistent"] = persistent_current_start_;
@@ -232,8 +237,7 @@ class MowLoadFactorNode {
                                             persistent_current_start_);
       repaired = true;
     }
-    if (!std::isfinite(persistent_current_end_) ||
-        persistent_current_end_ < entryMin("current_end", 0.0) ||
+    if (!std::isfinite(persistent_current_end_) || persistent_current_end_ < entryMin("current_end", 0.0) ||
         persistent_current_end_ > entryMax("current_end", 100.0) ||
         persistent_current_end_ <= persistent_current_start_) {
       persistent_current_end_ = std::max(default_current_end, persistent_current_start_ + 0.01);
@@ -261,8 +265,7 @@ class MowLoadFactorNode {
 
   void syncDefaultParamTree() const {
     for (const std::string key : {"min_factor", "current_start", "current_end"}) {
-      ros::param::set(std::string("/settings/") + kNamespace + "/default/" + key,
-                      entryNumber(key, "default", 0.0));
+      ros::param::set(std::string("/settings/") + kNamespace + "/default/" + key, entryNumber(key, "default", 0.0));
     }
     ros::param::set(std::string("/settings/") + kNamespace + "/default/enabled",
                     entryBoolean("enabled", "default", false));
@@ -296,7 +299,7 @@ class MowLoadFactorNode {
   void validateSmoothingParameters(bool write_legacy_params) {
     if (!std::isfinite(smoothing_down_alpha_) || smoothing_down_alpha_ < 0.0 || smoothing_down_alpha_ > 1.0) {
       ROS_WARN_STREAM("Invalid /mower_logic/mow_load_factor_smoothing_down_alpha=" << smoothing_down_alpha_
-                      << ". Falling back to 0.50.");
+                                                                                   << ". Falling back to 0.50.");
       smoothing_down_alpha_ = 0.50;
       if (write_legacy_params) {
         ros::param::set("/mower_logic/mow_load_factor_smoothing_down_alpha", smoothing_down_alpha_);
@@ -304,7 +307,7 @@ class MowLoadFactorNode {
     }
     if (!std::isfinite(smoothing_up_alpha_) || smoothing_up_alpha_ < 0.0 || smoothing_up_alpha_ > 1.0) {
       ROS_WARN_STREAM("Invalid /mower_logic/mow_load_factor_smoothing_up_alpha=" << smoothing_up_alpha_
-                      << ". Falling back to 0.10.");
+                                                                                 << ". Falling back to 0.10.");
       smoothing_up_alpha_ = 0.10;
       if (write_legacy_params) {
         ros::param::set("/mower_logic/mow_load_factor_smoothing_up_alpha", smoothing_up_alpha_);
@@ -317,8 +320,7 @@ class MowLoadFactorNode {
     // periodically so session/persistent MQTT changes are applied without restarting
     // this helper node. Legacy /mower_logic parameters remain a fallback.
     const ros::WallTime now = ros::WallTime::now();
-    if (last_param_refresh_wall_time_.toSec() > 0.0 &&
-        (now - last_param_refresh_wall_time_).toSec() < 0.50) {
+    if (last_param_refresh_wall_time_.toSec() > 0.0 && (now - last_param_refresh_wall_time_).toSec() < 0.50) {
       return;
     }
     last_param_refresh_wall_time_ = now;
@@ -414,8 +416,8 @@ class MowLoadFactorNode {
       return 1.0;
     }
     if (end <= start) {
-      ROS_WARN_STREAM_THROTTLE(10.0,
-                               "Invalid mowing load factor thresholds: end <= start. Derating disabled for this input.");
+      ROS_WARN_STREAM_THROTTLE(
+          10.0, "Invalid mowing load factor thresholds: end <= start. Derating disabled for this input.");
       return 1.0;
     }
     if (value <= start) {
@@ -491,15 +493,15 @@ class MowLoadFactorNode {
     last_effective_factor_ = effectiveFactor();
     publishFactorTopics();
     publishStatusJson();
-    ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session")
-                    << " enabled set to " << (enabled_ ? "true" : "false"));
+    ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session") << " enabled set to "
+                                       << (enabled_ ? "true" : "false"));
   }
 
   void applyMinFactor(double requested, bool persist) {
     if (!validateMinFactor(requested)) {
       ROS_WARN_STREAM("Rejected mowing load min_factor=" << requested << ". Allowed range is "
-                      << entryMin("min_factor", minAllowedFactor()) << " to "
-                      << entryMax("min_factor", maxAllowedFactor()) << ".");
+                                                         << entryMin("min_factor", minAllowedFactor()) << " to "
+                                                         << entryMax("min_factor", maxAllowedFactor()) << ".");
       publishStatusJson();
       return;
     }
@@ -514,14 +516,14 @@ class MowLoadFactorNode {
     syncActiveParamTree();
     syncLegacyWorkingParams();
     publishStatusJson();
-    ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session")
-                    << " min_factor set to " << min_factor_);
+    ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session") << " min_factor set to " << min_factor_);
   }
 
   void applyCurrentStart(double requested, bool persist) {
     if (!validateCurrentStart(requested)) {
-      ROS_WARN_STREAM("Rejected mowing load current_start=" << requested
-                      << ". It must be within metadata limits and lower than current_end=" << current_end_ << ".");
+      ROS_WARN_STREAM("Rejected mowing load current_start="
+                      << requested << ". It must be within metadata limits and lower than current_end=" << current_end_
+                      << ".");
       publishStatusJson();
       return;
     }
@@ -536,13 +538,14 @@ class MowLoadFactorNode {
     syncActiveParamTree();
     syncLegacyWorkingParams();
     publishStatusJson();
-    ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session")
-                    << " current_start set to " << current_start_ << " A");
+    ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session") << " current_start set to "
+                                       << current_start_ << " A");
   }
 
   void applyCurrentEnd(double requested, bool persist) {
     if (!validateCurrentEnd(requested)) {
-      ROS_WARN_STREAM("Rejected mowing load current_end=" << requested
+      ROS_WARN_STREAM("Rejected mowing load current_end="
+                      << requested
                       << ". It must be within metadata limits and higher than current_start=" << current_start_ << ".");
       publishStatusJson();
       return;
@@ -558,12 +561,16 @@ class MowLoadFactorNode {
     syncActiveParamTree();
     syncLegacyWorkingParams();
     publishStatusJson();
-    ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session")
-                    << " current_end set to " << current_end_ << " A");
+    ROS_INFO_STREAM("Mow load factor " << (persist ? "persistent" : "session") << " current_end set to " << current_end_
+                                       << " A");
   }
 
-  void setEnabledSessionCallback(const std_msgs::Bool::ConstPtr& msg) { applyEnabled(msg->data, false); }
-  void setEnabledPersistentCallback(const std_msgs::Bool::ConstPtr& msg) { applyEnabled(msg->data, true); }
+  void setEnabledSessionCallback(const std_msgs::Bool::ConstPtr& msg) {
+    applyEnabled(msg->data, false);
+  }
+  void setEnabledPersistentCallback(const std_msgs::Bool::ConstPtr& msg) {
+    applyEnabled(msg->data, true);
+  }
   void setMinFactorSessionCallback(const std_msgs::Float32::ConstPtr& msg) {
     applyMinFactor(static_cast<double>(msg->data), false);
   }
@@ -603,8 +610,9 @@ class MowLoadFactorNode {
     load_factor_effective_pub_.publish(effective);
   }
 
-
-  static bool differs(double active, double persistent) { return std::fabs(active - persistent) > 1e-9; }
+  static bool differs(double active, double persistent) {
+    return std::fabs(active - persistent) > 1e-9;
+  }
 
   json orderedStatusBase(const json& entry) const {
     json out = json::object();

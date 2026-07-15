@@ -20,7 +20,7 @@
 @@ -594,6 +597,15 @@
  bool latest_gps_state_available = false;
  ros::Time last_gps_state_publish_time;
- 
+
 +std::mutex gps_state_pose_mutex;
 +xbot_msgs::AbsolutePose latest_ll_gps_pose;
 +xbot_msgs::AbsolutePose latest_xb_pose;
@@ -30,8 +30,8 @@
 +ros::Time latest_xb_pose_received_at;
 +ros::Time latest_gps_drive_ready_at;
 +
- 
- 
+
+
  static json gps_state_setting_entry(const std::string &label,
 @@ -723,11 +735,11 @@
          "general", 20, "double", cfg.publish_rate_hz, 0.1, 5.0, "Hz");
@@ -50,7 +50,7 @@
 @@ -907,6 +919,155 @@
      publish_latest_gps_state_payloads(true);
  }
- 
+
 +
 +static double gps_state_age_ms_or_negative(const ros::Time &now, const ros::Time &received_at) {
 +    if (now.isZero() || received_at.isZero()) return -1.0;
@@ -211,13 +211,13 @@
      const double stamp = msg->header.stamp.toSec();
      const std::string quality = gps_state_quality(available, used_count, avg_cn0);
 +    const json drive_status = build_gps_drive_status_payload(now);
- 
+
      json base = json::object();
      base["available"] = available;
 @@ -1008,12 +1171,14 @@
      state4["max_cn0"] = max_cn0;
      state4["satellites"] = all_satellites;
- 
+
 -    return {
 +    json payloads = {
          {"state1", state1},
@@ -228,12 +228,12 @@
 +    apply_gps_drive_status_to_payloads(payloads, drive_status);
 +    return payloads;
  }
- 
+
  void publish_latest_gps_state_payloads(bool force) {
 @@ -1029,6 +1194,9 @@
      }
      if (!has_snapshot) return;
- 
+
 +    const json drive_status = build_gps_drive_status_payload(ros::Time::now());
 +    apply_gps_drive_status_to_payloads(snapshot, drive_status);
 +
@@ -243,7 +243,7 @@
 @@ -1055,6 +1223,31 @@
      publish_latest_gps_state_payloads(false);
  }
- 
+
 +void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
 +    std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
 +    latest_ll_gps_pose = *msg;
@@ -279,5 +279,5 @@
 +    ros::Subscriber gpsStateLlGpsPoseSubscriber = n->subscribe("/ll/position/gps", 1, gps_state_ll_gps_pose_callback);
 +    ros::Subscriber gpsStateXbPoseSubscriber = n->subscribe("/xbot_positioning/xb_pose", 1, gps_state_xb_pose_callback);
      ros::Subscriber gpsStateSatellitesSubscriber = n->subscribe("/ll/position/gps/satellites", 1, gps_state_satellites_callback);
- 
+
      cmd_vel_pub = n->advertise<geometry_msgs::Twist>("xbot_monitoring/remote_cmd_vel", 1);

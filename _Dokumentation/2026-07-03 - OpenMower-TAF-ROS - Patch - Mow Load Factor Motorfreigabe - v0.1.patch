@@ -3,7 +3,7 @@
 @@ -6,8 +6,22 @@
  - Mähmotortemperatur,
  - Mäh-ESC-Temperatur.
- 
+
 -Der Faktor beeinflusst in dieser Ausbaustufe noch NICHT die Fahrgeschwindigkeit.
 -Er wird nur berechnet, publiziert und per MQTT schaltbar gemacht.
 +Der Faktor wird berechnet, publiziert, per MQTT schaltbar gemacht und über
@@ -22,7 +22,7 @@
 +Dadurch werden Transport- oder Bewegungsfahrten ohne eingeschalteten Mähmotor nicht
 +durch den Load Factor begrenzt. Wenn der Mähmotor während einer Bewegungsfahrt
 +absichtlich eingeschaltet bleibt, wirkt der Load Factor weiterhin.
- 
+
  Defaults
  --------
 --- a/src/mower_logic/src/mow_load_factor.cpp	2026-06-26 14:50:26.000000000 +0000
@@ -31,24 +31,24 @@
  // Mowing load factor calculation and runtime configuration bridge.
 -// This node intentionally does not influence driving speed yet.
 +// The local planner consumes the effective factor as a speed multiplier.
- 
+
  #include <algorithm>
  #include <cmath>
 @@ -433,7 +433,9 @@
    }
- 
+
    double effectiveFactor() const {
 -    return enabled_ && isMowingState() ? last_computed_factor_ : 1.0;
 +    // Only expose a speed-limiting effective factor while the high-level state is MOWING
 +    // and the low-level mower status reports that the mowing motor is enabled.
 +    return enabled_ && isMowingState() && mow_motor_on_ ? last_computed_factor_ : 1.0;
    }
- 
+
    void stateCallback(const mower_msgs::HighLevelStatus::ConstPtr& msg) {
 @@ -445,6 +447,11 @@
    void statusCallback(const mower_msgs::Status::ConstPtr& msg) {
      refreshRuntimeParametersFromParamTree();
- 
+
 +    // Gate the effective factor with the actual low-level mowing motor enable state.
 +    // Transport movements are not limited when the mowing motor is off, but they remain
 +    // load-factor-limited if the motor is intentionally kept on.
@@ -58,10 +58,10 @@
      last_factor_motor_temp_ = derateFactor(msg->mower_motor_temperature, motor_temp_start_, motor_temp_end_);
      last_factor_esc_temp_ = derateFactor(msg->mower_esc_temperature, esc_temp_start_, esc_temp_end_);
 @@ -678,6 +685,7 @@
- 
+
    std::string settings_persistent_path_;
    std::string current_state_name_;
 +  bool mow_motor_on_ = false;
    json settings_entries_;
- 
+
    bool enabled_;

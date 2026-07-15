@@ -7,14 +7,14 @@ index b37c0a9..5a1f98d 100644
 -======================
 +MQTT GPS Logging
 +================
- 
+
 -Current implementation
 -----------------------
 -Satellite logging is now integrated under mower_logic.
 +Canonical API
 +-------------
 +GPS logging is exposed to the app below gps_state:
- 
+
 -Use these topics for normal operation:
 +- gps_state/settings/json
 +- gps_state/settings/set/session/json
@@ -25,7 +25,7 @@ index b37c0a9..5a1f98d 100644
 +- gps_state/logging/status/json
 +- gps_state/logging/last/json
 +- gps_state/logging/validation/json
- 
+
 -- settings/mower_logic/json
 -- settings/mower_logic/set/session/json
 -- settings/mower_logic/set/persistent/json
@@ -35,7 +35,7 @@ index b37c0a9..5a1f98d 100644
 -- mower_logic/satellite_logging/set/renew/json
 +Start, stop and cancel are commands. Do not implement them as a persistent
 +boolean switch. The retained runtime status is the source of truth for the app.
- 
+
 -The old satellite_logger/... topics are not the canonical interface anymore.
 -
 -Normal operation through the enable switch
@@ -93,7 +93,7 @@ index b37c0a9..5a1f98d 100644
 -Examples:
 +Control examples
 +----------------
- 
+
    {"command":"start","trigger":"next_cycle","mode":"from_start_to_docking"}
    {"command":"start","trigger":"ad_hoc","mode":"until_docking"}
    {"command":"start","trigger":"area_id","mode":"until_docking","area_id":"3"}
@@ -226,7 +226,7 @@ index 8dfa514..4989c88 100644
 +Public settings
 +---------------
 +The gps_state/settings/json payload contains these GPS logging settings:
- 
+
 -  satellite_logging_output_path
 -    Persistent output directory. Default:
 -    /home/openmower/recordings/logs
@@ -237,7 +237,7 @@ index 8dfa514..4989c88 100644
 +  logging_ram_path
 +  logging_output_path
 +  logging_container_name
- 
+
 -  satellite_logging_container_name
 -    Optional ROS container override. Leave empty for auto-detection.
 -    If empty, record_satellites.sh runs directly when already inside a container. On a host with Docker, it tries to find the ROS container automatically, preferring names such as openmower-open_mower_ros-1 or OpenMowerROS.
@@ -245,27 +245,27 @@ index 8dfa514..4989c88 100644
 +to the existing internal mower_logic dynamic_reconfigure keys. The internal
 +satellite_logging_enabled field is intentionally not exposed as an app toggle.
 +Start, stop and cancel are commands and must not be persisted as a boolean state.
- 
+
  Runtime control
  ---------------
 -The runtime control endpoint remains available for advanced/manual control:
 +Use:
- 
+
 -  mower_logic/satellite_logging/set/control/json
 -  mower_logic/satellite_logging/set/renew/json
 +  gps_state/logging/set/control/json
- 
+
  Examples:
- 
+
 @@ -96,18 +50,98 @@ Examples:
    {"command":"stop"}
    {"command":"cancel"}
- 
+
 -Normal app usage should use satellite_logging_enabled and the default settings; the control endpoint is not required for ordinary start/stop operation.
 +If trigger, mode or area_id are omitted, the configured defaults are used. An
 +explicit command creates an independent runtime request and does not require the
 +legacy satellite_logging_enabled flag.
- 
+
  Runtime status
  --------------
 -The current status is published as a mower_logic current value:
@@ -353,7 +353,7 @@ index 8dfa514..4989c88 100644
 +published settings/mower_logic/json payload to avoid duplicate app controls.
 +They remain internal dynamic_reconfigure fields so existing installations and
 +legacy clients can continue to operate during migration.
- 
+
  Responsibility split
  --------------------
 -settings/mower_logic: user-facing switch, defaults and expert paths.
@@ -371,7 +371,7 @@ index 884c2c4..6115d4b 100644
 +++ b/src/lib/xbot_monitoring/README.md
 @@ -264,3 +264,21 @@ State 0 remains split into static and live data so long descriptions do not have
  12. `gps_drive_ready` - overall drive-readiness result.
- 
+
  `xbot_positioning` publishes the auxiliary ROS topic `/xbot_positioning/gps_debug_state` as retained JSON. `xbot_monitoring` uses it to fill State 0 stages that are otherwise internal to `xbot_positioning`, especially `gps_enabled`, `valid_gps_samples`, `has_gps`, outlier count and the age of the last accepted GPS update.
 +
 +## GPS logging under GPS State
@@ -420,8 +420,8 @@ index f9de877..a747999 100644
 +bool try_parse_utc_timestamp_iso8601(const std::string &timestamp,
 +                                     std::chrono::system_clock::time_point &time_point);
  void rpc_request_callback(const std::string &payload);
- 
- 
+
+
 @@ -307,6 +313,8 @@ class MqttCallback : public mqtt::callback {
          publish_gps_state_definitions();
          publish_latest_gps_state_payloads(true);
@@ -467,7 +467,7 @@ index f9de877..a747999 100644
 @@ -758,6 +778,20 @@ bool latest_gps_restart_status_available = false;
  json last_completed_gps_restart = json::object();
  bool last_completed_gps_restart_available = false;
- 
+
 +std::mutex mower_logic_settings_cache_mutex;
 +json latest_mower_logic_settings_payload = json::object();
 +bool latest_mower_logic_settings_available = false;
@@ -482,8 +482,8 @@ index f9de877..a747999 100644
 +json pending_gps_logging_settings = json::object();
 +bool pending_gps_logging_settings_persistent = false;
 +
- 
- 
+
+
  static json gps_state_setting_entry(const std::string &label,
 @@ -821,11 +855,12 @@ static json gps_state_command_entry(const std::string &label,
                                      int order,
@@ -503,7 +503,7 @@ index f9de877..a747999 100644
 @@ -843,6 +878,74 @@ static json gps_state_command_entry(const std::string &label,
      return entry;
  }
- 
+
 +static const std::map<std::string, std::string> &gps_logging_public_to_internal_settings() {
 +    static const std::map<std::string, std::string> mapping = {
 +        {"logging_default_trigger", "satellite_logging_default_trigger"},
@@ -673,7 +673,7 @@ index f9de877..a747999 100644
 @@ -1079,6 +1261,31 @@ static bool gps_state_validate_number_setting(const json &entry, double min_valu
      return true;
  }
- 
+
 +static bool gps_state_validate_string_setting(const json &entry,
 +                                              std::string &value,
 +                                              std::string &reason,
@@ -703,12 +703,12 @@ index f9de877..a747999 100644
      json validation = {
          {"valid", false},
 @@ -1099,6 +1306,8 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
- 
+
          GpsStateSettings new_cfg = current_gps_state_settings();
          std::map<std::string, std::map<std::string, open_mower_settings::json>> persistent_updates;
 +        json logging_forward_payload = json::object();
 +        bool has_native_gps_state_change = false;
- 
+
          for (auto it = payload.begin(); it != payload.end(); ++it) {
              const std::string key = it.key();
 @@ -1106,36 +1315,54 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
@@ -718,7 +718,7 @@ index f9de877..a747999 100644
 +            std::string string_value;
              bool accepted = false;
              json accepted_fields = json::array();
- 
+
              if (key == "enabled") {
                  accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
 -                if (accepted) new_cfg.enabled = bool_value;
@@ -776,7 +776,7 @@ index f9de877..a747999 100644
                  validation["rejected"][key] = "unknown gps_state setting";
                  continue;
 @@ -1148,7 +1375,7 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
- 
+
              accepted_fields.push_back("value");
              validation["accepted"][key] = accepted_fields;
 -            if (persistent) {
@@ -786,7 +786,7 @@ index f9de877..a747999 100644
          }
 @@ -1158,7 +1385,7 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
          }
- 
+
          if (validation["rejected"].empty()) {
 -            {
 +            if (has_native_gps_state_change) {
@@ -823,7 +823,7 @@ index f9de877..a747999 100644
      } catch (const json::exception &e) {
          validation["rejected"]["$"] = std::string("Error decoding JSON: ") + e.what();
      }
- 
+
      validation["valid"] = !validation["accepted"].empty() && validation["rejected"].empty();
 +    if (!validation.contains("pending")) validation["pending"] = false;
 +    if (!validation.contains("status")) validation["status"] = validation["valid"] ? "applied" : "rejected";
@@ -832,7 +832,7 @@ index f9de877..a747999 100644
      publish_gps_state_definitions();
      publish_latest_gps_state_payloads(true);
  }
- 
+
 +static std::string gps_logging_string_or(const json &payload,
 +                                         const std::string &key,
 +                                         const std::string &fallback = "") {
@@ -1055,12 +1055,12 @@ index f9de877..a747999 100644
 +    try_publish("gps_state/logging/validation/json", validation.dump(), false);
 +}
 +
- 
+
  static std::string normalize_f9p_restart_token(std::string value) {
      value = trim_settings_string(value);
 @@ -2831,15 +3304,132 @@ void try_publish_binary(std::string topic, const void *data, size_t size, bool r
  }
- 
+
  void mower_logic_settings_status_json_callback(const std_msgs::String::ConstPtr &msg) {
 -    try_publish("settings/mower_logic/json", msg->data, true);
 +    try {
@@ -1125,7 +1125,7 @@ index f9de877..a747999 100644
 +        try_publish("settings/mower_logic/json", msg->data, true);
 +    }
  }
- 
+
  void mower_logic_settings_validation_json_callback(const std_msgs::String::ConstPtr &msg) {
      try_publish("settings/mower_logic/validation/json", msg->data, true);
 +    try {
@@ -1165,7 +1165,7 @@ index f9de877..a747999 100644
 +    } catch (const json::exception &) {
 +    }
  }
- 
+
  void mower_logic_satellite_logging_status_json_callback(const std_msgs::String::ConstPtr &msg) {
      try_publish("settings/mower_logic/satellite_logging/json", msg->data, true);
 +    try {
@@ -1190,7 +1190,7 @@ index f9de877..a747999 100644
 +        ROS_WARN_STREAM("Could not transform satellite logging status: " << e.what());
 +    }
  }
- 
+
  void load_factor_computed_callback(const std_msgs::Float32::ConstPtr &msg) {
 diff --git a/src/mower_logic/cfg/MowerLogic.cfg b/src/mower_logic/cfg/MowerLogic.cfg
 index 544200b..0ea03bf 100755
@@ -1198,8 +1198,8 @@ index 544200b..0ea03bf 100755
 +++ b/src/mower_logic/cfg/MowerLogic.cfg
 @@ -66,8 +66,12 @@ gen.add("emergency_input_config", str_t, 0, "Comma separated list of emergency i
  gen.add("shutdown_esc_max_pitch", int_t, 0, "Maximum pitch angle (deg) where ESC shutdown is permitted (0 to disable ESC shutdown)", 0, 0, 180)
- 
- 
+
+
 -# Satellite logging is exposed exclusively as part of settings/mower_logic.
 -# Runtime start/stop is handled by mower_logic, the script only records and flushes files.
 +# GPS logging remains an internal mower_logic runtime configuration because the
@@ -1218,7 +1218,7 @@ index 225823b..8200328 100644
 @@ -15,9 +15,10 @@ usage() {
    cat <<USAGE
  Usage: $0 [--session-id ID] [--ram-path PATH] [--output-path PATH] [--container-name NAME]
- 
+
 -Options override the SAT_LOG_* environment variables. OpenMower passes these
 -values from settings/mower_logic so the script has no hard-coded active
 -configuration of its own.
@@ -1228,14 +1228,14 @@ index 225823b..8200328 100644
 +hard-coded active configuration of its own.
  USAGE
  }
- 
+
 diff --git a/src/mower_logic/src/mower_logic/mower_logic.cpp b/src/mower_logic/src/mower_logic/mower_logic.cpp
 index 1544e8c..80cddfe 100644
 --- a/src/mower_logic/src/mower_logic/mower_logic.cpp
 +++ b/src/mower_logic/src/mower_logic/mower_logic.cpp
 @@ -420,10 +420,20 @@ class SatelliteLoggingController {
        const bool enabled = last_config.satellite_logging_enabled;
- 
+
        if (!enabled) {
 -        if (pid_ > 0) stopLocked();
 -        armed_ = false;
@@ -1259,7 +1259,7 @@ index 1544e8c..80cddfe 100644
        }
 @@ -442,10 +452,11 @@ class SatelliteLoggingController {
        std::lock_guard<std::mutex> lk(mutex_);
- 
+
        if (state_ == "running" && docked && mode_ != "manual" && mode_ != "area_only") {
 -        stopLocked();
 +        stopLocked("docked");
@@ -1273,7 +1273,7 @@ index 1544e8c..80cddfe 100644
          const bool area_match = !target_area_id_.empty() && area_id == target_area_id_;
          const bool should_start =
 @@ -522,9 +533,9 @@ class SatelliteLoggingController {
- 
+
    bool applyRequestedStartLocked(const std::string& requested_trigger, const std::string& requested_mode,
                                   const std::string& requested_area) {
 -    if (!last_config.satellite_logging_enabled) {
@@ -1293,7 +1293,7 @@ index 1544e8c..80cddfe 100644
      files_.clear();
      if (trigger_ == "ad_hoc") {
 @@ -577,10 +589,10 @@ class SatelliteLoggingController {
- 
+
    void startLocked() {
      if (pid_ > 0 || state_ == "running") return;
 -    if (!last_config.satellite_logging_enabled) {
@@ -1312,11 +1312,11 @@ index 1544e8c..80cddfe 100644
 +    stop_reason_.clear();
      error_.clear();
      files_ = expectedFiles(session_id_);
- 
+
 @@ -615,7 +628,7 @@ class SatelliteLoggingController {
      armed_ = false;
    }
- 
+
 -  void stopLocked() {
 +  void stopLocked(const std::string& reason) {
      if (pid_ <= 0) return;
@@ -1329,9 +1329,9 @@ index 1544e8c..80cddfe 100644
 +    stop_reason_ = exited ? reason : "error";
      if (!exited) error_ = "logger did not stop after SIGTERM and was killed";
    }
- 
+
 @@ -657,14 +671,31 @@ class SatelliteLoggingController {
- 
+
        const std::string command = payload.value("command", std::string("start"));
        if (command == "stop") {
 -        stopLocked();

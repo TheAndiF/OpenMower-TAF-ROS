@@ -1,11 +1,3 @@
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <memory>
-#include <sstream>
-#include <string>
-#include <vector>
-
 #include <actionlib/client/simple_action_client.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <mbf_msgs/GetPathAction.h>
@@ -13,6 +5,14 @@
 #include <ros/ros.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include "mowing_path_order_optimizer/OptimizePaths.h"
 #include "slic3r_coverage_planner/Path.h"
@@ -138,7 +138,8 @@ Point2D polygonCentroid(const slic3r_coverage_planner::Path& path) {
   return centroid;
 }
 
-bool segmentIntersection(const Point2D& a, const Point2D& b, const Point2D& c, const Point2D& d, Point2D& out, double& t) {
+bool segmentIntersection(const Point2D& a, const Point2D& b, const Point2D& c, const Point2D& d, Point2D& out,
+                         double& t) {
   const double r_x = b.x - a.x;
   const double r_y = b.y - a.y;
   const double s_x = d.x - c.x;
@@ -234,7 +235,8 @@ struct CandidateCost {
 
 class PathOrderOptimizer {
  public:
-  explicit PathOrderOptimizer(ros::NodeHandle& nh) : nh_(nh) {}
+  explicit PathOrderOptimizer(ros::NodeHandle& nh) : nh_(nh) {
+  }
 
   bool handle(mowing_path_order_optimizer::OptimizePaths::Request& req,
               mowing_path_order_optimizer::OptimizePaths::Response& res) {
@@ -256,7 +258,8 @@ class PathOrderOptimizer {
       for (std::size_t i = 0; i < req.paths.size(); ++i) {
         OptimizerPath item;
         item.path = req.paths[i];
-        item.source_index = (req.path_indices.size() == req.paths.size()) ? req.path_indices[i] : static_cast<int32_t>(i);
+        item.source_index =
+            (req.path_indices.size() == req.paths.size()) ? req.path_indices[i] : static_cast<int32_t>(i);
         input_paths.push_back(item);
       }
 
@@ -267,8 +270,9 @@ class PathOrderOptimizer {
       splitPaths(input_paths, area_outlines, fill_paths, obstacle_outlines, unknown_paths);
 
       if (!unknown_paths.empty()) {
-        ROS_WARN_STREAM("PathOrderOptimizer: " << unknown_paths.size()
-                                                << " paths have unknown path_type; preserving them before optimized groups.");
+        ROS_WARN_STREAM("PathOrderOptimizer: "
+                        << unknown_paths.size()
+                        << " paths have unknown path_type; preserving them before optimized groups.");
       }
 
       bool used_fallback = res.used_fallback;
@@ -298,35 +302,36 @@ class PathOrderOptimizer {
         appendAll(ordered, unknown_paths);
         if (!ordered.empty() && hasUsablePath(ordered.back().path)) current = lastPose(ordered.back().path);
 
-      switch (mode) {
+        switch (mode) {
+          case mowing_path_order_optimizer::OptimizePaths::Request::
+              PROCESSING_MODE_ORDERED_OBSTACLES_PLUS_ORDERED_FILLS: {
+            auto ordered_obstacles = optimizePaths(obstacle_outlines, current, req, used_fallback, "obstacle outlines");
+            appendAll(ordered, ordered_obstacles);
+            if (!ordered.empty() && hasUsablePath(ordered.back().path)) current = lastPose(ordered.back().path);
+            auto ordered_fills = optimizePaths(fill_paths, current, req, used_fallback, "fill paths");
+            appendAll(ordered, ordered_fills);
+            break;
+          }
 
-        case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_ORDERED_OBSTACLES_PLUS_ORDERED_FILLS: {
-          auto ordered_obstacles = optimizePaths(obstacle_outlines, current, req, used_fallback, "obstacle outlines");
-          appendAll(ordered, ordered_obstacles);
-          if (!ordered.empty() && hasUsablePath(ordered.back().path)) current = lastPose(ordered.back().path);
-          auto ordered_fills = optimizePaths(fill_paths, current, req, used_fallback, "fill paths");
-          appendAll(ordered, ordered_fills);
-          break;
-        }
+          case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_MIXED_FILLS_AND_OBSTACLES: {
+            std::vector<OptimizerPath> mixed = fill_paths;
+            mixed.insert(mixed.end(), obstacle_outlines.begin(), obstacle_outlines.end());
+            auto ordered_mixed = optimizePaths(mixed, current, req, used_fallback, "mixed fill/obstacle paths");
+            appendAll(ordered, ordered_mixed);
+            break;
+          }
 
-        case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_MIXED_FILLS_AND_OBSTACLES: {
-          std::vector<OptimizerPath> mixed = fill_paths;
-          mixed.insert(mixed.end(), obstacle_outlines.begin(), obstacle_outlines.end());
-          auto ordered_mixed = optimizePaths(mixed, current, req, used_fallback, "mixed fill/obstacle paths");
-          appendAll(ordered, ordered_mixed);
-          break;
+          case mowing_path_order_optimizer::OptimizePaths::Request::
+              PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES:
+          default: {
+            auto ordered_fills = optimizePaths(fill_paths, current, req, used_fallback, "fill paths");
+            appendAll(ordered, ordered_fills);
+            if (!ordered.empty() && hasUsablePath(ordered.back().path)) current = lastPose(ordered.back().path);
+            auto ordered_obstacles = optimizePaths(obstacle_outlines, current, req, used_fallback, "obstacle outlines");
+            appendAll(ordered, ordered_obstacles);
+            break;
+          }
         }
-
-        case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES:
-        default: {
-          auto ordered_fills = optimizePaths(fill_paths, current, req, used_fallback, "fill paths");
-          appendAll(ordered, ordered_fills);
-          if (!ordered.empty() && hasUsablePath(ordered.back().path)) current = lastPose(ordered.back().path);
-          auto ordered_obstacles = optimizePaths(obstacle_outlines, current, req, used_fallback, "obstacle outlines");
-          appendAll(ordered, ordered_obstacles);
-          break;
-        }
-      }
         res.used_optimization = true;
       }
 
@@ -345,10 +350,8 @@ class PathOrderOptimizer {
       res.success = true;
       res.used_fallback = used_fallback;
       std::ostringstream msg;
-      msg << "optimized path order: mode=" << static_cast<int>(mode)
-          << ", area_outlines=" << area_outlines.size()
-          << ", fill_paths=" << fill_paths.size()
-          << ", obstacle_outlines=" << obstacle_outlines.size()
+      msg << "optimized path order: mode=" << static_cast<int>(mode) << ", area_outlines=" << area_outlines.size()
+          << ", fill_paths=" << fill_paths.size() << ", obstacle_outlines=" << obstacle_outlines.size()
           << ", unknown=" << unknown_paths.size();
       if (res.used_optimization) msg << ", optimization used";
       if (res.used_fallback) msg << ", fallback used";
@@ -378,7 +381,8 @@ class PathOrderOptimizer {
     res.rotation_offsets.clear();
     res.transform_flags.clear();
     for (std::size_t i = 0; i < req.paths.size(); ++i) {
-      res.path_indices.push_back((req.path_indices.size() == req.paths.size()) ? req.path_indices[i] : static_cast<int32_t>(i));
+      res.path_indices.push_back((req.path_indices.size() == req.paths.size()) ? req.path_indices[i]
+                                                                               : static_cast<int32_t>(i));
       res.path_reversed.push_back(false);
       res.rotation_offsets.push_back(0);
       res.transform_flags.push_back("");
@@ -388,8 +392,7 @@ class PathOrderOptimizer {
     res.used_fallback = false;
   }
 
-  void appendAll(std::vector<OptimizerPath>& target,
-                 const std::vector<OptimizerPath>& source) const {
+  void appendAll(std::vector<OptimizerPath>& target, const std::vector<OptimizerPath>& source) const {
     target.insert(target.end(), source.begin(), source.end());
   }
 
@@ -398,34 +401,26 @@ class PathOrderOptimizer {
       case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_SLICER_ORDER:
       case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES:
       case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_ORDERED_OBSTACLES_PLUS_ORDERED_FILLS:
-      case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_MIXED_FILLS_AND_OBSTACLES:
-        return mode;
+      case mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_MIXED_FILLS_AND_OBSTACLES: return mode;
       default:
-        return mowing_path_order_optimizer::OptimizePaths::Request::PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES;
+        return mowing_path_order_optimizer::OptimizePaths::Request::
+            PROCESSING_MODE_ORDERED_FILLS_PLUS_ORDERED_OBSTACLES;
     }
   }
 
   bool outlineEntryEnabled(const mowing_path_order_optimizer::OptimizePaths::Request& req) const {
     return req.outline_entry_mode ==
-        mowing_path_order_optimizer::OptimizePaths::Request::OUTLINE_ENTRY_MODE_APPROACH_OUTER_OUTLINE_ENTRY;
+           mowing_path_order_optimizer::OptimizePaths::Request::OUTLINE_ENTRY_MODE_APPROACH_OUTER_OUTLINE_ENTRY;
   }
 
-  void splitPaths(const std::vector<OptimizerPath>& paths,
-                  std::vector<OptimizerPath>& area_outlines,
-                  std::vector<OptimizerPath>& fill_paths,
-                  std::vector<OptimizerPath>& obstacle_outlines,
+  void splitPaths(const std::vector<OptimizerPath>& paths, std::vector<OptimizerPath>& area_outlines,
+                  std::vector<OptimizerPath>& fill_paths, std::vector<OptimizerPath>& obstacle_outlines,
                   std::vector<OptimizerPath>& unknown_paths) const {
     for (const auto& item : paths) {
       switch (item.path.path_type) {
-        case slic3r_coverage_planner::Path::TYPE_FILL:
-          fill_paths.push_back(item);
-          break;
-        case slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE:
-          area_outlines.push_back(item);
-          break;
-        case slic3r_coverage_planner::Path::TYPE_OBSTACLE_OUTLINE:
-          obstacle_outlines.push_back(item);
-          break;
+        case slic3r_coverage_planner::Path::TYPE_FILL: fill_paths.push_back(item); break;
+        case slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE: area_outlines.push_back(item); break;
+        case slic3r_coverage_planner::Path::TYPE_OBSTACLE_OUTLINE: obstacle_outlines.push_back(item); break;
         default:
           if (item.path.is_outline) {
             unknown_paths.push_back(item);
@@ -437,10 +432,8 @@ class PathOrderOptimizer {
     }
   }
 
-  bool buildPlannerPath(const geometry_msgs::PoseStamped& start,
-                        const geometry_msgs::PoseStamped& goal_pose,
-                        const mowing_path_order_optimizer::OptimizePaths::Request& req,
-                        nav_msgs::Path& path) {
+  bool buildPlannerPath(const geometry_msgs::PoseStamped& start, const geometry_msgs::PoseStamped& goal_pose,
+                        const mowing_path_order_optimizer::OptimizePaths::Request& req, nav_msgs::Path& path) {
     if (req.planner_action.empty()) return false;
 
     if (!get_path_client_ || planner_action_name_ != req.planner_action) {
@@ -476,8 +469,7 @@ class PathOrderOptimizer {
     return true;
   }
 
-  nav_msgs::Path makeDirectPath(const geometry_msgs::PoseStamped& start,
-                                const geometry_msgs::PoseStamped& goal) const {
+  nav_msgs::Path makeDirectPath(const geometry_msgs::PoseStamped& start, const geometry_msgs::PoseStamped& goal) const {
     nav_msgs::Path path;
     path.header = goal.header;
     path.poses.push_back(start);
@@ -485,8 +477,7 @@ class PathOrderOptimizer {
     return path;
   }
 
-  bool firstApproachIntersection(const nav_msgs::Path& approach_path,
-                                 const slic3r_coverage_planner::Path& outline,
+  bool firstApproachIntersection(const nav_msgs::Path& approach_path, const slic3r_coverage_planner::Path& outline,
                                  Point2D& intersection) const {
     if (approach_path.poses.size() < 2 || !isClosedPath(outline)) return false;
 
@@ -520,8 +511,7 @@ class PathOrderOptimizer {
   }
 
   bool closestOuterOutlinePointToApproach(const nav_msgs::Path& approach_path,
-                                          const slic3r_coverage_planner::Path& outline,
-                                          Point2D& closest_point) const {
+                                          const slic3r_coverage_planner::Path& outline, Point2D& closest_point) const {
     if (approach_path.poses.empty() || !isClosedPath(outline)) return false;
 
     const auto& outline_poses = outline.path.poses;
@@ -549,14 +539,12 @@ class PathOrderOptimizer {
     return found;
   }
 
-  bool optimizeAreaOutlineEntryByApproach(std::vector<OptimizerPath>& paths,
-                                          const geometry_msgs::PoseStamped& current,
+  bool optimizeAreaOutlineEntryByApproach(std::vector<OptimizerPath>& paths, const geometry_msgs::PoseStamped& current,
                                           const mowing_path_order_optimizer::OptimizePaths::Request& req,
                                           bool& used_fallback) {
     std::vector<std::size_t> closed_area_indices;
     for (std::size_t i = 0; i < paths.size(); ++i) {
-      if (paths[i].path.path_type == slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE &&
-          isClosedPath(paths[i].path)) {
+      if (paths[i].path.path_type == slic3r_coverage_planner::Path::TYPE_AREA_OUTLINE && isClosedPath(paths[i].path)) {
         closed_area_indices.push_back(i);
       }
     }
@@ -584,7 +572,8 @@ class PathOrderOptimizer {
     const geometry_msgs::PoseStamped inner_start = firstPose(paths[inner_index].path);
     nav_msgs::Path approach_path;
     if (!buildPlannerPath(current, inner_start, req, approach_path)) {
-      if (!req.fallback_to_euclidean && req.cost_mode == mowing_path_order_optimizer::OptimizePaths::Request::COST_PLANNER) {
+      if (!req.fallback_to_euclidean &&
+          req.cost_mode == mowing_path_order_optimizer::OptimizePaths::Request::COST_PLANNER) {
         used_fallback = true;
         return false;
       }
@@ -622,12 +611,9 @@ class PathOrderOptimizer {
     return true;
   }
 
-  std::vector<OptimizerPath> optimizePaths(
-      const std::vector<OptimizerPath>& paths,
-      geometry_msgs::PoseStamped current,
-      const mowing_path_order_optimizer::OptimizePaths::Request& req,
-      bool& used_fallback,
-      const std::string& label) {
+  std::vector<OptimizerPath> optimizePaths(const std::vector<OptimizerPath>& paths, geometry_msgs::PoseStamped current,
+                                           const mowing_path_order_optimizer::OptimizePaths::Request& req,
+                                           bool& used_fallback, const std::string& label) {
     std::vector<OptimizerPath> remaining;
     std::vector<OptimizerPath> empty_paths;
     for (const auto& p : paths) {
@@ -648,9 +634,8 @@ class PathOrderOptimizer {
     }
 
     if (req.max_fill_paths > 0 && remaining.size() > req.max_fill_paths) {
-      ROS_WARN_STREAM("PathOrderOptimizer: " << label << " count " << remaining.size()
-                                              << " exceeds max_fill_paths " << req.max_fill_paths
-                                              << "; keeping original order.");
+      ROS_WARN_STREAM("PathOrderOptimizer: " << label << " count " << remaining.size() << " exceeds max_fill_paths "
+                                             << req.max_fill_paths << "; keeping original order.");
       used_fallback = true;
       appendAll(ordered, remaining);
       appendAll(ordered, empty_paths);
@@ -663,7 +648,7 @@ class PathOrderOptimizer {
         used_fallback = true;
         if (req.fallback_to_slicer_order) {
           ROS_WARN_STREAM("PathOrderOptimizer: no finite candidate cost; appending remaining " << label
-                                                                                              << " in slicer order.");
+                                                                                               << " in slicer order.");
           appendAll(ordered, remaining);
           remaining.clear();
           break;
@@ -709,9 +694,8 @@ class PathOrderOptimizer {
       }
     }
 
-    std::sort(euclidean_candidates.begin(), euclidean_candidates.end(), [](const CandidateCost& a, const CandidateCost& b) {
-      return a.cost < b.cost;
-    });
+    std::sort(euclidean_candidates.begin(), euclidean_candidates.end(),
+              [](const CandidateCost& a, const CandidateCost& b) { return a.cost < b.cost; });
 
     if (req.cost_mode == mowing_path_order_optimizer::OptimizePaths::Request::COST_EUCLIDEAN ||
         euclidean_candidates.empty()) {
@@ -730,7 +714,8 @@ class PathOrderOptimizer {
       if (getPlannerCost(current, goal, req, planner_cost)) {
         candidate.cost = planner_cost;
         candidate.planner_cost_used = true;
-      } else if (req.fallback_to_euclidean || req.cost_mode == mowing_path_order_optimizer::OptimizePaths::Request::COST_HYBRID) {
+      } else if (req.fallback_to_euclidean ||
+                 req.cost_mode == mowing_path_order_optimizer::OptimizePaths::Request::COST_HYBRID) {
         used_fallback = true;
       } else {
         used_fallback = true;
@@ -747,10 +732,8 @@ class PathOrderOptimizer {
     return best;
   }
 
-  bool getPlannerCost(const geometry_msgs::PoseStamped& start,
-                      const geometry_msgs::PoseStamped& goal_pose,
-                      const mowing_path_order_optimizer::OptimizePaths::Request& req,
-                      double& cost) {
+  bool getPlannerCost(const geometry_msgs::PoseStamped& start, const geometry_msgs::PoseStamped& goal_pose,
+                      const mowing_path_order_optimizer::OptimizePaths::Request& req, double& cost) {
     nav_msgs::Path path;
     if (!buildPlannerPath(start, goal_pose, req, path)) return false;
 
@@ -765,8 +748,8 @@ int main(int argc, char** argv) {
   ros::init(argc, argv, "mowing_path_order_optimizer");
   ros::NodeHandle nh;
   PathOrderOptimizer optimizer(nh);
-  ros::ServiceServer server = nh.advertiseService("mowing_path_order_optimizer/optimize_paths",
-                                                  &PathOrderOptimizer::handle, &optimizer);
+  ros::ServiceServer server =
+      nh.advertiseService("mowing_path_order_optimizer/optimize_paths", &PathOrderOptimizer::handle, &optimizer);
   ROS_INFO("mowing_path_order_optimizer ready");
   ros::spin();
   return 0;

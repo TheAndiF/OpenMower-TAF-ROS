@@ -15,17 +15,18 @@
 #ifndef SRC_MOWINGBEHAVIOR_H
 #define SRC_MOWINGBEHAVIOR_H
 
+#include <cstdint>
+#include <nlohmann/json.hpp>
+#include <string>
+
 #include "Behavior.h"
 #include "UndockingBehavior.h"
 #include "ftc_local_planner/PlannerGetProgress.h"
 #include "slic3r_coverage_planner/Path.h"
 #include "slic3r_coverage_planner/PlanPath.h"
-#include "xbot_msgs/ActionInfo.h"
 #include "std_msgs/Empty.h"
 #include "std_msgs/String.h"
-#include <nlohmann/json.hpp>
-#include <cstdint>
-#include <string>
+#include "xbot_msgs/ActionInfo.h"
 
 class MowingBehavior : public Behavior {
  private:
@@ -58,9 +59,9 @@ class MowingBehavior : public Behavior {
   bool execute_mowing_plan();
 
  public:
-  static constexpr uint8_t MOW_STATUS_DONE = 0;         // 00 = fertig bearbeitet
-  static constexpr uint8_t MOW_STATUS_IN_PROGRESS = 10; // 10 = in Arbeit
-  static constexpr uint8_t MOW_STATUS_OPEN = 20;        // 20 = noch nicht bearbeitet
+  static constexpr uint8_t MOW_STATUS_DONE = 0;          // 00 = fertig bearbeitet
+  static constexpr uint8_t MOW_STATUS_IN_PROGRESS = 10;  // 10 = in Arbeit
+  static constexpr uint8_t MOW_STATUS_OPEN = 20;         // 20 = noch nicht bearbeitet
 
   static constexpr uint8_t PATH_DIRECTION_FORWARD = 0;  // wie vom Slicer geliefert
   static constexpr uint8_t PATH_DIRECTION_REVERSE = 1;  // rückwärts abfahren, Rohdaten bleiben unverändert
@@ -136,16 +137,14 @@ class MowingBehavior : public Behavior {
 
   void clear_current_mowing_plan();
   void build_current_mowing_plan(const std::vector<slic3r_coverage_planner::Path>& slicer_paths,
-                                 const std::string& area_id,
-                                 const std::string& area_digest);
+                                 const std::string& area_id, const std::string& area_digest);
   bool optimize_current_mowing_plan(const geometry_msgs::PoseStamped& current_pose);
   void normalize_current_mowing_plan_orders();
   void update_current_mowing_plan_progress();
   void finish_current_mowing_plan_path();
   void start_current_mowing_plan_path();
   bool save_current_mowing_plan() const;
-  bool load_current_mowing_plan_snapshot(const std::string& plan_file,
-                                         const std::string& expected_area_id,
+  bool load_current_mowing_plan_snapshot(const std::string& plan_file, const std::string& expected_area_id,
                                          const std::string& expected_area_digest);
   std::string make_plan_file_path(const std::string& plan_id) const;
 

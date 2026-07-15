@@ -21,6 +21,7 @@
 #include <mower_msgs/Emergency.h>
 #include <mower_msgs/Power.h>
 #include <mower_msgs/Status.h>
+#include <open_mower/settings_persistence.h>
 #include <sensor_msgs/Joy.h>
 #include <serial/serial.h>
 #include <xbot_msgs/WheelTick.h>
@@ -31,11 +32,9 @@
 #include <bitset>
 #include <cmath>
 #include <iomanip>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
-
-#include <nlohmann/json.hpp>
-#include <open_mower/settings_persistence.h>
 
 #include "COBS.h"
 #include "boost/crc.hpp"
@@ -707,7 +706,7 @@ bool llPowerDiffers(double active, double persistent) {
 }
 
 LlSettingsJson makeLlPowerNumberEntry(const std::string& label, const std::string& description, int order,
-                                       double default_value, const std::string& unit) {
+                                      double default_value, const std::string& unit) {
   LlSettingsJson entry = LlSettingsJson::object();
   entry["label"] = label;
   entry["description"] = description;
@@ -725,30 +724,27 @@ LlSettingsJson makeLlPowerNumberEntry(const std::string& label, const std::strin
 
 LlSettingsJson seedLlPowerSettingsFromBootstrap() {
   LlSettingsJson seed = LlSettingsJson::object();
-  seed["battery_critical_voltage"] = makeLlPowerNumberEntry(
-      "Akku kritisch", "Spannung zum unmittelbaren Rueckkehren zur Ladestation.", 10,
-      power_config.battery_critical_voltage, "V");
-  seed["battery_empty_voltage"] = makeLlPowerNumberEntry(
-      "Akku leer", "Spannung fuer Rueckkehr zur Ladestation nach Auswerteintervall.", 20,
-      power_config.battery_empty_voltage, "V");
-  seed["battery_full_voltage"] = makeLlPowerNumberEntry(
-      "Akku voll", "Spannung, ab der erneut gemaeht werden darf.", 30,
-      power_config.battery_full_voltage, "V");
+  seed["battery_critical_voltage"] =
+      makeLlPowerNumberEntry("Akku kritisch", "Spannung zum unmittelbaren Rueckkehren zur Ladestation.", 10,
+                             power_config.battery_critical_voltage, "V");
+  seed["battery_empty_voltage"] =
+      makeLlPowerNumberEntry("Akku leer", "Spannung fuer Rueckkehr zur Ladestation nach Auswerteintervall.", 20,
+                             power_config.battery_empty_voltage, "V");
+  seed["battery_full_voltage"] = makeLlPowerNumberEntry("Akku voll", "Spannung, ab der erneut gemaeht werden darf.", 30,
+                                                        power_config.battery_full_voltage, "V");
   seed["battery_critical_high_voltage"] = makeLlPowerNumberEntry(
       "Akku Hochspannung kritisch", "Batteriespannung, bei der der Ladevorgang abgeschaltet wird.", 40,
       power_config.battery_critical_high_voltage, "V");
-  seed["charge_critical_high_voltage"] = makeLlPowerNumberEntry(
-      "Ladespannung kritisch", "Maximale Ladespannung vor Abschaltung des Ladens.", 50,
-      power_config.charge_critical_high_voltage, "V");
-  seed["charge_critical_high_current"] = makeLlPowerNumberEntry(
-      "Ladestrom kritisch", "Maximaler Ladestrom vor Abschaltung des Ladens.", 60,
-      power_config.charge_critical_high_current, "A");
-  seed["speed_fast"] = makeLlPowerNumberEntry(
-      "Fahrgeschwindigkeit schnell", "Zielgeschwindigkeit auf geraden Pfadabschnitten.", 70,
-      0.5, "m/s");
+  seed["charge_critical_high_voltage"] =
+      makeLlPowerNumberEntry("Ladespannung kritisch", "Maximale Ladespannung vor Abschaltung des Ladens.", 50,
+                             power_config.charge_critical_high_voltage, "V");
+  seed["charge_critical_high_current"] =
+      makeLlPowerNumberEntry("Ladestrom kritisch", "Maximaler Ladestrom vor Abschaltung des Ladens.", 60,
+                             power_config.charge_critical_high_current, "A");
+  seed["speed_fast"] = makeLlPowerNumberEntry("Fahrgeschwindigkeit schnell",
+                                              "Zielgeschwindigkeit auf geraden Pfadabschnitten.", 70, 0.5, "m/s");
   seed["speed_slow"] = makeLlPowerNumberEntry(
-      "Fahrgeschwindigkeit langsam", "Zielgeschwindigkeit in Kurven oder kurzen Geradeausstuecken.", 80,
-      0.2, "m/s");
+      "Fahrgeschwindigkeit langsam", "Zielgeschwindigkeit in Kurven oder kurzen Geradeausstuecken.", 80, 0.2, "m/s");
   seed["speed_fast"]["min"] = 0.0;
   seed["speed_fast"]["max"] = 2.0;
   seed["speed_slow"]["min"] = 0.0;
@@ -765,8 +761,8 @@ double llPowerEntryNumber(const std::string& key, const std::string& field, doub
 
 double llBoardParamTreeNumber(const std::string& branch, const std::string& key, double fallback) {
   double value = fallback;
-  ros::param::param<double>(std::string("/settings/") + kLlBoardSettingsNamespace + "/" + branch + "/" + key,
-                            value, fallback);
+  ros::param::param<double>(std::string("/settings/") + kLlBoardSettingsNamespace + "/" + branch + "/" + key, value,
+                            fallback);
   return value;
 }
 
@@ -778,12 +774,13 @@ void syncLlPowerDefaultParamTree() {
                   llPowerEntryNumber("battery_empty_voltage", "default", power_config.battery_empty_voltage));
   ros::param::set(root + "battery_full_voltage",
                   llPowerEntryNumber("battery_full_voltage", "default", power_config.battery_full_voltage));
-  ros::param::set(root + "battery_critical_high_voltage",
-                  llPowerEntryNumber("battery_critical_high_voltage", "default", power_config.battery_critical_high_voltage));
-  ros::param::set(root + "charge_critical_high_voltage",
-                  llPowerEntryNumber("charge_critical_high_voltage", "default", power_config.charge_critical_high_voltage));
-  ros::param::set(root + "charge_critical_high_current",
-                  llPowerEntryNumber("charge_critical_high_current", "default", power_config.charge_critical_high_current));
+  ros::param::set(
+      root + "battery_critical_high_voltage",
+      llPowerEntryNumber("battery_critical_high_voltage", "default", power_config.battery_critical_high_voltage));
+  ros::param::set(root + "charge_critical_high_voltage", llPowerEntryNumber("charge_critical_high_voltage", "default",
+                                                                            power_config.charge_critical_high_voltage));
+  ros::param::set(root + "charge_critical_high_current", llPowerEntryNumber("charge_critical_high_current", "default",
+                                                                            power_config.charge_critical_high_current));
   ros::param::set(root + "speed_fast", llPowerEntryNumber("speed_fast", "default", 0.5));
   ros::param::set(root + "speed_slow", llPowerEntryNumber("speed_slow", "default", 0.2));
 }
@@ -797,8 +794,10 @@ void syncLlPowerPersistentParamTree() {
   ros::param::set(root + "battery_critical_high_voltage", ll_power_persistent_config.battery_critical_high_voltage);
   ros::param::set(root + "charge_critical_high_voltage", ll_power_persistent_config.charge_critical_high_voltage);
   ros::param::set(root + "charge_critical_high_current", ll_power_persistent_config.charge_critical_high_current);
-  ros::param::set(root + "speed_fast", llPowerEntryNumber("speed_fast", "persistent", llPowerEntryNumber("speed_fast", "default", 0.5)));
-  ros::param::set(root + "speed_slow", llPowerEntryNumber("speed_slow", "persistent", llPowerEntryNumber("speed_slow", "default", 0.2)));
+  ros::param::set(root + "speed_fast",
+                  llPowerEntryNumber("speed_fast", "persistent", llPowerEntryNumber("speed_fast", "default", 0.5)));
+  ros::param::set(root + "speed_slow",
+                  llPowerEntryNumber("speed_slow", "persistent", llPowerEntryNumber("speed_slow", "default", 0.2)));
 }
 
 void syncLlPowerActiveParamTree() {
@@ -809,10 +808,10 @@ void syncLlPowerActiveParamTree() {
   ros::param::set(root + "battery_critical_high_voltage", power_config.battery_critical_high_voltage);
   ros::param::set(root + "charge_critical_high_voltage", power_config.charge_critical_high_voltage);
   ros::param::set(root + "charge_critical_high_current", power_config.charge_critical_high_current);
-  ros::param::set(root + "speed_fast", llBoardParamTreeNumber("active", "speed_fast",
-                                                               llPowerEntryNumber("speed_fast", "persistent", 0.5)));
-  ros::param::set(root + "speed_slow", llBoardParamTreeNumber("active", "speed_slow",
-                                                               llPowerEntryNumber("speed_slow", "persistent", 0.2)));
+  ros::param::set(root + "speed_fast",
+                  llBoardParamTreeNumber("active", "speed_fast", llPowerEntryNumber("speed_fast", "persistent", 0.5)));
+  ros::param::set(root + "speed_slow",
+                  llBoardParamTreeNumber("active", "speed_slow", llPowerEntryNumber("speed_slow", "persistent", 0.2)));
 }
 
 void syncLlPowerLegacyWorkingParams() {
@@ -903,12 +902,10 @@ void publishLlPowerStatusJson() {
   status["settings"]["battery_critical_voltage"] =
       llPowerStatusNumber("battery_critical_voltage", power_config.battery_critical_voltage,
                           ll_power_persistent_config.battery_critical_voltage);
-  status["settings"]["battery_empty_voltage"] =
-      llPowerStatusNumber("battery_empty_voltage", power_config.battery_empty_voltage,
-                          ll_power_persistent_config.battery_empty_voltage);
-  status["settings"]["battery_full_voltage"] =
-      llPowerStatusNumber("battery_full_voltage", power_config.battery_full_voltage,
-                          ll_power_persistent_config.battery_full_voltage);
+  status["settings"]["battery_empty_voltage"] = llPowerStatusNumber(
+      "battery_empty_voltage", power_config.battery_empty_voltage, ll_power_persistent_config.battery_empty_voltage);
+  status["settings"]["battery_full_voltage"] = llPowerStatusNumber(
+      "battery_full_voltage", power_config.battery_full_voltage, ll_power_persistent_config.battery_full_voltage);
   status["settings"]["battery_critical_high_voltage"] =
       llPowerStatusNumber("battery_critical_high_voltage", power_config.battery_critical_high_voltage,
                           ll_power_persistent_config.battery_critical_high_voltage);
@@ -918,14 +915,12 @@ void publishLlPowerStatusJson() {
   status["settings"]["charge_critical_high_current"] =
       llPowerStatusNumber("charge_critical_high_current", power_config.charge_critical_high_current,
                           ll_power_persistent_config.charge_critical_high_current);
-  status["settings"]["speed_fast"] =
-      llPowerStatusNumber("speed_fast",
-                          llBoardParamTreeNumber("active", "speed_fast", llPowerEntryNumber("speed_fast", "persistent", 0.5)),
-                          llPowerEntryNumber("speed_fast", "persistent", llPowerEntryNumber("speed_fast", "default", 0.5)));
-  status["settings"]["speed_slow"] =
-      llPowerStatusNumber("speed_slow",
-                          llBoardParamTreeNumber("active", "speed_slow", llPowerEntryNumber("speed_slow", "persistent", 0.2)),
-                          llPowerEntryNumber("speed_slow", "persistent", llPowerEntryNumber("speed_slow", "default", 0.2)));
+  status["settings"]["speed_fast"] = llPowerStatusNumber(
+      "speed_fast", llBoardParamTreeNumber("active", "speed_fast", llPowerEntryNumber("speed_fast", "persistent", 0.5)),
+      llPowerEntryNumber("speed_fast", "persistent", llPowerEntryNumber("speed_fast", "default", 0.5)));
+  status["settings"]["speed_slow"] = llPowerStatusNumber(
+      "speed_slow", llBoardParamTreeNumber("active", "speed_slow", llPowerEntryNumber("speed_slow", "persistent", 0.2)),
+      llPowerEntryNumber("speed_slow", "persistent", llPowerEntryNumber("speed_slow", "default", 0.2)));
 
   std_msgs::String msg;
   msg.data = status.dump();
@@ -944,12 +939,15 @@ void updateLlPowerValue(const std_msgs::Float64::ConstPtr& msg, const std::strin
     if (param_name == "battery_critical_voltage") ll_power_persistent_config.battery_critical_voltage = msg->data;
     if (param_name == "battery_empty_voltage") ll_power_persistent_config.battery_empty_voltage = msg->data;
     if (param_name == "battery_full_voltage") ll_power_persistent_config.battery_full_voltage = msg->data;
-    if (param_name == "battery_critical_high_voltage") ll_power_persistent_config.battery_critical_high_voltage = msg->data;
-    if (param_name == "charge_critical_high_voltage") ll_power_persistent_config.charge_critical_high_voltage = msg->data;
-    if (param_name == "charge_critical_high_current") ll_power_persistent_config.charge_critical_high_current = msg->data;
+    if (param_name == "battery_critical_high_voltage")
+      ll_power_persistent_config.battery_critical_high_voltage = msg->data;
+    if (param_name == "charge_critical_high_voltage")
+      ll_power_persistent_config.charge_critical_high_voltage = msg->data;
+    if (param_name == "charge_critical_high_current")
+      ll_power_persistent_config.charge_critical_high_current = msg->data;
     ll_power_settings_entries[param_name]["persistent"] = msg->data;
-    open_mower_settings::updateEntryField(ll_power_settings_persistent_path, kLlBoardSettingsNamespace,
-                                          param_name, "persistent", msg->data);
+    open_mower_settings::updateEntryField(ll_power_settings_persistent_path, kLlBoardSettingsNamespace, param_name,
+                                          "persistent", msg->data);
     syncLlPowerPersistentParamTree();
   }
   syncLlPowerActiveParamTree();
@@ -959,63 +957,69 @@ void updateLlPowerValue(const std_msgs::Float64::ConstPtr& msg, const std::strin
 }
 
 void llPowerBatteryCriticalVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_critical_voltage",
-                     [](double value) { power_config.battery_critical_voltage = value; }, false);
+  updateLlPowerValue(
+      msg, "battery_critical_voltage", [](double value) { power_config.battery_critical_voltage = value; }, false);
 }
 
 void llPowerBatteryEmptyVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_empty_voltage",
-                     [](double value) { power_config.battery_empty_voltage = value; }, false);
+  updateLlPowerValue(
+      msg, "battery_empty_voltage", [](double value) { power_config.battery_empty_voltage = value; }, false);
 }
 
 void llPowerBatteryFullVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_full_voltage",
-                     [](double value) { power_config.battery_full_voltage = value; }, false);
+  updateLlPowerValue(
+      msg, "battery_full_voltage", [](double value) { power_config.battery_full_voltage = value; }, false);
 }
 
 void llPowerBatteryCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_critical_high_voltage",
-                     [](double value) { power_config.battery_critical_high_voltage = value; }, false);
+  updateLlPowerValue(
+      msg, "battery_critical_high_voltage", [](double value) { power_config.battery_critical_high_voltage = value; },
+      false);
 }
 
 void llPowerChargeCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "charge_critical_high_voltage",
-                     [](double value) { power_config.charge_critical_high_voltage = value; }, false);
+  updateLlPowerValue(
+      msg, "charge_critical_high_voltage", [](double value) { power_config.charge_critical_high_voltage = value; },
+      false);
 }
 
 void llPowerChargeCriticalHighCurrentCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "charge_critical_high_current",
-                     [](double value) { power_config.charge_critical_high_current = value; }, false);
+  updateLlPowerValue(
+      msg, "charge_critical_high_current", [](double value) { power_config.charge_critical_high_current = value; },
+      false);
 }
 
 void llPowerPersistentBatteryCriticalVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_critical_voltage",
-                     [](double value) { power_config.battery_critical_voltage = value; }, true);
+  updateLlPowerValue(
+      msg, "battery_critical_voltage", [](double value) { power_config.battery_critical_voltage = value; }, true);
 }
 
 void llPowerPersistentBatteryEmptyVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_empty_voltage",
-                     [](double value) { power_config.battery_empty_voltage = value; }, true);
+  updateLlPowerValue(
+      msg, "battery_empty_voltage", [](double value) { power_config.battery_empty_voltage = value; }, true);
 }
 
 void llPowerPersistentBatteryFullVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_full_voltage",
-                     [](double value) { power_config.battery_full_voltage = value; }, true);
+  updateLlPowerValue(
+      msg, "battery_full_voltage", [](double value) { power_config.battery_full_voltage = value; }, true);
 }
 
 void llPowerPersistentBatteryCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "battery_critical_high_voltage",
-                     [](double value) { power_config.battery_critical_high_voltage = value; }, true);
+  updateLlPowerValue(
+      msg, "battery_critical_high_voltage", [](double value) { power_config.battery_critical_high_voltage = value; },
+      true);
 }
 
 void llPowerPersistentChargeCriticalHighVoltageCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "charge_critical_high_voltage",
-                     [](double value) { power_config.charge_critical_high_voltage = value; }, true);
+  updateLlPowerValue(
+      msg, "charge_critical_high_voltage", [](double value) { power_config.charge_critical_high_voltage = value; },
+      true);
 }
 
 void llPowerPersistentChargeCriticalHighCurrentCb(const std_msgs::Float64::ConstPtr& msg) {
-  updateLlPowerValue(msg, "charge_critical_high_current",
-                     [](double value) { power_config.charge_critical_high_current = value; }, true);
+  updateLlPowerValue(
+      msg, "charge_critical_high_current", [](double value) { power_config.charge_critical_high_current = value; },
+      true);
 }
 
 void llPowerRenewCb(const std_msgs::Empty::ConstPtr&) {
@@ -1120,18 +1124,33 @@ int main(int argc, char** argv) {
   ros::ServiceServer emergency_service = n.advertiseService("ll/_service/emergency", setEmergencyStop);
   ros::Subscriber cmd_vel_sub = n.subscribe("ll/cmd_vel", 0, velReceived, ros::TransportHints().tcpNoDelay(true));
   ros::Subscriber high_level_status_sub = n.subscribe("/mower_logic/current_state", 0, highLevelStatusReceived);
-  ros::Subscriber ll_power_set_battery_critical_voltage_sub = n.subscribe("/ll/services/power/set/battery_critical_voltage", 10, llPowerBatteryCriticalVoltageCb);
-  ros::Subscriber ll_power_set_battery_empty_voltage_sub = n.subscribe("/ll/services/power/set/battery_empty_voltage", 10, llPowerBatteryEmptyVoltageCb);
-  ros::Subscriber ll_power_set_battery_full_voltage_sub = n.subscribe("/ll/services/power/set/battery_full_voltage", 10, llPowerBatteryFullVoltageCb);
-  ros::Subscriber ll_power_set_battery_critical_high_voltage_sub = n.subscribe("/ll/services/power/set/battery_critical_high_voltage", 10, llPowerBatteryCriticalHighVoltageCb);
-  ros::Subscriber ll_power_set_charge_critical_high_voltage_sub = n.subscribe("/ll/services/power/set/charge_critical_high_voltage", 10, llPowerChargeCriticalHighVoltageCb);
-  ros::Subscriber ll_power_set_charge_critical_high_current_sub = n.subscribe("/ll/services/power/set/charge_critical_high_current", 10, llPowerChargeCriticalHighCurrentCb);
-  ros::Subscriber ll_power_set_persistent_battery_critical_voltage_sub = n.subscribe("/ll/services/power/set_persistent/battery_critical_voltage", 10, llPowerPersistentBatteryCriticalVoltageCb);
-  ros::Subscriber ll_power_set_persistent_battery_empty_voltage_sub = n.subscribe("/ll/services/power/set_persistent/battery_empty_voltage", 10, llPowerPersistentBatteryEmptyVoltageCb);
-  ros::Subscriber ll_power_set_persistent_battery_full_voltage_sub = n.subscribe("/ll/services/power/set_persistent/battery_full_voltage", 10, llPowerPersistentBatteryFullVoltageCb);
-  ros::Subscriber ll_power_set_persistent_battery_critical_high_voltage_sub = n.subscribe("/ll/services/power/set_persistent/battery_critical_high_voltage", 10, llPowerPersistentBatteryCriticalHighVoltageCb);
-  ros::Subscriber ll_power_set_persistent_charge_critical_high_voltage_sub = n.subscribe("/ll/services/power/set_persistent/charge_critical_high_voltage", 10, llPowerPersistentChargeCriticalHighVoltageCb);
-  ros::Subscriber ll_power_set_persistent_charge_critical_high_current_sub = n.subscribe("/ll/services/power/set_persistent/charge_critical_high_current", 10, llPowerPersistentChargeCriticalHighCurrentCb);
+  ros::Subscriber ll_power_set_battery_critical_voltage_sub =
+      n.subscribe("/ll/services/power/set/battery_critical_voltage", 10, llPowerBatteryCriticalVoltageCb);
+  ros::Subscriber ll_power_set_battery_empty_voltage_sub =
+      n.subscribe("/ll/services/power/set/battery_empty_voltage", 10, llPowerBatteryEmptyVoltageCb);
+  ros::Subscriber ll_power_set_battery_full_voltage_sub =
+      n.subscribe("/ll/services/power/set/battery_full_voltage", 10, llPowerBatteryFullVoltageCb);
+  ros::Subscriber ll_power_set_battery_critical_high_voltage_sub =
+      n.subscribe("/ll/services/power/set/battery_critical_high_voltage", 10, llPowerBatteryCriticalHighVoltageCb);
+  ros::Subscriber ll_power_set_charge_critical_high_voltage_sub =
+      n.subscribe("/ll/services/power/set/charge_critical_high_voltage", 10, llPowerChargeCriticalHighVoltageCb);
+  ros::Subscriber ll_power_set_charge_critical_high_current_sub =
+      n.subscribe("/ll/services/power/set/charge_critical_high_current", 10, llPowerChargeCriticalHighCurrentCb);
+  ros::Subscriber ll_power_set_persistent_battery_critical_voltage_sub = n.subscribe(
+      "/ll/services/power/set_persistent/battery_critical_voltage", 10, llPowerPersistentBatteryCriticalVoltageCb);
+  ros::Subscriber ll_power_set_persistent_battery_empty_voltage_sub = n.subscribe(
+      "/ll/services/power/set_persistent/battery_empty_voltage", 10, llPowerPersistentBatteryEmptyVoltageCb);
+  ros::Subscriber ll_power_set_persistent_battery_full_voltage_sub =
+      n.subscribe("/ll/services/power/set_persistent/battery_full_voltage", 10, llPowerPersistentBatteryFullVoltageCb);
+  ros::Subscriber ll_power_set_persistent_battery_critical_high_voltage_sub =
+      n.subscribe("/ll/services/power/set_persistent/battery_critical_high_voltage", 10,
+                  llPowerPersistentBatteryCriticalHighVoltageCb);
+  ros::Subscriber ll_power_set_persistent_charge_critical_high_voltage_sub =
+      n.subscribe("/ll/services/power/set_persistent/charge_critical_high_voltage", 10,
+                  llPowerPersistentChargeCriticalHighVoltageCb);
+  ros::Subscriber ll_power_set_persistent_charge_critical_high_current_sub =
+      n.subscribe("/ll/services/power/set_persistent/charge_critical_high_current", 10,
+                  llPowerPersistentChargeCriticalHighCurrentCb);
   ros::Subscriber ll_power_renew_sub = n.subscribe("/ll/services/power/renew", 10, llPowerRenewCb);
   ros::Timer publish_timer = n.createTimer(ros::Duration(0.02), publishActuatorsTimerTask);
   publishLlPowerStatusJson();

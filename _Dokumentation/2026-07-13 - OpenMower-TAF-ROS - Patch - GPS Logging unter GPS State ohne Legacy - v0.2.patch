@@ -5,30 +5,30 @@ index 5a1f98d..2a076a3 100644
 @@ -1,9 +1,9 @@
  MQTT GPS Logging
  ================
- 
+
 -Canonical API
 --------------
 -GPS logging is exposed to the app below gps_state:
 +Canonical API only
 +------------------
 +GPS logging is exposed to the app exclusively below gps_state:
- 
+
  - gps_state/settings/json
  - gps_state/settings/set/session/json
 @@ -15,6 +15,9 @@ GPS logging is exposed to the app below gps_state:
  - gps_state/logging/last/json
  - gps_state/logging/validation/json
- 
+
 +No MQTT alias below settings/mower_logic/satellite_logging is subscribed or
 +published. App implementations must use the gps_state topics directly.
 +
  Start, stop and cancel are commands. Do not implement them as a persistent
  boolean switch. The retained runtime status is the source of truth for the app.
- 
+
 @@ -39,12 +42,11 @@ The logging group in gps_state/settings/json contains defaults and expert paths:
  - logging_output_path
  - logging_container_name
- 
+
 -Compatibility
 --------------
 -The previous settings/mower_logic/satellite_logging topics remain temporary
@@ -40,9 +40,9 @@ index 5a1f98d..2a076a3 100644
 +gps_state/logging/status/json uses openmower.gps_state.logging.v2. Runtime data
 +is available only in the structured runtime, request, storage and implementation
 +objects. Removed compatibility fields are not duplicated at the top level.
- 
+
  See:
- 
+
 diff --git a/SATELLITE_LOGGING_MOWER_LOGIC_README.txt b/SATELLITE_LOGGING_MOWER_LOGIC_README.txt
 index 4989c88..7a5044b 100644
 --- a/SATELLITE_LOGGING_MOWER_LOGIC_README.txt
@@ -50,7 +50,7 @@ index 4989c88..7a5044b 100644
 @@ -1,9 +1,10 @@
 -OpenMower GPS Logging - gps_state public API with mower_logic runtime integration
 +OpenMower GPS Logging - canonical gps_state API with mower_logic execution
- 
+
  Canonical public placement
  --------------------------
 -GPS logging is exposed to MQTT clients and the app below gps_state. The public
@@ -58,13 +58,13 @@ index 4989c88..7a5044b 100644
 +GPS logging is exposed to MQTT clients and the app exclusively below gps_state.
 +The public configuration, command, runtime status, validation and last-session
 +data are:
- 
+
    gps_state/settings/json
    gps_state/settings/set/session/json
 @@ -15,6 +16,11 @@ configuration, command, runtime status, validation and last-session data are:
    gps_state/logging/last/json
    gps_state/logging/validation/json
- 
+
 +No settings/mower_logic/satellite_logging MQTT aliases exist. The app must not
 +subscribe to, publish to or probe those former topic names.
 +
@@ -76,7 +76,7 @@ index 4989c88..7a5044b 100644
 @@ -31,10 +37,13 @@ The gps_state/settings/json payload contains these GPS logging settings:
    logging_output_path
    logging_container_name
- 
+
 -The path and container settings are expert settings. The public keys are mapped
 -to the existing internal mower_logic dynamic_reconfigure keys. The internal
 -satellite_logging_enabled field is intentionally not exposed as an app toggle.
@@ -88,30 +88,30 @@ index 4989c88..7a5044b 100644
 +
 +There is no satellite_logging_enabled field. Start, stop and cancel are commands
 +and must not be persisted as a boolean state.
- 
+
  Runtime control
  ---------------
 @@ -50,22 +59,21 @@ Examples:
    {"command":"stop"}
    {"command":"cancel"}
- 
+
 -If trigger, mode or area_id are omitted, the configured defaults are used. An
 -explicit command creates an independent runtime request and does not require the
 -legacy satellite_logging_enabled flag.
 +The command field is mandatory. If trigger, mode or area_id are omitted from a
 +start command, the confirmed GPS-State defaults are used. A duplicate start is
 +rejected while a request is active, armed or running.
- 
+
  Runtime status
  --------------
  The retained gps_state/logging/status/json payload uses schema:
- 
+
 -  openmower.gps_state.logging.v1
 +  openmower.gps_state.logging.v2
- 
+
 -It contains:
 +It contains only the structured public contract:
- 
+
    status, severity, summary
    runtime.state
    runtime.request_active
@@ -125,31 +125,31 @@ index 4989c88..7a5044b 100644
    implementation.container_name
 -  implementation.legacy_setting_enabled
    error
- 
+
 -Frequently used compatibility fields such as state, armed, running, session_id,
 -started_at, finished_at and stop_reason are also present at the top level.
 +There are no duplicated top-level state, armed, running, session_id or timestamp
 +fields. There is no request_origin and no legacy setting field. App code must
 +read the structured objects.
- 
+
  Last completed session
  ----------------------
  The retained gps_state/logging/last/json payload uses schema:
- 
+
 -  openmower.gps_state.logging.last.v1
 +  openmower.gps_state.logging.last.v2
- 
+
  It is updated after a session has a session_id and finished_at timestamp. It
  contains result, stop reason, request parameters, timestamps, duration, output
 @@ -105,7 +113,7 @@ Control validation is published non-retained on:
- 
+
    gps_state/logging/validation/json
- 
+
 -GPS logging setting writes use the normal GPS-state validation topic:
 +GPS logging setting writes use:
- 
+
    gps_state/settings/validation/json
- 
+
 @@ -118,30 +126,25 @@ App implementation rules
  1. Build the GPS logging settings screen dynamically from the logging group in
     gps_state/settings/json.
@@ -205,16 +205,16 @@ index c49a06a..c68becd 100644
 --- a/src/lib/xbot_monitoring/GPS_LOGGING_API.md
 +++ b/src/lib/xbot_monitoring/GPS_LOGGING_API.md
 @@ -2,7 +2,9 @@
- 
+
  ## Scope
- 
+
 -The canonical app and MQTT API is below `gps_state`. `mower_logic` remains the internal cycle-aware executor, but its logging fields are not rendered as a second settings page.
 +The app and MQTT API is available **only** below `gps_state`. `mower_logic` remains the internal cycle-aware executor, but its internal logging fields and ROS topics are not part of the app contract.
 +
 +This document describes package version v0.2 and the status schema `openmower.gps_state.logging.v2`. The API deliberately contains no compatibility topics or compatibility fields.
- 
+
  ## Topic contract
- 
+
 @@ -14,13 +16,23 @@ The canonical app and MQTT API is below `gps_state`. `mower_logic` remains the i
  | `gps_state/settings/validation/json` | no | mower -> app | Pending/applied/rejected result for settings writes |
  | `gps_state/logging/set/control/json` | no | app -> mower | Start, stop or cancel |
@@ -224,7 +224,7 @@ index c49a06a..c68becd 100644
 +| `gps_state/logging/status/json` | yes | mower -> app | Current runtime state, schema v2 |
 +| `gps_state/logging/last/json` | yes | mower -> app | Last completed session, schema v2 |
  | `gps_state/logging/validation/json` | no | mower -> app | Immediate control-command validation |
- 
+
 +### Nonexistent app endpoints
 +
 +The following old MQTT namespace is intentionally unsupported:
@@ -236,23 +236,23 @@ index c49a06a..c68becd 100644
 +The app must not probe that namespace, subscribe to it or publish to it. Failure to receive a message there is expected behavior.
 +
  ## Settings keys
- 
+
 -The app must discover these entries from `gps_state/settings/json` rather than hard-coding labels or expert visibility:
 +The app should discover these entries from `gps_state/settings/json` rather than hard-coding labels, ordering or expert visibility:
- 
+
  - `logging_default_trigger`
  - `logging_default_mode`
 @@ -35,10 +47,14 @@ The app must discover these entries from `gps_state/settings/json` rather than h
  - `logging_validation`
  - `logging_renew`
- 
+
 -`logging_default_trigger` and `logging_default_mode` contain an `enum` array. The app should render them as selectors. Path and container fields have `expert=true`.
 +`logging_default_trigger` and `logging_default_mode` contain an `enum` array. Render them as selectors. Path and container fields have `expert=true`.
 +
 +There is no logging enable setting. Runtime activation is command-based.
- 
+
  ## Control payloads
- 
+
 +The `command` field is mandatory.
 +
  ```json
@@ -260,17 +260,17 @@ index c49a06a..c68becd 100644
  ```
 @@ -52,32 +68,53 @@ The app must discover these entries from `gps_state/settings/json` rather than h
  ```
- 
+
  ```json
 -{"command":"stop"}
 +{"command":"stop","request_id":"ui-43"}
  ```
- 
+
  ```json
 -{"command":"cancel"}
 +{"command":"cancel","request_id":"ui-44"}
  ```
- 
+
 -`request_id` is optional and is echoed by the bridge validation response. The runtime controller ignores unknown correlation metadata. `cancel` cancels an armed request; if recording has already started, it stops the process, preserves the generated session files and records the result as `cancelled`.
 +`request_id` is optional and is echoed by the immediate bridge validation response. The runtime controller ignores correlation metadata.
 +
@@ -294,9 +294,9 @@ index c49a06a..c68becd 100644
 +```
 +
 +`forwarded` confirms only that the bridge accepted and forwarded the command. It does not confirm `armed` or `running`. The app must wait for `gps_state/logging/status/json`.
- 
+
  ## Runtime state machine
- 
+
 -| Runtime condition | `runtime.state` | `runtime.armed` | `runtime.running` | Recommended app action |
 -|---|---|---:|---:|---|
 -| No request | `idle` or `finished` | false | false | Enable Start |
@@ -311,13 +311,13 @@ index c49a06a..c68becd 100644
 +| Recording | `running` | true | false | true | Show Stop |
 +| Completed | `finished` | false | false | false | Show result and Start |
 +| Error | `error` | false or true | false | false | Show error and Renew/retry |
- 
+
 -The app must use the confirmed status topic, not the last command sent, as the source of truth. While a recording is running, `duration_s` only changes when a fresh status is published. For a smooth timer, calculate the live duration locally from `runtime.started_at` and replace it whenever a new retained status arrives.
 +Use the confirmed status topic, not the last command sent, as the source of truth. While recording, `duration_s` changes only when a new status is published. For a smooth timer, calculate the live duration locally from `runtime.started_at` and resynchronize on each status update.
- 
+
 -## Status payload
 +## Status payload v2
- 
+
  ```json
  {
 -  "schema": "openmower.gps_state.logging.v1",
@@ -344,7 +344,7 @@ index c49a06a..c68becd 100644
    "error": null
  }
  ```
- 
+
 -Severity values follow the existing GPS-state convention: `0` normal, `1` active/informational and `4` error.
 +Severity values follow the GPS-State convention: `0` normal, `1` active/informational and `4` error. Never communicate status only through color.
 +
@@ -391,9 +391,9 @@ index c49a06a..c68becd 100644
 +```
 +
 +Possible `result` values are `finished`, `cancelled` and `error`.
- 
+
  ## Settings write lifecycle
- 
+
 -1. The app publishes a session or persistent payload with public `logging_*` keys.
 +1. Publish a session or persistent payload with public `logging_*` keys.
  2. `gps_state/settings/validation/json` reports `status=forwarded` and `pending=true`.
@@ -402,7 +402,7 @@ index c49a06a..c68becd 100644
  4. The confirmed mower-logic settings state is received.
  5. `gps_state/settings/json` is republished with confirmed public values.
  6. A second validation reports `status=applied` and `pending=false`.
- 
+
 -The app should keep the edited control in a pending state between steps 2 and 6. A timeout should offer Renew instead of assuming success.
 +Keep edited controls in a pending state between steps 2 and 6. On timeout, retain the last confirmed value and offer Renew rather than assuming success.
 +
@@ -425,9 +425,9 @@ index c49a06a..c68becd 100644
 +6. Wait for retained settings/status/last messages.
 +7. If required retained data is missing after the app timeout, publish `{}` to `gps_state/logging/set/renew/json`.
 +8. Enable Start/Stop/Cancel only after the first valid v2 status payload is parsed.
- 
+
  ## Recommended screen layout
- 
+
 -- **Header card:** status summary, locally calculated active duration, Start/Stop/Cancel button.
 -- **Current request:** trigger, mode and target area.
 -- **Current session:** session ID, start time, file count and output path link/action where supported.
@@ -454,10 +454,10 @@ index c49a06a..c68becd 100644
 +```
 +
 +After publishing a command, do not optimistically change the runtime state. Show a pending indicator and wait for validation plus the confirmed status transition.
- 
+
 -Do not show internal `satellite_logging_enabled` or any `satellite_logging_*` key. Do not use a toggle as a substitute for control commands.
 +## Breaking changes from v0.1
- 
+
 -## Compatibility
 +- Removed all MQTT aliases below `settings/mower_logic/satellite_logging/*`.
 +- Removed the `satellite_logging_enabled` configuration field.
@@ -465,7 +465,7 @@ index c49a06a..c68becd 100644
 +- Removed `implementation.legacy_setting_enabled`.
 +- Removed duplicated top-level runtime fields.
 +- Bumped status and last schemas to v2.
- 
+
 -Legacy topics under `settings/mower_logic/satellite_logging/...` continue to work during migration. New app code must only use the canonical `gps_state/logging/...` topics. The bridge removes internal logging settings from the public `settings/mower_logic/json` payload to prevent duplicate controls.
 +The app must be updated atomically with this backend package. There is no fallback path in the backend.
 diff --git a/src/lib/xbot_monitoring/README.md b/src/lib/xbot_monitoring/README.md
@@ -473,17 +473,17 @@ index e4b60e8..2623949 100644
 --- a/src/lib/xbot_monitoring/README.md
 +++ b/src/lib/xbot_monitoring/README.md
 @@ -265,6 +265,7 @@ State 0 remains split into static and live data so long descriptions do not have
- 
+
  `xbot_positioning` publishes the auxiliary ROS topic `/xbot_positioning/gps_debug_state` as retained JSON. `xbot_monitoring` uses it to fill State 0 stages that are otherwise internal to `xbot_positioning`, especially `gps_enabled`, `valid_gps_samples`, `has_gps`, outlier count and the age of the last accepted GPS update.
- 
+
 +
  ## GPS logging under GPS State
- 
+
  The canonical app-facing GPS logging API now lives below `gps_state`. The detailed contract, payload examples, state machine and app implementation guidance are documented in [GPS_LOGGING_API.md](GPS_LOGGING_API.md).
 @@ -281,4 +282,4 @@ Logging defaults and expert paths are part of the `logging` group in `gps_state/
- 
+
  Start, stop and cancel are commands. The app must not represent runtime control as a persistent boolean switch. `gps_state/logging/status/json` is retained and is the source of truth for button state. `gps_state/logging/last/json` is retained separately so the last completed recording remains visible after the live runtime returns to an idle state.
- 
+
 -For migration, the old `settings/mower_logic/satellite_logging/...` topics remain available as compatibility aliases. Internal logging fields are removed from the published `settings/mower_logic/json` payload so a dynamically generated app does not render duplicate controls.
 +No MQTT aliases below `settings/mower_logic/satellite_logging/...` are supported. Internal logging configuration fields remain filtered from the published `settings/mower_logic/json` payload so a dynamically generated app renders the single canonical `gps_state` logging group. The app must parse the structured `openmower.gps_state.logging.v2` status payload and must not implement fallback topic or fallback field handling.
 diff --git a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
@@ -515,7 +515,7 @@ index a747999..1be9395 100644
              msg.data = ptr->get_payload_str();
 @@ -892,7 +883,6 @@ static const std::map<std::string, std::string> &gps_logging_public_to_internal_
  }
- 
+
  static bool is_gps_logging_internal_setting(const std::string &key) {
 -    if (key == "satellite_logging_enabled") return true;
      for (const auto &entry : gps_logging_public_to_internal_settings()) {
@@ -523,7 +523,7 @@ index a747999..1be9395 100644
      }
 @@ -1483,7 +1473,7 @@ static json build_gps_logging_status_payload(const json &source) {
      }
- 
+
      json root = {
 -        {"schema", "openmower.gps_state.logging.v1"},
 +        {"schema", "openmower.gps_state.logging.v2"},
@@ -548,7 +548,7 @@ index a747999..1be9395 100644
          }},
          {"error", error}
      };
- 
+
 -    // Stable top-level compatibility fields make simple clients possible while
 -    // the structured blocks are preferred for new app implementations.
 -    root["state"] = state;
@@ -561,10 +561,10 @@ index a747999..1be9395 100644
 -    root["stop_reason"] = gps_logging_json_or_null(source, "stop_reason");
      return root;
  }
- 
+
 @@ -1554,7 +1532,7 @@ static json build_gps_logging_last_payload(const json &status) {
      else if (stop_reason == "cancelled") result = "cancelled";
- 
+
      return {
 -        {"schema", "openmower.gps_state.logging.last.v1"},
 +        {"schema", "openmower.gps_state.logging.last.v2"},
@@ -573,7 +573,7 @@ index a747999..1be9395 100644
          {"result", result},
 @@ -3408,7 +3386,6 @@ void mower_logic_settings_validation_json_callback(const std_msgs::String::Const
  }
- 
+
  void mower_logic_satellite_logging_status_json_callback(const std_msgs::String::ConstPtr &msg) {
 -    try_publish("settings/mower_logic/satellite_logging/json", msg->data, true);
      try {
@@ -585,8 +585,8 @@ index 0ea03bf..39c516c 100644
 +++ b/src/mower_logic/cfg/MowerLogic.cfg
 @@ -66,13 +66,12 @@ gen.add("emergency_input_config", str_t, 0, "Comma separated list of emergency i
  gen.add("shutdown_esc_max_pitch", int_t, 0, "Maximum pitch angle (deg) where ESC shutdown is permitted (0 to disable ESC shutdown)", 0, 0, 180)
- 
- 
+
+
 -# GPS logging remains an internal mower_logic runtime configuration because the
 +# GPS logging remains an internal mower_logic configuration because the
  # cycle-aware controller needs mower state information. xbot_monitoring exposes
@@ -606,7 +606,7 @@ index 80cddfe..0edd4c0 100644
 +++ b/src/mower_logic/src/mower_logic/mower_logic.cpp
 @@ -414,69 +414,35 @@ class SatelliteLoggingController {
    }
- 
+
    void notifyConfigChanged() {
 -    bool disable_setting_after = false;
 -    {
@@ -640,14 +640,14 @@ index 80cddfe..0edd4c0 100644
 +    std::lock_guard<std::mutex> lk(mutex_);
 +    publishStatusLocked();
    }
- 
+
    void updateFromMowerState(bool docked, bool active_work, const std::string& area_id) {
 -    bool publish_after = false;
 -    bool disable_setting_after = false;
 -    {
 -      std::lock_guard<std::mutex> lk(mutex_);
 +    std::lock_guard<std::mutex> lk(mutex_);
- 
+
 -      if (state_ == "running" && docked && mode_ != "manual" && mode_ != "area_only") {
 -        stopLocked("docked");
 -        request_active_ = false;
@@ -687,18 +687,18 @@ index 80cddfe..0edd4c0 100644
 -      has_last_docked_ = true;
 -      if (publish_after) publishStatusLocked();
      }
- 
+
 -    if (disable_setting_after) setEnabledSession(false);
 +    last_docked_ = docked;
 +    has_last_docked_ = true;
 +    if (publish_after) publishStatusLocked();
    }
- 
+
   private:
 @@ -489,13 +455,6 @@ class SatelliteLoggingController {
             mode == "until_docking" || mode == "manual" || mode == "area_only" || mode == "area_to_docking";
    }
- 
+
 -  static void setEnabledSession(bool enabled) {
 -    mower_logic::MowerLogicConfig cfg = getConfig();
 -    if (cfg.satellite_logging_enabled == enabled) return;
@@ -712,7 +712,7 @@ index 80cddfe..0edd4c0 100644
 @@ -573,12 +532,6 @@ class SatelliteLoggingController {
      return state_ != "error";
    }
- 
+
 -  void startOrArmFromConfigLocked() {
 -    applyRequestedStartLocked(last_config.satellite_logging_default_trigger,
 -                              last_config.satellite_logging_default_mode,
@@ -725,7 +725,7 @@ index 80cddfe..0edd4c0 100644
 @@ -669,7 +622,7 @@ class SatelliteLoggingController {
          return;
        }
- 
+
 -      const std::string command = payload.value("command", std::string("start"));
 +      const std::string command = payload.value("command", std::string());
        if (command == "stop") {
@@ -763,7 +763,7 @@ index 80cddfe..0edd4c0 100644
    bool has_last_docked_ = false;
 -  bool last_enabled_ = false;
  };
- 
+
  void updateUI(const ros::TimerEvent& timer_event) {
 @@ -1210,7 +1158,6 @@ class MowerLogicSettingsBridge {
      if (key == "outline_simplify_min_distance_factor") return "Minimaler Outline-Abstandsfaktor";

@@ -16,34 +16,35 @@
 // #define VERBOSE_DEBUG   1
 
 #include <actionlib/client/simple_action_client.h>
-#include <dynamic_reconfigure/server.h>
 #include <dynamic_reconfigure/Config.h>
 #include <dynamic_reconfigure/ConfigDescription.h>
+#include <dynamic_reconfigure/server.h>
 #include <mower_logic/PowerConfig.h>
 #include <mower_msgs/ESCStatus.h>
 #include <mower_msgs/Emergency.h>
 #include <mower_msgs/Power.h>
+#include <open_mower/settings_persistence.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <tf2/LinearMath/Transform.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
 #include <cmath>
-#include <map>
-#include <set>
+#include <csignal>
+#include <cstring>
+#include <ctime>
+#include <iomanip>
 #include <ios>
+#include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <vector>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <iomanip>
-#include <ctime>
-#include <csignal>
-#include <chrono>
-#include <cerrno>
-#include <cstring>
 
 #include "StateSubscriber.h"
 #include "behaviors/AreaRecordingBehavior.h"
@@ -56,22 +57,21 @@
 #include "mower_map/ClearMapSrv.h"
 #include "mower_map/ClearNavPointSrv.h"
 #include "mower_map/GetDockingPointSrv.h"
-#include "mower_map/GetMowingAreaSrv.h"
 #include "mower_map/GetMowingAreaByIdSrv.h"
 #include "mower_map/GetMowingAreaListSrv.h"
+#include "mower_map/GetMowingAreaSrv.h"
 #include "mower_map/SetNavPointSrv.h"
-#include "mowing_path_order_optimizer/OptimizePaths.h"
 #include "mower_msgs/EmergencyStopSrv.h"
 #include "mower_msgs/HighLevelControlSrv.h"
 #include "mower_msgs/HighLevelStatus.h"
 #include "mower_msgs/MowerControlSrv.h"
 #include "mower_msgs/Status.h"
+#include "mowing_path_order_optimizer/OptimizePaths.h"
 #include "ros/ros.h"
 #include "slic3r_coverage_planner/PlanPath.h"
-#include "std_msgs/String.h"
 #include "std_msgs/Empty.h"
 #include "std_msgs/Float64.h"
-#include <open_mower/settings_persistence.h>
+#include "std_msgs/String.h"
 #include "utils.h"
 #include "xbot_msgs/AbsolutePose.h"
 #include "xbot_msgs/RegisterActionsSrv.h"
@@ -381,7 +381,6 @@ void setEmergencyMode(bool emergency) {
   }
 }
 
-
 static std::string mower_logic_utc_timestamp_iso8601(const std::chrono::system_clock::time_point& time_point) {
   const std::time_t t = std::chrono::system_clock::to_time_t(time_point);
   std::tm tm{};
@@ -408,8 +407,8 @@ class SatelliteLoggingController {
     status_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/satellite_logging/status_json", 1, true);
     control_sub_ = nh_.subscribe("/mower_logic/satellite_logging/set_control_json", 10,
                                  &SatelliteLoggingController::controlCallback, this);
-    renew_sub_ = nh_.subscribe("/mower_logic/satellite_logging/renew", 10,
-                               &SatelliteLoggingController::renewCallback, this);
+    renew_sub_ =
+        nh_.subscribe("/mower_logic/satellite_logging/renew", 10, &SatelliteLoggingController::renewCallback, this);
     notifyConfigChanged();
   }
 
@@ -451,13 +450,13 @@ class SatelliteLoggingController {
   }
 
   static bool modeSupported(const std::string& mode) {
-    return mode == "from_start_to_docking" || mode == "from_docking_to_docking" ||
-           mode == "until_docking" || mode == "manual" || mode == "area_only" || mode == "area_to_docking";
+    return mode == "from_start_to_docking" || mode == "from_docking_to_docking" || mode == "until_docking" ||
+           mode == "manual" || mode == "area_only" || mode == "area_to_docking";
   }
 
   bool ensureScriptReadyLocked() {
     const std::string& path = last_config.satellite_logging_script_path;
-    struct stat st{};
+    struct stat st {};
     if (path.empty()) {
       state_ = "error";
       error_ = "satellite logging script path is empty";
@@ -477,8 +476,7 @@ class SatelliteLoggingController {
       const mode_t executable_mode = st.st_mode | S_IXUSR | S_IXGRP | S_IXOTH;
       if (chmod(path.c_str(), executable_mode) != 0) {
         state_ = "error";
-        error_ = "could not make satellite logging script executable: " +
-                 path + ": " + std::strerror(errno);
+        error_ = "could not make satellite logging script executable: " + path + ": " + std::strerror(errno);
         return false;
       }
     }
@@ -533,10 +531,8 @@ class SatelliteLoggingController {
   }
 
   static std::vector<std::string> expectedFiles(const std::string& session_id) {
-    return {"gps_satellite_list_" + session_id + ".log",
-            "gps_position_" + session_id + ".log",
-            "gps_accuracy_" + session_id + ".log",
-            "gps_rtcm_hz_" + session_id + ".log",
+    return {"gps_satellite_list_" + session_id + ".log", "gps_position_" + session_id + ".log",
+            "gps_accuracy_" + session_id + ".log", "gps_rtcm_hz_" + session_id + ".log",
             "satellite_logging_" + session_id + ".meta.json"};
   }
 
@@ -569,11 +565,9 @@ class SatelliteLoggingController {
     if (pid == 0) {
       setsid();
       execl(last_config.satellite_logging_script_path.c_str(), last_config.satellite_logging_script_path.c_str(),
-            "--session-id", session_id_.c_str(),
-            "--ram-path", last_config.satellite_logging_ram_path.c_str(),
-            "--output-path", last_config.satellite_logging_output_path.c_str(),
-            "--container-name", last_config.satellite_logging_container_name.c_str(),
-            static_cast<char*>(nullptr));
+            "--session-id", session_id_.c_str(), "--ram-path", last_config.satellite_logging_ram_path.c_str(),
+            "--output-path", last_config.satellite_logging_output_path.c_str(), "--container-name",
+            last_config.satellite_logging_container_name.c_str(), static_cast<char*>(nullptr));
       _exit(127);
     }
     pid_ = pid;
@@ -588,7 +582,10 @@ class SatelliteLoggingController {
     int status = 0;
     for (int i = 0; i < 50; ++i) {
       const pid_t result = waitpid(pid_, &status, WNOHANG);
-      if (result == pid_) { exited = true; break; }
+      if (result == pid_) {
+        exited = true;
+        break;
+      }
       usleep(100000);
     }
     if (!exited) {
@@ -670,7 +667,9 @@ class SatelliteLoggingController {
     if (publish_after) publishStatus();
   }
 
-  void renewCallback(const std_msgs::Empty::ConstPtr&) { publishStatus(); }
+  void renewCallback(const std_msgs::Empty::ConstPtr&) {
+    publishStatus();
+  }
 
   void publishStatus() {
     std::lock_guard<std::mutex> lk(mutex_);
@@ -700,7 +699,9 @@ class SatelliteLoggingController {
     payload["ram_path"] = last_config.satellite_logging_ram_path;
     payload["output_path"] = last_config.satellite_logging_output_path;
     payload["script_path"] = last_config.satellite_logging_script_path;
-    payload["container_name"] = last_config.satellite_logging_container_name.empty() ? json(nullptr) : json(last_config.satellite_logging_container_name);
+    payload["container_name"] = last_config.satellite_logging_container_name.empty()
+                                    ? json(nullptr)
+                                    : json(last_config.satellite_logging_container_name);
     payload["error"] = error_.empty() ? json(nullptr) : json(error_);
     std_msgs::String out;
     out.data = payload.dump();
@@ -838,8 +839,8 @@ void checkSafety(const ros::TimerEvent& timer_event) {
 
     if (currentBehavior != &IdleBehavior::DOCKED_INSTANCE &&
         now - chargingDetectedSince >= ros::Duration(CHARGING_DOCKED_IDLE_DELAY_SECONDS)) {
-      ROS_INFO_STREAM_THROTTLE(5, "Charging detected for " << CHARGING_DOCKED_IDLE_DELAY_SECONDS
-                                                            << "s, requesting docked idle state.");
+      ROS_INFO_STREAM_THROTTLE(
+          5, "Charging detected for " << CHARGING_DOCKED_IDLE_DELAY_SECONDS << "s, requesting docked idle state.");
       dockedIdleOnChargingRequested = true;
       currentBehavior->abort();
     }
@@ -991,7 +992,6 @@ void checkSafety(const ros::TimerEvent& timer_event) {
   }
 }
 
-
 class MowerLogicSettingsBridge {
  public:
   using json = open_mower_settings::json;
@@ -1001,19 +1001,22 @@ class MowerLogicSettingsBridge {
                      std::string("/data/ros/settings_persistent.json"));
     status_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/settings/status_json", 1, true);
     validation_pub_ = nh_.advertise<std_msgs::String>("/mower_logic/settings/validation_json", 1, true);
-    ftc_speed_fast_threshold_pub_ = nh_.advertise<std_msgs::Float64>("/ftc_local_planner/settings/set/speed_fast_threshold", 10);
-    ftc_persistent_speed_fast_threshold_pub_ = nh_.advertise<std_msgs::Float64>("/ftc_local_planner/settings/set_persistent/speed_fast_threshold", 10);
+    ftc_speed_fast_threshold_pub_ =
+        nh_.advertise<std_msgs::Float64>("/ftc_local_planner/settings/set/speed_fast_threshold", 10);
+    ftc_persistent_speed_fast_threshold_pub_ =
+        nh_.advertise<std_msgs::Float64>("/ftc_local_planner/settings/set_persistent/speed_fast_threshold", 10);
     session_sub_ = nh_.subscribe("/mower_logic/settings/set_session_json", 10,
                                  &MowerLogicSettingsBridge::sessionSetCallback, this);
     persistent_sub_ = nh_.subscribe("/mower_logic/settings/set_persistent_json", 10,
                                     &MowerLogicSettingsBridge::persistentSetCallback, this);
-    renew_sub_ = nh_.subscribe("/mower_logic/settings/renew", 10,
-                               &MowerLogicSettingsBridge::renewCallback, this);
+    renew_sub_ = nh_.subscribe("/mower_logic/settings/renew", 10, &MowerLogicSettingsBridge::renewCallback, this);
     initializeMetadataAndPersistentValues();
     publishStatus();
   }
 
-  void notifyConfigChanged() { publishStatus(); }
+  void notifyConfigChanged() {
+    publishStatus();
+  }
 
  private:
   enum class ValueType { kBoolean, kInteger, kNumber, kString, kUnknown };
@@ -1052,47 +1055,77 @@ class MowerLogicSettingsBridge {
     }
   }
 
-  static bool getConfigValue(const dynamic_reconfigure::Config& config, const std::string& key,
-                             ValueType type, json& out) {
+  static bool getConfigValue(const dynamic_reconfigure::Config& config, const std::string& key, ValueType type,
+                             json& out) {
     switch (type) {
       case ValueType::kBoolean:
         // dynamic_reconfigure::BoolParameter::value is represented as an integer-like
         // ROS message field in C++. Convert explicitly to bool before storing it in
         // JSON. Without this cast, nlohmann::json stores 0/1 as a number and later
         // get<bool>() aborts with type_error.302 during settings initialization.
-        for (const auto& item : config.bools) if (item.name == key) { out = static_cast<bool>(item.value); return true; }
+        for (const auto& item : config.bools)
+          if (item.name == key) {
+            out = static_cast<bool>(item.value);
+            return true;
+          }
         return false;
       case ValueType::kInteger:
-        for (const auto& item : config.ints) if (item.name == key) { out = item.value; return true; }
+        for (const auto& item : config.ints)
+          if (item.name == key) {
+            out = item.value;
+            return true;
+          }
         return false;
       case ValueType::kNumber:
-        for (const auto& item : config.doubles) if (item.name == key) { out = item.value; return true; }
+        for (const auto& item : config.doubles)
+          if (item.name == key) {
+            out = item.value;
+            return true;
+          }
         return false;
       case ValueType::kString:
-        for (const auto& item : config.strs) if (item.name == key) { out = item.value; return true; }
+        for (const auto& item : config.strs)
+          if (item.name == key) {
+            out = item.value;
+            return true;
+          }
         return false;
-      default:
-        return false;
+      default: return false;
     }
   }
 
-  static bool setConfigValue(dynamic_reconfigure::Config& config, const std::string& key,
-                             ValueType type, const json& value) {
+  static bool setConfigValue(dynamic_reconfigure::Config& config, const std::string& key, ValueType type,
+                             const json& value) {
     switch (type) {
       case ValueType::kBoolean:
-        for (auto& item : config.bools) if (item.name == key) { item.value = value.get<bool>(); return true; }
+        for (auto& item : config.bools)
+          if (item.name == key) {
+            item.value = value.get<bool>();
+            return true;
+          }
         return false;
       case ValueType::kInteger:
-        for (auto& item : config.ints) if (item.name == key) { item.value = value.get<int>(); return true; }
+        for (auto& item : config.ints)
+          if (item.name == key) {
+            item.value = value.get<int>();
+            return true;
+          }
         return false;
       case ValueType::kNumber:
-        for (auto& item : config.doubles) if (item.name == key) { item.value = value.get<double>(); return true; }
+        for (auto& item : config.doubles)
+          if (item.name == key) {
+            item.value = value.get<double>();
+            return true;
+          }
         return false;
       case ValueType::kString:
-        for (auto& item : config.strs) if (item.name == key) { item.value = value.get<std::string>(); return true; }
+        for (auto& item : config.strs)
+          if (item.name == key) {
+            item.value = value.get<std::string>();
+            return true;
+          }
         return false;
-      default:
-        return false;
+      default: return false;
     }
   }
 
@@ -1172,11 +1205,13 @@ class MowerLogicSettingsBridge {
   std::string unitForKey(const std::string& key) const {
     if (key.find("temperature") != std::string::npos || key.find("_temp_") != std::string::npos) return "°C";
     if (key.find("distance") != std::string::npos || key == "tool_width" || key == "max_position_accuracy" ||
-        key == "outline_simplify_per_loop" || key == "outline_simplify_max_tolerance" ||
-        key == "speed_fast_threshold") return "m";
+        key == "outline_simplify_per_loop" || key == "outline_simplify_max_tolerance" || key == "speed_fast_threshold")
+      return "m";
     if (key.find("angle") != std::string::npos || key == "shutdown_esc_max_pitch") return "°";
     if (key.find("minutes") != std::string::npos) return "min";
-    if (key.find("seconds") != std::string::npos || key.find("_time") != std::string::npos || key.find("period") != std::string::npos) return "s";
+    if (key.find("seconds") != std::string::npos || key.find("_time") != std::string::npos ||
+        key.find("period") != std::string::npos)
+      return "s";
     if (key.find("current") != std::string::npos) return "A";
     return "";
   }
@@ -1184,7 +1219,8 @@ class MowerLogicSettingsBridge {
   std::string groupForKey(const std::string& key) const {
     if (key.find("path_order_optimizer_") == 0) return "path_order_optimizer";
     if (key.find("outline_simplify_") == 0 || key == "obstacle_outline_count" ||
-        key == "obstacle_outline_overlap_count") return "outline_simplification";
+        key == "obstacle_outline_overlap_count")
+      return "outline_simplification";
     if (key.find("satellite_logging_") == 0) return "system";
     return kNamespace;
   }
@@ -1192,9 +1228,11 @@ class MowerLogicSettingsBridge {
   bool expertForKey(const std::string& key) const {
     if (key.find("path_order_optimizer_") == 0 && key != "path_order_optimizer_enabled") return true;
     if (key.find("outline_simplify_") == 0 || key == "obstacle_outline_count" ||
-        key == "obstacle_outline_overlap_count") return true;
+        key == "obstacle_outline_overlap_count")
+      return true;
     if (key == "satellite_logging_script_path" || key == "satellite_logging_ram_path" ||
-        key == "satellite_logging_output_path" || key == "satellite_logging_container_name") return true;
+        key == "satellite_logging_output_path" || key == "satellite_logging_container_name")
+      return true;
     return false;
   }
 
@@ -1237,8 +1275,10 @@ class MowerLogicSettingsBridge {
         entry["persistent"] = meta.default_value;
         entry["unit"] = unitForKey(meta.name);
         entry["type"] = meta.type_name;
-        if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_min) entry["min"] = meta.min_value;
-        if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_max) entry["max"] = meta.max_value;
+        if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_min)
+          entry["min"] = meta.min_value;
+        if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_max)
+          entry["max"] = meta.max_value;
         seed[meta.name] = entry;
       }
     }
@@ -1247,7 +1287,8 @@ class MowerLogicSettingsBridge {
     speed_threshold_meta.name = "speed_fast_threshold";
     speed_threshold_meta.type = ValueType::kNumber;
     speed_threshold_meta.type_name = jsonTypeName(speed_threshold_meta.type);
-    speed_threshold_meta.description = "Ab dieser berechneten Geradeausdistanz vor dem Roboter wird speed_fast verwendet.";
+    speed_threshold_meta.description =
+        "Ab dieser berechneten Geradeausdistanz vor dem Roboter wird speed_fast verwendet.";
     speed_threshold_meta.default_value = 1.5;
     speed_threshold_meta.min_value = 0.0;
     speed_threshold_meta.max_value = 5.0;
@@ -1276,14 +1317,14 @@ class MowerLogicSettingsBridge {
   }
 
   void initializeMetadataAndPersistentValues() {
-    open_mower_settings::migratePersistentFieldsAndRemoveNamespace(
-        settings_persistent_path_, "mow_load_factor", kNamespace,
-        {{"enabled", "mow_load_factor_enabled"},
-         {"min_factor", "mow_load_factor_min"},
-         {"current_start", "mow_load_current_start"},
-         {"current_end", "mow_load_current_end"}});
+    open_mower_settings::migratePersistentFieldsAndRemoveNamespace(settings_persistent_path_, "mow_load_factor",
+                                                                   kNamespace,
+                                                                   {{"enabled", "mow_load_factor_enabled"},
+                                                                    {"min_factor", "mow_load_factor_min"},
+                                                                    {"current_start", "mow_load_current_start"},
+                                                                    {"current_end", "mow_load_current_end"}});
     settings_entries_ = open_mower_settings::mergeNamespaceWithSeed(settings_persistent_path_, kNamespace,
-                                                                     seedEntriesFromDynamicReconfigure());
+                                                                    seedEntriesFromDynamicReconfigure());
     mower_logic::MowerLogicConfig target = getConfig();
     dynamic_reconfigure::Config target_msg;
     target.__toMessage__(target_msg);
@@ -1385,9 +1426,11 @@ class MowerLogicSettingsBridge {
   }
 
   void handleSet(const std::string& payload_text, bool persistent) {
-    json validation = {{"valid", false}, {"namespace", kNamespace},
+    json validation = {{"valid", false},
+                       {"namespace", kNamespace},
                        {"mode", persistent ? "persistent" : "session"},
-                       {"accepted", json::array()}, {"rejected", json::array()}};
+                       {"accepted", json::array()},
+                       {"rejected", json::array()}};
     json payload;
     try {
       payload = json::parse(payload_text);
@@ -1441,13 +1484,13 @@ class MowerLogicSettingsBridge {
       if (entry.contains("value")) {
         const json& value = entry["value"];
         if (!isTypeValid(meta, value)) {
-          validation["rejected"].push_back({{"key", key}, {"field", "value"},
-                                             {"reason", std::string("value must be ") + meta.type_name}});
+          validation["rejected"].push_back(
+              {{"key", key}, {"field", "value"}, {"reason", std::string("value must be ") + meta.type_name}});
           continue;
         }
         if (!isRangeValid(meta, value)) {
-          validation["rejected"].push_back({{"key", key}, {"field", "value"},
-                                             {"reason", "value is outside metadata limits"}});
+          validation["rejected"].push_back(
+              {{"key", key}, {"field", "value"}, {"reason", "value is outside metadata limits"}});
           continue;
         }
         accepted_values[key] = value;
@@ -1600,8 +1643,10 @@ class MowerLogicSettingsBridge {
       entry["different"] = valuesDiffer(active, persistent);
       entry["unit"] = open_mower_settings::stringOr(persisted_meta, "unit", unitForKey(key));
       entry["type"] = open_mower_settings::stringOr(persisted_meta, "type", meta.type_name);
-      if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_min) entry["min"] = meta.min_value;
-      if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_max) entry["max"] = meta.max_value;
+      if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_min)
+        entry["min"] = meta.min_value;
+      if ((meta.type == ValueType::kInteger || meta.type == ValueType::kNumber) && meta.has_max)
+        entry["max"] = meta.max_value;
       status["settings"][key] = entry;
       syncParamTree(key, meta, persistent, active);
     }
@@ -1610,9 +1655,15 @@ class MowerLogicSettingsBridge {
     status_pub_.publish(msg);
   }
 
-  void sessionSetCallback(const std_msgs::String::ConstPtr& msg) { handleSet(msg->data, false); }
-  void persistentSetCallback(const std_msgs::String::ConstPtr& msg) { handleSet(msg->data, true); }
-  void renewCallback(const std_msgs::Empty::ConstPtr&) { publishStatus(); }
+  void sessionSetCallback(const std_msgs::String::ConstPtr& msg) {
+    handleSet(msg->data, false);
+  }
+  void persistentSetCallback(const std_msgs::String::ConstPtr& msg) {
+    handleSet(msg->data, true);
+  }
+  void renewCallback(const std_msgs::Empty::ConstPtr&) {
+    publishStatus();
+  }
 
   ros::NodeHandle& nh_;
   ros::Publisher status_pub_;

@@ -3,7 +3,7 @@
 @@ -74,6 +74,19 @@
                      RTKType rtk_type;
                  };
- 
+
 +                struct FixStatus {
 +                    uint32_t sensor_time;
 +                    uint32_t received_time;
@@ -22,12 +22,12 @@
                      uint32_t received_time;
 @@ -109,6 +122,7 @@
                  };
- 
+
                  typedef std::function<void(const GpsState &new_state)> StateCallback;
 +                typedef std::function<void(const FixStatus &new_status)> FixStatusCallback;
                  typedef std::function<void(const ImuState &new_state)> ImuCallback;
                  typedef std::function<void(const SatelliteState &new_state)> SatelliteCallback;
- 
+
 @@ -118,6 +132,7 @@
                  void set_device(GpsDevice *device);
                  void set_imu_callback(const GpsInterface::ImuCallback &function);
@@ -35,9 +35,9 @@
 +                void set_fix_status_callback(const GpsInterface::FixStatusCallback &function);
                  void set_satellite_callback(const GpsInterface::SatelliteCallback &function);
                  void set_log_function(const LogFunction &function);
- 
+
 @@ -134,6 +149,7 @@
- 
+
              protected:
                  StateCallback state_callback = nullptr;
 +                FixStatusCallback fix_status_callback = nullptr;
@@ -48,21 +48,21 @@
 +++ b/src/lib/xbot_driver_gps/src/interfaces/gps_interface.cpp
 @@ -3,6 +3,7 @@
  //
- 
+
  #include "gps_interface.h"
 +#include <cmath>
- 
+
  using namespace std::chrono;
- 
+
 @@ -22,6 +23,10 @@
                  state_callback = function;
              }
- 
+
 +            void GpsInterface::set_fix_status_callback(const GpsInterface::FixStatusCallback &function) {
 +                fix_status_callback = function;
 +            }
 +
- 
+
              void GpsInterface::set_imu_callback(const GpsInterface::ImuCallback &function) {
                  imu_callback = function;
 @@ -34,6 +39,7 @@
@@ -76,17 +76,17 @@
 --- a/src/lib/xbot_driver_gps/src/interfaces/ublox_gps_interface.cpp
 +++ b/src/lib/xbot_driver_gps/src/interfaces/ublox_gps_interface.cpp
 @@ -5,6 +5,8 @@
- 
+
  #include "ublox_gps_interface.h"
- 
+
 +#include <cmath>
 +
  using namespace std::chrono;
- 
+
  namespace xbot {
 @@ -149,20 +151,64 @@
              }
- 
+
              void UbxGpsInterface::handle_nav_pvt(const time_point<steady_clock> &header_stamp, const UbxNavPvt *msg) {
 -                // We have received a nav pvt message, copy to GPS state
 -                // check, if message is even roughly valid. If not - ignore it.
@@ -126,7 +126,7 @@
 +                        rtk_type = GpsState::RTK_FIX;
 +                    }
 +                }
- 
+
 +                FixStatus fix_status = {0};
 +                fix_status.sensor_time = msg->iTOW;
 +                fix_status.received_time = duration_cast<milliseconds>(header_stamp.time_since_epoch()).count();
@@ -139,7 +139,7 @@
 +                if (fix_status_callback) {
 +                    fix_status_callback(fix_status);
 +                }
- 
+
 +                // Keep the established safety behaviour: invalid positions are not published on
 +                // the AbsolutePose topic, but their receiver status remains available diagnostically.
                  if (!gnssFixOK) {
@@ -154,11 +154,11 @@
 +                    log("invalid lat, lon, height - dropping position message", WARN);
                      return;
                  }
- 
+
 @@ -182,42 +228,8 @@
                      }
                  }
- 
+
 -                switch (msg->fixType) {
 -                    case 1:
 -                        gps_state_.fix_type = GpsState::FixType::DR_ONLY;
@@ -197,9 +197,9 @@
 -                }
 +                gps_state_.fix_type = fix_type;
 +                gps_state_.rtk_type = rtk_type;
- 
- 
- 
+
+
+
 --- a/src/lib/xbot_driver_gps/src/driver_gps_node.cpp
 +++ b/src/lib/xbot_driver_gps/src/driver_gps_node.cpp
 @@ -41,6 +41,7 @@
@@ -207,13 +207,13 @@
  ros::Publisher satellites_pub;
  ros::Publisher restart_status_pub;
 +ros::Publisher fix_status_pub;
- 
+
  bool isUbxInterface = false;
  GpsInterface *gpsInterface;
 @@ -279,6 +280,64 @@
      }
  }
- 
+
 +std::string gps_fix_type_name(GpsInterface::GpsState::FixType fix_type) {
 +    switch (fix_type) {
 +        case GpsInterface::GpsState::DR_ONLY: return "dead_reckoning";
@@ -277,15 +277,15 @@
      result.header.frame_id = "gps";
 @@ -530,10 +589,12 @@
      }
- 
+
      restart_status_pub = paramNh.advertise<std_msgs::String>("restart_status", 10, true);
 +    fix_status_pub = paramNh.advertise<std_msgs::String>("fix_status", 10, true);
      ros::Subscriber restart_request_sub = paramNh.subscribe("restart_request", 10, gps_restart_request_received,
                                                             ros::TransportHints().tcpNoDelay(true));
- 
+
      gpsInterface->set_state_callback(gps_state_received);
 +    gpsInterface->set_fix_status_callback(gps_fix_status_received);
- 
+
      if (paramNh.param("publish_latency", true) && isUbxInterface) {
          latency_pub1 = paramNh.advertise<std_msgs::UInt32>("wheel_tick_stamp_esc", 100);
 --- a/src/open_mower/launch/include/_comms.launch
@@ -297,7 +297,7 @@
 +            <remap from="~fix_status" to="/ll/position/gps/fix_status"/>
              <remap from="~wheel_ticks" to="/mower/wheel_ticks"/>
          </node>
- 
+
 --- a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
 +++ b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
 @@ -93,6 +93,7 @@
@@ -321,7 +321,7 @@
 @@ -1308,24 +1312,104 @@
      return age_ms;
  }
- 
+
 -static std::string gps_state_rtk_state(uint16_t flags) {
 +static std::string gps_state_solution_from_pose(uint16_t flags) {
      if (flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED) return "fixed";
@@ -407,7 +407,7 @@
 +    out << "; Grenzwert <= " << std::setprecision(3) << threshold_m << " m";
 +    return out.str();
  }
- 
+
  static std::string gps_state_drive_block_reason(bool xb_pose_available,
                                                  bool orientation_valid,
                                                  bool recent_absolute_pose,
@@ -431,7 +431,7 @@
      if (!xb_accuracy_ok) return "position_accuracy_too_low";
 @@ -1333,18 +1417,22 @@
  }
- 
+
  static std::string gps_state_drive_reason_text(const std::string &block_reason,
 -                                               const std::string &rtk_state) {
 +                                               const std::string &solution_state) {
@@ -448,8 +448,8 @@
      if (block_reason == "position_accuracy_too_low") return "Positionsgenauigkeit ist schlechter als der erlaubte Grenzwert";
      return "GPS-Fahrfreigabe konnte nicht bestaetigt werden";
  }
- 
- 
+
+
 +
  static json gps_state0_definition_entry(int stage,
                                          const std::string &key,
@@ -534,7 +534,7 @@
 +                                  gps_input_available ? json(solution_state) : json(nullptr), "fixed", nullptr, nullptr, display,
                                    blocking_found, blocking_stage, blocking_key, blocking_title, summary);
      }
- 
+
 -    if (blocking_found) {
 -        inactive_if_blocked("03_gps_input_accuracy", 3, "gps_input_accuracy", "nicht bewertet");
 +    // Stufe 3 bleibt absichtlich sichtbar, auch wenn Stufe 2 bereits blockiert. So kann
@@ -557,7 +557,7 @@
 +                                                             input_position_valid, solution_state),
                                    blocking_found, blocking_stage, blocking_key, blocking_title, summary);
      }
- 
+
 @@ -1699,7 +1798,7 @@
      root["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
      root["state"] = "state0";
@@ -577,7 +577,7 @@
      root["checks"] = checks;
      return root;
 @@ -1726,28 +1825,72 @@
- 
+
      xbot_msgs::AbsolutePose ll_pose;
      xbot_msgs::AbsolutePose xb_pose;
 +    json fix_status = json::object();
@@ -601,7 +601,7 @@
 +        fix_status_received_at = latest_gps_fix_status_received_at;
          drive_ready_at = latest_gps_drive_ready_at;
      }
- 
+
 -    const std::string rtk_state = ll_pose_available ? gps_state_rtk_state(ll_pose.flags) : "unknown";
 -    const bool ll_rtk_fixed = ll_pose_available &&
 -        ((ll_pose.flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED) != 0);
@@ -652,7 +652,7 @@
 +        solution_state != "no_fix" && solution_state != "unknown" &&
 +        input_accuracy_m <= max_gps_accuracy;
 +    const std::string solution_display = gps_state_solution_display(solution_state, fix_type);
- 
+
      const bool orientation_valid = xb_pose_available && xb_pose.orientation_valid;
      const bool recent_absolute_pose = xb_pose_available &&
 @@ -1764,63 +1907,64 @@
@@ -662,7 +662,7 @@
 -                                       xb_accuracy_ok, ll_pose_available, rtk_state);
 +                                       xb_accuracy_ok, gps_input_available, solution_state);
      const std::string drive_state = gps_drive_ready ? "ready" : (gps_timeout_estimated ? "stop" : "blocked");
- 
+
 -    // State 1 remains the compact operator-facing drive status.  It intentionally
 +    // State 1 remains the compact operator-facing drive status. It intentionally
      // does not include the State 0 decision chain or the State 2/3 GNSS statistics.
@@ -678,7 +678,7 @@
      summary["position_accuracy_m"] = xb_pose_available ? json(static_cast<double>(xb_pose.position_accuracy)) : json(nullptr);
      summary["max_position_accuracy_m"] = max_position_accuracy;
      summary["pose_age_ms"] = gps_state_age_ms_json(now, xb_received_at);
- 
+
 -    // State 2 gets the technical details.  This object deliberately avoids a copy
 -    // of the compact State 1 summary so that State 1 and State 2 stay separated.
 +    // State 2 gets the technical details. The existing MQTT fields are reused;
@@ -710,7 +710,7 @@
      details["decision_source"] = "xbot_positioning/xb_pose";
 -    details["rtk_source"] = "ll/position/gps";
 +    details["rtk_source"] = rtk_source;
- 
+
      const json state0_status = build_gps_state0_status_payload(
          now, max_position_accuracy, max_gps_accuracy, gps_timeout,
 -        ll_pose, ll_pose_available, ll_received_at,
@@ -722,7 +722,7 @@
 +        input_accuracy_available, input_accuracy_m, ll_rtk_fixed, ll_accuracy_ok,
 +        orientation_valid, recent_absolute_pose, xb_accuracy_ok, gps_drive_ready,
          grace_remaining_s, gps_timeout_estimated);
- 
+
      return {
          {"summary", summary},
          {"details", details},
@@ -739,11 +739,11 @@
 +        {"diagnostic_summary", gps_state_drive_reason_text(block_reason, solution_state)}
      };
  }
- 
+
 @@ -2034,6 +2178,25 @@
      latest_ll_gps_pose_available = true;
  }
- 
+
 +void gps_state_fix_status_callback(const std_msgs::String::ConstPtr &msg) {
 +    json parsed = json::parse(msg->data, nullptr, false);
 +    if (!parsed.is_object()) {

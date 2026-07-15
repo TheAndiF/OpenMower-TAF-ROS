@@ -3,9 +3,9 @@ index b24be67..e376573 100644
 --- a/src/lib/xbot_monitoring/README.md
 +++ b/src/lib/xbot_monitoring/README.md
 @@ -172,6 +172,18 @@ Supported `mode` values are `hot_start`, `warm_start` and `cold_start`. The defa
- 
+
  The GPS-State settings payload contains a `restart` group with a `f9p_restart` command descriptor. Apps can use that descriptor to render the command below GPS State without moving it to another MQTT namespace.
- 
+
 +## GPS State payload separation
 +
 +The GPS MQTT payloads use schema `gps_state.v2` and keep the five states intentionally separated. Only shared metadata such as `schema`, `state` and `updated_at` is repeated. Fachliche Dopplungen zwischen State 1, State 2 and State 3 are avoided.
@@ -19,7 +19,7 @@ index b24be67..e376573 100644
 +This separation lets the app choose the correct payload for each UI level without parsing large debug payloads in normal views.
 +
  ## GPS State 0 drive diagnostics
- 
+
  `gps_state` now provides an optional State 0 diagnostic view for immediate drive-readiness debugging. State 0 is intentionally split into static and live data so long descriptions do not have to be sent repeatedly.
 diff --git a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
 index 68599d6..72d8a51 100644
@@ -30,7 +30,7 @@ index 68599d6..72d8a51 100644
  constexpr const char *GPS_STATE_NAMESPACE = "gps_state";
  constexpr const char *GPS_STATE_SCHEMA = "settings_v2";
 +constexpr const char *GPS_STATE_PAYLOAD_SCHEMA = "gps_state.v2";
- 
+
  struct GpsStateSettings {
      bool enabled = true;
 @@ -890,15 +891,15 @@ static json build_gps_state_settings_payload() {
@@ -53,7 +53,7 @@ index 68599d6..72d8a51 100644
      root["settings"]["state4"] = gps_state_descriptor_entry(
          "GPS State 4",
 @@ -1374,6 +1375,7 @@ static json gps_state0_definition_entry(int stage,
- 
+
  static json build_gps_state0_definition_payload() {
      json root = json::object();
 +    root["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
@@ -62,7 +62,7 @@ index 68599d6..72d8a51 100644
      root["definition_version"] = 1;
 @@ -1694,6 +1696,7 @@ static json build_gps_state0_status_payload(const ros::Time &now,
                                blocking_found, blocking_stage, blocking_key, blocking_title, summary);
- 
+
      json root = json::object();
 +    root["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
      root["state"] = "state0";
@@ -73,7 +73,7 @@ index 68599d6..72d8a51 100644
          : gps_state_drive_block_reason(xb_pose_available, orientation_valid, recent_absolute_pose,
                                         xb_accuracy_ok, ll_pose_available, rtk_state);
 +    const std::string drive_state = gps_drive_ready ? "ready" : (gps_timeout_estimated ? "stop" : "blocked");
- 
+
 +    // State 1 remains the compact operator-facing drive status.  It intentionally
 +    // does not include the State 0 decision chain or the State 2/3 GNSS statistics.
      json summary = json::object();
@@ -91,7 +91,7 @@ index 68599d6..72d8a51 100644
 -    summary["gps_timeout"] = gps_timeout_estimated;
 -    summary["age_ms"] = gps_state_age_ms_json(now, xb_received_at);
 +    summary["pose_age_ms"] = gps_state_age_ms_json(now, xb_received_at);
- 
+
 -    json details = summary;
 +    // State 2 gets the technical details.  This object deliberately avoids a copy
 +    // of the compact State 1 summary so that State 1 and State 2 stay separated.
@@ -114,7 +114,7 @@ index 68599d6..72d8a51 100644
 +        {"diagnostic_summary", gps_state_drive_reason_text(block_reason, rtk_state)}
      };
  }
- 
+
 @@ -1819,6 +1831,13 @@ static void apply_gps_drive_status_to_payloads(json &payloads, const json &drive
          }
      }
@@ -132,7 +132,7 @@ index 68599d6..72d8a51 100644
 @@ -1834,12 +1853,12 @@ static std::string gps_state_quality(bool available, int used_count, double avg_
      return "very_good";
  }
- 
+
 -static json gps_state_satellite_json(const xbot_msgs::GnssSatellite &sat) {
 +static json gps_state_satellite_json(const xbot_msgs::GnssSatellite &sat, bool include_used) {
      json entry = json::object();
@@ -154,12 +154,12 @@ index 68599d6..72d8a51 100644
 -        all_satellites.push_back(gps_state_satellite_json(sat));
 +        all_satellites.push_back(gps_state_satellite_json(sat, true));
      }
- 
+
      const bool available = !satellites.empty();
 @@ -1895,35 +1914,44 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
      const std::string quality = gps_state_quality(available, used_count, avg_cn0);
      const json drive_status = build_gps_drive_status_payload(now);
- 
+
 -    json base = json::object();
 -    base["available"] = available;
 -    base["quality"] = quality;
@@ -174,7 +174,7 @@ index 68599d6..72d8a51 100644
      state1["state"] = "state1";
 +    state1["updated_at"] = stamp;
 +    state1["quality_class"] = quality;
- 
+
 -    json state2 = base;
 +    json state2 = json::object();
 +    state2["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
@@ -192,7 +192,7 @@ index 68599d6..72d8a51 100644
      state2["good_count"] = good_count;
      state2["systems"] = systems;
 +    state2["sensor_stamp"] = msg->sensor_stamp;
- 
+
 -    json state3 = base;
 +    json state3 = json::object();
 +    state3["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
@@ -203,7 +203,7 @@ index 68599d6..72d8a51 100644
 +    state3["updated_at"] = stamp;
 +    state3["used_count"] = used_count;
      state3["satellites"] = used_satellites;
- 
+
 -    json state4 = base;
 +    json state4 = json::object();
 +    state4["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
