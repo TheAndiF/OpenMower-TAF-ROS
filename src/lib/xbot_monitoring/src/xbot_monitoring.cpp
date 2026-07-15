@@ -737,10 +737,11 @@ constexpr double GPS_STATE_STALE_AFTER_S = 3.0;
 
 struct GpsStateSettings {
     bool enabled = true;
-    double publish_rate_hz = 1.0;
-    bool publish_state2 = true;
-    bool publish_state3 = true;
-    bool publish_state4 = false;
+    double publish_rate_hz = 2.0;
+    int state2_default_interval_ms = 500;
+    int state3_default_interval_ms = 1000;
+    int state4_default_interval_ms = 1000;
+    int activation_default_lease_ms = 15000;
     double weak_cn0_threshold = 20.0;
     double good_cn0_threshold = 30.0;
 };
@@ -994,9 +995,10 @@ static void load_gps_state_settings_if_needed() {
     gps_state_settings.enabled = persisted_bool_or(persisted, "enabled", gps_state_settings.enabled);
     gps_state_settings.publish_rate_hz = clamp_gps_state_rate(
         persisted_number_or(persisted, "publish_rate_hz", gps_state_settings.publish_rate_hz));
-    gps_state_settings.publish_state2 = persisted_bool_or(persisted, "publish_state2", gps_state_settings.publish_state2);
-    gps_state_settings.publish_state3 = persisted_bool_or(persisted, "publish_state3", gps_state_settings.publish_state3);
-    gps_state_settings.publish_state4 = persisted_bool_or(persisted, "publish_state4", gps_state_settings.publish_state4);
+    gps_state_settings.state2_default_interval_ms = static_cast<int>(persisted_number_or(persisted, "state2_default_interval_ms", gps_state_settings.state2_default_interval_ms));
+    gps_state_settings.state3_default_interval_ms = static_cast<int>(persisted_number_or(persisted, "state3_default_interval_ms", gps_state_settings.state3_default_interval_ms));
+    gps_state_settings.state4_default_interval_ms = static_cast<int>(persisted_number_or(persisted, "state4_default_interval_ms", gps_state_settings.state4_default_interval_ms));
+    gps_state_settings.activation_default_lease_ms = static_cast<int>(persisted_number_or(persisted, "activation_default_lease_ms", gps_state_settings.activation_default_lease_ms));
     gps_state_settings.weak_cn0_threshold = persisted_number_or(persisted, "weak_cn0_threshold", gps_state_settings.weak_cn0_threshold);
     gps_state_settings.good_cn0_threshold = persisted_number_or(persisted, "good_cn0_threshold", gps_state_settings.good_cn0_threshold);
     gps_state_settings_loaded = true;
@@ -1231,18 +1233,22 @@ static json build_gps_state_settings_payload() {
         "Letzter abgeschlossener F9P Neustart",
         "Retained Datensatz des letzten erfolgreich oder fehlerhaft abgeschlossenen Neustarts mit Zeitstempeln.",
         230, "gps_state/restart/last/json", true, "restart");
-    root["settings"]["publish_state2"] = gps_state_setting_entry(
-        "State 2 veröffentlichen",
-        "Veröffentlicht die erweiterte GPS-Zusammenfassung auf gps_state/state2/status.",
-        "states", 120, "bool", cfg.publish_state2);
-    root["settings"]["publish_state3"] = gps_state_setting_entry(
-        "State 3 veröffentlichen",
-        "Veröffentlicht die Liste der aktuell verwendeten Satelliten auf gps_state/state3/status.",
-        "states", 130, "bool", cfg.publish_state3);
-    root["settings"]["publish_state4"] = gps_state_setting_entry(
-        "State 4 veröffentlichen",
-        "Veröffentlicht die vollständige Satellitenliste auf gps_state/state4/status. Diese Ausgabe kann deutlich größer sein und ist primär für Debug- und Expertenansichten gedacht.",
-        "debug", 10, "bool", cfg.publish_state4, nullptr, nullptr, "", true);
+    root["settings"]["state2_default_interval_ms"] = gps_state_setting_entry(
+        "State 2 Standardintervall",
+        "Standardintervall fuer die lease-gesteuerte State2-Ansicht. Das Aktivieren erfolgt ausschliesslich ueber state2/request.",
+        "refresh", 120, "int", cfg.state2_default_interval_ms, 250, 10000, "ms");
+    root["settings"]["state3_default_interval_ms"] = gps_state_setting_entry(
+        "State 3 Standardintervall",
+        "Standardintervall fuer die bedarfsgesteuerte Liste der aktuell genutzten Satelliten.",
+        "refresh", 130, "int", cfg.state3_default_interval_ms, 250, 10000, "ms");
+    root["settings"]["state4_default_interval_ms"] = gps_state_setting_entry(
+        "State 4 Standardintervall",
+        "Standardintervall fuer alle gesehenen Satelliten (genutzt und nicht genutzt).",
+        "refresh", 140, "int", cfg.state4_default_interval_ms, 250, 10000, "ms");
+    root["settings"]["activation_default_lease_ms"] = gps_state_setting_entry(
+        "Standard-Lease",
+        "Standardlaufzeit einer State2-State4-Aktivierung. Ohne Erneuerung endet die MQTT-Ausgabe automatisch.",
+        "refresh", 150, "int", cfg.activation_default_lease_ms, 1000, 60000, "ms");
     root["settings"]["weak_cn0_threshold"] = gps_state_setting_entry(
         "Schwach-Schwelle C/N0",
         "Grenzwert in dB-Hz, unterhalb dessen ein verwendeter Satellit als schwach gezählt wird.",
@@ -1357,15 +1363,18 @@ void handle_gps_state_set_payload(const std::string &payload_text, bool persiste
             if (key == "enabled") {
                 accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
                 if (accepted) { new_cfg.enabled = bool_value; has_native_gps_state_change = true; }
-            } else if (key == "publish_state2") {
-                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) { new_cfg.publish_state2 = bool_value; has_native_gps_state_change = true; }
-            } else if (key == "publish_state3") {
-                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) { new_cfg.publish_state3 = bool_value; has_native_gps_state_change = true; }
-            } else if (key == "publish_state4") {
-                accepted = gps_state_validate_bool_setting(entry, bool_value, reason);
-                if (accepted) { new_cfg.publish_state4 = bool_value; has_native_gps_state_change = true; }
+            } else if (key == "state2_default_interval_ms") {
+                accepted = gps_state_validate_number_setting(entry, 250.0, 10000.0, number_value, reason);
+                if (accepted) { new_cfg.state2_default_interval_ms = static_cast<int>(number_value); has_native_gps_state_change = true; }
+            } else if (key == "state3_default_interval_ms") {
+                accepted = gps_state_validate_number_setting(entry, 250.0, 10000.0, number_value, reason);
+                if (accepted) { new_cfg.state3_default_interval_ms = static_cast<int>(number_value); has_native_gps_state_change = true; }
+            } else if (key == "state4_default_interval_ms") {
+                accepted = gps_state_validate_number_setting(entry, 250.0, 10000.0, number_value, reason);
+                if (accepted) { new_cfg.state4_default_interval_ms = static_cast<int>(number_value); has_native_gps_state_change = true; }
+            } else if (key == "activation_default_lease_ms") {
+                accepted = gps_state_validate_number_setting(entry, 1000.0, 60000.0, number_value, reason);
+                if (accepted) { new_cfg.activation_default_lease_ms = static_cast<int>(number_value); has_native_gps_state_change = true; }
             } else if (key == "publish_rate_hz") {
                 accepted = gps_state_validate_number_setting(entry, 0.1, 5.0, number_value, reason);
                 if (accepted) { new_cfg.publish_rate_hz = number_value; has_native_gps_state_change = true; }
@@ -2713,17 +2722,18 @@ static std::string gps_state_quality(bool available, int used_count, double avg_
     return "very_good";
 }
 
-static json gps_state_satellite_json(const xbot_msgs::GnssSatellite &sat, bool include_used) {
+static json gps_state_satellite_json(const xbot_msgs::GnssSatellite &sat) {
     json entry = json::object();
-    entry["gnss"] = sat.gnss;
+    entry["system"] = sat.gnss.empty() ? std::string("GNSS ") + std::to_string(sat.gnss_id) : sat.gnss;
     entry["gnss_id"] = sat.gnss_id;
     entry["sv"] = sat.sv_id;
-    if (include_used) entry["used"] = sat.used;
-    entry["cn0"] = sat.cno;
-    entry["elev"] = sat.elev;
-    entry["azim"] = sat.azim;
-    entry["prres"] = sat.pr_res;
-    entry["qual"] = sat.quality_ind;
+    entry["used"] = sat.used;
+    entry["visible"] = true;
+    entry["cn0_dbhz"] = sat.cno;
+    entry["elevation_deg"] = sat.elev;
+    entry["azimuth_deg"] = sat.azim;
+    entry["pr_res"] = sat.pr_res;
+    entry["quality"] = sat.quality_ind;
     return entry;
 }
 
@@ -2761,9 +2771,9 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
             max_cn0 = std::max(max_cn0, static_cast<double>(sat.cno));
             if (static_cast<double>(sat.cno) < cfg.weak_cn0_threshold) weak_count += 1;
             if (static_cast<double>(sat.cno) >= cfg.good_cn0_threshold) good_count += 1;
-            used_satellites.push_back(gps_state_satellite_json(sat, false));
+            used_satellites.push_back(gps_state_satellite_json(sat));
         }
-        all_satellites.push_back(gps_state_satellite_json(sat, true));
+        all_satellites.push_back(gps_state_satellite_json(sat));
     }
 
     const bool available = !satellites.empty();
@@ -2849,16 +2859,6 @@ static bool gps_state_status_retained(int state) {
     // State1 is the compact always-on drive-readiness snapshot. Detail views
     // (State2-State4) are lease controlled and must never leave stale retained data.
     return state == 1;
-}
-
-static bool gps_state_enabled_for_regular_publish(const GpsStateSettings &cfg, int state) {
-    switch (state) {
-        case 1: return true;
-        case 2: return cfg.publish_state2;
-        case 3: return cfg.publish_state3;
-        case 4: return cfg.publish_state4;
-        default: return false;
-    }
 }
 
 static json gps_state_standard_status_payload(int state, const json &source, const ros::Time &now) {
@@ -3084,11 +3084,14 @@ void handle_gps_state_view_request(int state, const std::string &payload_text) {
             if (active) {
                 GpsStateViewLease &lease = leases[request_id];
                 lease.request_id = request_id;
+                const GpsStateSettings cfg = current_gps_state_settings();
+                const int default_interval_ms = state == 2 ? cfg.state2_default_interval_ms :
+                                                (state == 3 ? cfg.state3_default_interval_ms : cfg.state4_default_interval_ms);
                 lease.interval_ms = gps_state_request_int(
-                    request, "interval_ms", state == 2 ? 500 : 1000,
+                    request, "interval_ms", default_interval_ms,
                     GPS_STATE_VIEW_MIN_INTERVAL_MS, GPS_STATE_VIEW_MAX_INTERVAL_MS);
                 const int lease_ms = gps_state_request_int(
-                    request, "lease_ms", GPS_STATE_VIEW_DEFAULT_LEASE_MS,
+                    request, "lease_ms", cfg.activation_default_lease_ms,
                     1000, GPS_STATE_VIEW_MAX_LEASE_MS);
                 lease.expires_at = now + ros::Duration(static_cast<double>(lease_ms) / 1000.0);
                 if (request.contains("satellite_mode") && request["satellite_mode"].is_string()) {
@@ -3207,7 +3210,7 @@ void handle_gps_state_renew_payload(const std::string &payload_text) {
                         std::string text = trim_settings_string(entry.get<std::string>());
                         std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                         if (text == "all") {
-                            states = {0, 1, 2, 3, 4};
+                            states = {1, 2, 3, 4};
                             continue;
                         }
                     }

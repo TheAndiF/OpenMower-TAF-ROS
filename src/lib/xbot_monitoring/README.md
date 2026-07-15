@@ -266,3 +266,16 @@ Logging defaults and expert paths are part of the `logging` group in `gps_state/
 Start, stop and cancel are commands. The app must not represent runtime control as a persistent boolean switch. `gps_state/logging/status/json` is retained and is the source of truth for button state. `gps_state/logging/last/json` is retained separately so the last completed recording remains visible after the live runtime returns to an idle state.
 
 No MQTT aliases below `settings/mower_logic/satellite_logging/...` are supported. Internal logging configuration fields remain filtered from the published `settings/mower_logic/json` payload so a dynamically generated app renders the single canonical `gps_state` logging group. The app must parse the structured `openmower.gps_state.logging.v2` status payload and must not implement fallback topic or fallback field handling.
+
+## Canonical GPS-State MQTT contract (2026-07-15)
+
+The canonical GPS API uses only `gps_state/state1` through `gps_state/state4`. Legacy State0, State01, flat state aliases and legacy logging/restart aliases are not published or subscribed.
+
+- State1 is the continuously available, retained drive-readiness snapshot.
+- State2 is a lease-controlled GNSS/pose diagnostic view with an optional separate satellite list.
+- State3 is lease-controlled and contains only satellites currently used by the navigation solution.
+- State4 is lease-controlled and contains every satellite seen by the receiver, including both used and not-used satellites.
+
+State3 and State4 are inactive by default. `set_active` starts or renews a client-specific lease; `active=false` removes that client's lease; lease expiry stops traffic automatically when no client remains. `publish_now` creates one snapshot without permanently enabling the view.
+
+GPS settings use the same session/persistent/renew/validation pattern as the hardware and mower-logic settings. Default State2-State4 intervals and the default activation lease are settings; runtime activation remains a command. Restart and logging remain dedicated action trees with validation, live status and last-result topics.

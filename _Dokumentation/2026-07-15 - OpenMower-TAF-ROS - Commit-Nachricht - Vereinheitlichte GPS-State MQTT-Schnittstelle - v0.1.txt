@@ -1,0 +1,19 @@
+BL_Unify GPS state MQTT contract
+Date: 2026-07-15
+
+Summary:
+- Replaced persistent State2-State4 publish switches with configurable default intervals and a default client lease.
+- Kept State2-State4 traffic fully request- and lease-controlled.
+- Defined State3 as used satellites only and State4 as all visible satellites with an explicit used flag.
+- Removed the remaining State0 selector from the renew-all path.
+- Kept GPS settings aligned with the session, persistent, renew and validation pattern used by hardware and software settings.
+- Documented the canonical logging and F9P restart action trees without legacy aliases.
+
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/README.md
+- src/lib/xbot_monitoring/GPS_STATE_MQTT_API.md
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Aenderungsdokumentation - Vereinheitlichte GPS-State MQTT-Schnittstelle - v0.1.docx
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Aenderungsdokumentation - Vereinheitlichte GPS-State MQTT-Schnittstelle - v0.1.pdf
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Commit-Nachricht - Vereinheitlichte GPS-State MQTT-Schnittstelle - v0.1.txt
+- _Dokumentation/2026-07-15 - OpenMower-TAF-ROS - Patch - Vereinheitlichte GPS-State MQTT-Schnittstelle - v0.1.patch
