@@ -210,7 +210,7 @@ Supported state selectors are `state1`, `state2`, `state3`, `state4`, the intege
 The canonical State1 combines the former State0 decision chain and the former standalone State1 summary. It remains split into static and live data:
 
 - `gps_state/state1/definition` contains the retained static definition of the decision stages.
-- `gps_state/state1/status` contains the retained full snapshot, current values, thresholds, severity and first blocking stage.
+- `gps_state/state1/status` contains the retained full snapshot, current values, thresholds, severity and first blocking stage. The `data` object additionally contains `current_status` and `gps_quality`; `current_status` mirrors the Dashboard operating state from `robot_state/current_state` in lowercase, while `gps_quality` mirrors State2 `quality_class`.
 - `gps_state/state1/request` accepts `{"command":"publish_now","request_id":"..."}` for an immediate snapshot.
 - `gps_state/settings/json` no longer contains `publish_state0` or `publish_state1` switches.
 

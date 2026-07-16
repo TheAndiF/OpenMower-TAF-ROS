@@ -28,10 +28,19 @@ No State0, State01, flat state aliases or legacy logging/restart aliases are sup
 
 ## State semantics
 
-- `state1`: retained, continuously updated drive-readiness decision and full decision chain.
+- `state1`: retained, continuously updated drive-readiness decision and full decision chain. Its status also exposes `current_status` and `gps_quality`; `gps_quality` mirrors the `state2` field `quality_class`.
 - `state2`: lease-controlled GNSS, RTK and pose diagnostics; its large satellite list is separate.
 - `state3`: only satellites with `used=true`.
 - `state4`: all visible satellites, with `used=true` or `used=false`.
+
+### State1 compact status fields
+
+The retained `gps_state/state1/status` payload contains two additional operator-facing fields inside `data`:
+
+- `current_status`: current mower operating state from `robot_state/current_state`, normalized to lowercase (for example `mowing`, `idle`, `docking` or `unknown`).
+- `gps_quality`: GNSS quality class copied from State2 `quality_class` (`unavailable`, `poor`, `fair`, `good` or `very_good`).
+
+This keeps the most important status and quality values available without activating the lease-controlled State2 view.
 
 Satellite objects use the canonical fields `system`, `gnss_id`, `sv`, `used`, `visible`, `cn0_dbhz`, `elevation_deg`, `azimuth_deg`, `pr_res` and `quality`.
 

@@ -260,6 +260,22 @@ ros::Publisher map_mowing_progress_renew_pub;
 ros::Publisher ll_power_set_battery_critical_voltage_pub;
 
 std::mutex load_factor_state_mutex;
+std::mutex robot_activity_state_mutex;
+std::string robot_activity_state_snapshot = "unknown";
+
+static std::string current_robot_activity_status() {
+    std::lock_guard<std::mutex> lk(robot_activity_state_mutex);
+    return robot_activity_state_snapshot;
+}
+
+static std::string normalize_robot_activity_status(const std::string &value) {
+    std::string result = trim_settings_string(value);
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return result.empty() ? std::string("unknown") : result;
+}
+
 double load_factor_computed_snapshot = 1.0;
 double load_factor_effective_snapshot = 1.0;
 ros::Publisher ll_power_set_battery_empty_voltage_pub;
@@ -2074,7 +2090,9 @@ static json build_gps_state1_definition_payload() {
     root["fields"] = {
         {"drive_ready", {{"label", "Fahrfreigabe"}, {"description", "Gesamtergebnis der GPS-Fahrfaehigkeitspruefung."}, {"type", "bool"}, {"order", 10}, {"expert", false}}},
         {"drive_state", {{"label", "Fahrzustand"}, {"description", "ready, blocked oder stop."}, {"type", "string"}, {"order", 20}, {"expert", false}}},
-        {"checks", {{"label", "Pruefstufen"}, {"description", "Live-Ergebnisse der 12 Entscheidungsknoten."}, {"type", "object"}, {"order", 30}, {"expert", true}}}
+        {"current_status", {{"label", "Aktueller Status"}, {"description", "Aktueller Betriebszustand des Maehers entsprechend robot_state/current_state, z. B. mowing, idle oder docking."}, {"type", "string"}, {"order", 30}, {"expert", false}}},
+        {"gps_quality", {{"label", "GPS-Qualitaet"}, {"description", "Aus State2 uebernommene GNSS-Qualitaetsklasse (unavailable, poor, fair, good oder very_good)."}, {"type", "string"}, {"order", 40}, {"expert", false}}},
+        {"checks", {{"label", "Pruefstufen"}, {"description", "Live-Ergebnisse der 12 Entscheidungsknoten."}, {"type", "object"}, {"order", 50}, {"expert", true}}}
     };
     root["checks"] = json::object();
     root["checks"]["01_gps_enabled"] = gps_state1_definition_entry(
@@ -2710,7 +2728,17 @@ static void apply_gps_drive_status_to_payloads(json &payloads, const json &drive
         payloads["state2"]["drive_diagnostics"] = drive_status["details"];
     }
     if (payloads.contains("state1_status") && drive_status.contains("state1_status")) {
-        payloads["state1_status"] = drive_status["state1_status"];
+        json state1_status = drive_status["state1_status"];
+        state1_status["current_status"] = current_robot_activity_status();
+
+        std::string gps_quality = "unavailable";
+        if (payloads.contains("state2") && payloads["state2"].is_object()) {
+            gps_quality = payloads["state2"].value("quality_class", gps_quality);
+        } else if (payloads.contains("state1_summary") && payloads["state1_summary"].is_object()) {
+            gps_quality = payloads["state1_summary"].value("quality_class", gps_quality);
+        }
+        state1_status["gps_quality"] = gps_quality;
+        payloads["state1_status"] = state1_status;
     }
 }
 
@@ -2782,13 +2810,21 @@ static json build_gps_state_payloads(const xbot_msgs::GnssSatelliteArray::ConstP
     const ros::Time now = ros::Time::now();
     const double stamp = msg->header.stamp.toSec();
     const std::string quality = gps_state_quality(available, used_count, avg_cn0);
-    const json drive_status = build_gps_drive_status_payload(now);
+    json drive_status = build_gps_drive_status_payload(now);
 
     json state1_summary = json::object();
     state1_summary["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
     state1_summary["state"] = "state1";
     state1_summary["updated_at"] = stamp;
     state1_summary["quality_class"] = quality;
+
+    // State1 exposes the two compact operator-facing values directly in its
+    // status payload. gps_quality intentionally mirrors State2 quality_class,
+    // so clients do not need to activate or combine the technical State2 view.
+    if (drive_status.contains("state1_status") && drive_status["state1_status"].is_object()) {
+        drive_status["state1_status"]["current_status"] = current_robot_activity_status();
+        drive_status["state1_status"]["gps_quality"] = quality;
+    }
 
     json state2 = json::object();
     state2["schema"] = GPS_STATE_PAYLOAD_SCHEMA;
@@ -2956,7 +2992,11 @@ static void publish_gps_state_status(int state, const json &raw_status) {
 }
 
 static json build_gps_state_fallback_payloads(const ros::Time &now) {
-    const json drive_status = build_gps_drive_status_payload(now);
+    json drive_status = build_gps_drive_status_payload(now);
+    if (drive_status["state1_status"].is_object()) {
+        drive_status["state1_status"]["current_status"] = current_robot_activity_status();
+        drive_status["state1_status"]["gps_quality"] = "unavailable";
+    }
     json payloads = {
         {"state1_status", drive_status["state1_status"]},
         {"state1_summary", {{"updated_at", now.toSec()}, {"quality_class", "unavailable"}}},
@@ -4646,6 +4686,11 @@ void maybe_append_statustransition_log(const xbot_msgs::RobotState::ConstPtr &ms
 }
 
 void robot_state_callback(const xbot_msgs::RobotState::ConstPtr &msg) {
+    {
+        std::lock_guard<std::mutex> lk(robot_activity_state_mutex);
+        robot_activity_state_snapshot = normalize_robot_activity_status(msg->current_state);
+    }
+
     // Build a JSON and publish it
     json j;
 

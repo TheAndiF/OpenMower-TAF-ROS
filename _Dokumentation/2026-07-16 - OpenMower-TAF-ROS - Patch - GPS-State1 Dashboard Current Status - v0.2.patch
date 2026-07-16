@@ -1,0 +1,95 @@
+--- a/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
++++ b/src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+@@ -260,6 +260,22 @@
+ ros::Publisher ll_power_set_battery_critical_voltage_pub;
+ 
+ std::mutex load_factor_state_mutex;
++std::mutex robot_activity_state_mutex;
++std::string robot_activity_state_snapshot = "unknown";
++
++static std::string current_robot_activity_status() {
++    std::lock_guard<std::mutex> lk(robot_activity_state_mutex);
++    return robot_activity_state_snapshot;
++}
++
++static std::string normalize_robot_activity_status(const std::string &value) {
++    std::string result = trim_settings_string(value);
++    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) {
++        return static_cast<char>(std::tolower(c));
++    });
++    return result.empty() ? std::string("unknown") : result;
++}
++
+ double load_factor_computed_snapshot = 1.0;
+ double load_factor_effective_snapshot = 1.0;
+ ros::Publisher ll_power_set_battery_empty_voltage_pub;
+@@ -2074,7 +2090,7 @@
+     root["fields"] = {
+         {"drive_ready", {{"label", "Fahrfreigabe"}, {"description", "Gesamtergebnis der GPS-Fahrfaehigkeitspruefung."}, {"type", "bool"}, {"order", 10}, {"expert", false}}},
+         {"drive_state", {{"label", "Fahrzustand"}, {"description", "ready, blocked oder stop."}, {"type", "string"}, {"order", 20}, {"expert", false}}},
+-        {"current_status", {{"label", "Aktueller Status"}, {"description", "Direkt anzeigbarer aktueller Fahrstatus; entspricht drive_state."}, {"type", "string"}, {"order", 30}, {"expert", false}}},
++        {"current_status", {{"label", "Aktueller Status"}, {"description", "Aktueller Betriebszustand des Maehers entsprechend robot_state/current_state, z. B. mowing, idle oder docking."}, {"type", "string"}, {"order", 30}, {"expert", false}}},
+         {"gps_quality", {{"label", "GPS-Qualitaet"}, {"description", "Aus State2 uebernommene GNSS-Qualitaetsklasse (unavailable, poor, fair, good oder very_good)."}, {"type", "string"}, {"order", 40}, {"expert", false}}},
+         {"checks", {{"label", "Pruefstufen"}, {"description", "Live-Ergebnisse der 12 Entscheidungsknoten."}, {"type", "object"}, {"order", 50}, {"expert", true}}}
+     };
+@@ -2713,7 +2729,7 @@
+     }
+     if (payloads.contains("state1_status") && drive_status.contains("state1_status")) {
+         json state1_status = drive_status["state1_status"];
+-        state1_status["current_status"] = state1_status.value("drive_state", std::string("unknown"));
++        state1_status["current_status"] = current_robot_activity_status();
+ 
+         std::string gps_quality = "unavailable";
+         if (payloads.contains("state2") && payloads["state2"].is_object()) {
+@@ -2806,7 +2822,7 @@
+     // status payload. gps_quality intentionally mirrors State2 quality_class,
+     // so clients do not need to activate or combine the technical State2 view.
+     if (drive_status.contains("state1_status") && drive_status["state1_status"].is_object()) {
+-        drive_status["state1_status"]["current_status"] = drive_status["state1_status"].value("drive_state", std::string("unknown"));
++        drive_status["state1_status"]["current_status"] = current_robot_activity_status();
+         drive_status["state1_status"]["gps_quality"] = quality;
+     }
+ 
+@@ -2978,7 +2994,7 @@
+ static json build_gps_state_fallback_payloads(const ros::Time &now) {
+     json drive_status = build_gps_drive_status_payload(now);
+     if (drive_status["state1_status"].is_object()) {
+-        drive_status["state1_status"]["current_status"] = drive_status["state1_status"].value("drive_state", std::string("unknown"));
++        drive_status["state1_status"]["current_status"] = current_robot_activity_status();
+         drive_status["state1_status"]["gps_quality"] = "unavailable";
+     }
+     json payloads = {
+@@ -4670,6 +4686,11 @@
+ }
+ 
+ void robot_state_callback(const xbot_msgs::RobotState::ConstPtr &msg) {
++    {
++        std::lock_guard<std::mutex> lk(robot_activity_state_mutex);
++        robot_activity_state_snapshot = normalize_robot_activity_status(msg->current_state);
++    }
++
+     // Build a JSON and publish it
+     json j;
+ 
+--- a/src/lib/xbot_monitoring/GPS_STATE_MQTT_API.md
++++ b/src/lib/xbot_monitoring/GPS_STATE_MQTT_API.md
+@@ -37,7 +37,7 @@
+ 
+ The retained `gps_state/state1/status` payload contains two additional operator-facing fields inside `data`:
+ 
+-- `current_status`: current drive state (`ready`, `blocked`, `stop` or `unknown`), identical to `drive_state`.
++- `current_status`: current mower operating state from `robot_state/current_state`, normalized to lowercase (for example `mowing`, `idle`, `docking` or `unknown`).
+ - `gps_quality`: GNSS quality class copied from State2 `quality_class` (`unavailable`, `poor`, `fair`, `good` or `very_good`).
+ 
+ This keeps the most important status and quality values available without activating the lease-controlled State2 view.
+--- a/src/lib/xbot_monitoring/README.md
++++ b/src/lib/xbot_monitoring/README.md
+@@ -210,7 +210,7 @@
+ The canonical State1 combines the former State0 decision chain and the former standalone State1 summary. It remains split into static and live data:
+ 
+ - `gps_state/state1/definition` contains the retained static definition of the decision stages.
+-- `gps_state/state1/status` contains the retained full snapshot, current values, thresholds, severity and first blocking stage. The `data` object additionally contains `current_status` and `gps_quality`; `gps_quality` mirrors State2 `quality_class`.
++- `gps_state/state1/status` contains the retained full snapshot, current values, thresholds, severity and first blocking stage. The `data` object additionally contains `current_status` and `gps_quality`; `current_status` mirrors the Dashboard operating state from `robot_state/current_state` in lowercase, while `gps_quality` mirrors State2 `quality_class`.
+ - `gps_state/state1/request` accepts `{"command":"publish_now","request_id":"..."}` for an immediate snapshot.
+ - `gps_state/settings/json` no longer contains `publish_state0` or `publish_state1` switches.
+ 
