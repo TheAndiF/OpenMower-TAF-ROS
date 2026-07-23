@@ -1,0 +1,17 @@
+BL_Add GPS State2 coordinates and 90-second safe position capture
+Date: 2026-07-23
+
+Summary:
+- Added live GNSS latitude, longitude, altitude, UTM easting, UTM northing and UTM zone to GPS State2.
+- Added MQTT controls and retained status for one-shot safe-position capture.
+- Collects 10 RTK-fixed stationary poses with accuracy and spread checks.
+- Added a fixed 90-second overall timeout including all waiting and collection phases.
+- Kept the operation passive so it does not stop or pause mowing.
+- Added implementation notes and project documentation.
+
+Changed files:
+- src/lib/xbot_monitoring/src/xbot_monitoring.cpp
+- src/lib/xbot_monitoring/README.md
+- _Dokumentation/2026-07-23 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State2 Koordinaten sichere Position 90 Sekunden - v0.2.docx
+- _Dokumentation/2026-07-23 - OpenMower-TAF-ROS - Aenderungsdokumentation - GPS-State2 Koordinaten sichere Position 90 Sekunden - v0.2.pdf
+- _Dokumentation/2026-07-23 - OpenMower-TAF-ROS - Commit-Nachricht - GPS-State2 sichere Position 90 Sekunden - v0.2.txt

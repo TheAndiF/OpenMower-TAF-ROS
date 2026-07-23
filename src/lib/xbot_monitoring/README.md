@@ -279,3 +279,25 @@ The canonical GPS API uses only `gps_state/state1` through `gps_state/state4`. L
 State3 and State4 are inactive by default. `set_active` starts or renews a client-specific lease; `active=false` removes that client's lease; lease expiry stops traffic automatically when no client remains. `publish_now` creates one snapshot without permanently enabling the view.
 
 GPS settings use the same session/persistent/renew/validation pattern as the hardware and mower-logic settings. Default State2-State4 intervals and the default activation lease are settings; runtime activation remains a command. Restart and logging remain dedicated action trees with validation, live status and last-result topics.
+
+## GPS State2 coordinates and one-shot safe position
+
+`gps_state/state2/status` now includes the current GNSS position as latitude,
+longitude and altitude. For diagnostics it also includes UTM easting, UTM
+northing and the UTM zone. These values are display-only and do not modify the
+navigation or mowing state.
+
+A one-shot safe-position measurement is available below `gps_state/fix`:
+
+- `gps_state/fix/set/json` accepts `{"command":"start"}` or
+  `{"command":"cancel"}`.
+- `gps_state/fix/status/json` is retained and reports the current state,
+  accepted sample count, remaining time and the result.
+- `gps_state/fix/set/renew/json` republishes the retained status.
+
+The measurement collects 10 RTK-fixed poses while the mower is stationary. A
+pose is accepted when the reported accuracy is at most 0.05 m and the planar
+speed is at most 0.02 m/s. The accepted poses must stay within a maximum spread
+of 0.10 m. The complete operation, including waiting for RTK fixed and
+stillstand, has a fixed maximum duration of 90 seconds. Timeout or rejection
+only stops the measurement; it does not stop or pause mowing.

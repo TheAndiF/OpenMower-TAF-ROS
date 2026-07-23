@@ -105,6 +105,10 @@ void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg
 void gps_state_fix_status_callback(const std_msgs::String::ConstPtr &msg);
 void gps_state_xb_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg);
 void gps_state_positioning_debug_callback(const std_msgs::String::ConstPtr &msg);
+void handle_gps_safe_fix_command(const std::string &payload_text);
+void publish_gps_safe_fix_status();
+void process_gps_safe_fix_pose(const xbot_msgs::AbsolutePose &pose);
+void update_gps_safe_fix_timeout();
 void publish_map();
 void publish_map_validation(const json &validation);
 void publish_settings_validation(const std::string &settings_namespace, const json &validation);
@@ -332,6 +336,7 @@ class MqttCallback : public mqtt::callback {
         publish_gps_restart_status();
         publish_gps_logging_status();
         publish_gps_logging_last();
+        publish_gps_safe_fix_status();
         {
             std::lock_guard<std::mutex> lk(gps_restart_status_mutex);
             if (last_completed_gps_restart_available) {
@@ -380,6 +385,8 @@ class MqttCallback : public mqtt::callback {
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/logging/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/restart/set/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "gps_state/restart/set/renew/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/fix/set/json", 0);
+        client_->subscribe(this->mqtt_topic_prefix + "gps_state/fix/set/renew/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/session/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/persistent/json", 0);
         client_->subscribe(this->mqtt_topic_prefix + "settings/ll_board/set/renew/json", 0);
@@ -555,6 +562,10 @@ public:
             publish_gps_logging_status();
             publish_gps_logging_last();
             publish_gps_state_settings();
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/fix/set/json") {
+            handle_gps_safe_fix_command(ptr->get_payload_str());
+        } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/fix/set/renew/json") {
+            publish_gps_safe_fix_status();
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/restart/set/json") {
             handle_gps_restart_set_payload(ptr->get_payload_str());
         } else if (ptr->get_topic() == this->mqtt_topic_prefix + "gps_state/restart/set/renew/json") {
@@ -801,6 +812,30 @@ ros::Time latest_gps_fix_status_received_at;
 json latest_xbot_positioning_gps_debug = json::object();
 bool latest_xbot_positioning_gps_debug_available = false;
 ros::Time latest_xbot_positioning_gps_debug_received_at;
+
+constexpr int GPS_SAFE_FIX_REQUIRED_SAMPLES = 10;
+constexpr double GPS_SAFE_FIX_MAX_INPUT_ACCURACY_M = 0.05;
+constexpr double GPS_SAFE_FIX_MAX_SPREAD_M = 0.10;
+constexpr double GPS_SAFE_FIX_MAX_SPEED_MPS = 0.02;
+constexpr double GPS_SAFE_FIX_TIMEOUT_S = 90.0;
+
+struct GpsSafeFixSample {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+};
+
+struct GpsSafeFixState {
+    bool active = false;
+    ros::Time started_at;
+    std::string status = "idle";
+    std::string reason;
+    std::vector<GpsSafeFixSample> samples;
+    json last_result = nullptr;
+};
+
+std::mutex gps_safe_fix_mutex;
+GpsSafeFixState gps_safe_fix_state;
 
 std::mutex gps_restart_status_mutex;
 json latest_gps_restart_status = json::object();
@@ -1222,6 +1257,21 @@ static json build_gps_state_settings_payload() {
         "GPS Logging aktualisieren",
         "Fordert Laufzeitstatus, letzte Session und GPS-State-Einstellungen erneut an.",
         420, "gps_state/logging/set/renew/json", json{{"type", "object"}, {"examples", json::array({json::object()})}}, false, "logging");
+
+    root["settings"]["gps_safe_fix_start"] = gps_state_command_entry(
+        "Sichere Position ermitteln",
+        "Startet oder bricht die einmalige Mittelung von 10 stabilen RTK-Fixed-Posen ab. Der Vorgang endet spaetestens nach 90 Sekunden und beeinflusst den Maehvorgang nicht.",
+        180, "gps_state/fix/set/json",
+        json{{"type", "object"}, {"properties", {{"command", {{"type", "string"}, {"enum", json::array({"start", "cancel"})}}}}}, {"required", json::array({"command"})}},
+        false, "gps_fix");
+    root["settings"]["gps_safe_fix_status"] = gps_state_descriptor_entry(
+        "Status sichere Position",
+        "Zeigt Wartezustand, verbleibende Zeit, Anzahl gueltiger Posen und das letzte Ergebnis.",
+        190, "gps_state/fix/status/json", true, "gps_fix");
+    root["settings"]["gps_safe_fix_renew"] = gps_state_command_entry(
+        "Sichere Position aktualisieren",
+        "Fordert den retained Status der sicheren Positionsbestimmung erneut an.",
+        200, "gps_state/fix/set/renew/json", json{{"type", "object"}}, false, "gps_fix");
 
     root["settings"]["f9p_restart"] = gps_state_command_entry(
         "F9P Neustart auslösen",
@@ -2227,6 +2277,12 @@ static json build_gps_state2_definition_payload() {
     fields["gps_timeout"] = gps_state_field_definition("GPS-Timeout", "Zeigt einen ueberschrittenen GPS-Toleranzzeitraum.", "bool", 160);
     fields["diagnostic_summary"] = gps_state_field_definition("Diagnose", "Direkt anzeigbare technische Zusammenfassung.", "string", 170);
     fields["drive_diagnostics"] = gps_state_field_definition("Fahrdiagnose Details", "Technische Detailwerte der Fahrfreigabe.", "object", 180, "", true);
+    fields["gnss_latitude_deg"] = gps_state_field_definition("GNSS Breitengrad", "Aktuelle GNSS-Position in geografischen Grad.", "double_or_null", 190, "deg");
+    fields["gnss_longitude_deg"] = gps_state_field_definition("GNSS Laengengrad", "Aktuelle GNSS-Position in geografischen Grad.", "double_or_null", 200, "deg");
+    fields["gnss_altitude_m"] = gps_state_field_definition("GNSS Hoehe", "Aktuelle Hoehe bezogen auf das konfigurierte GPS-Datum.", "double_or_null", 210, "m");
+    fields["utm_easting_m"] = gps_state_field_definition("UTM-Rechtswert", "Aktueller UTM-Rechtswert der GNSS-Pose.", "double_or_null", 220, "m", true);
+    fields["utm_northing_m"] = gps_state_field_definition("UTM-Hochwert", "Aktueller UTM-Hochwert der GNSS-Pose.", "double_or_null", 230, "m", true);
+    fields["utm_zone"] = gps_state_field_definition("UTM-Zone", "UTM-Zone fuer Rechts- und Hochwert.", "string_or_null", 240, "", true);
     return root;
 }
 
@@ -2726,6 +2782,37 @@ static void apply_gps_drive_status_to_payloads(json &payloads, const json &drive
         payloads["state2"]["gps_timeout"] = drive_status["gps_timeout"];
         payloads["state2"]["diagnostic_summary"] = drive_status["diagnostic_summary"];
         payloads["state2"]["drive_diagnostics"] = drive_status["details"];
+
+        xbot_msgs::AbsolutePose ll_pose;
+        bool ll_pose_available = false;
+        {
+            std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
+            ll_pose = latest_ll_gps_pose;
+            ll_pose_available = latest_ll_gps_pose_available;
+        }
+        if (ll_pose_available) {
+            const WorldPoseConversionResult world = convert_robot_pose_to_world_pose(ll_pose);
+            payloads["state2"]["gnss_latitude_deg"] = world.valid ? json(world.latitude) : json(nullptr);
+            payloads["state2"]["gnss_longitude_deg"] = world.valid ? json(world.longitude) : json(nullptr);
+            payloads["state2"]["gnss_altitude_m"] = world.valid ? json(world.altitude) : json(nullptr);
+            std::lock_guard<std::mutex> datum_lk(gps_datum_cache_mutex);
+            if (load_gps_datum_for_world_pose(gps_datum_cache)) {
+                payloads["state2"]["utm_easting_m"] = gps_datum_cache.datum_easting + ll_pose.pose.pose.position.x;
+                payloads["state2"]["utm_northing_m"] = gps_datum_cache.datum_northing + ll_pose.pose.pose.position.y;
+                payloads["state2"]["utm_zone"] = gps_datum_cache.datum_zone;
+            } else {
+                payloads["state2"]["utm_easting_m"] = nullptr;
+                payloads["state2"]["utm_northing_m"] = nullptr;
+                payloads["state2"]["utm_zone"] = nullptr;
+            }
+        } else {
+            payloads["state2"]["gnss_latitude_deg"] = nullptr;
+            payloads["state2"]["gnss_longitude_deg"] = nullptr;
+            payloads["state2"]["gnss_altitude_m"] = nullptr;
+            payloads["state2"]["utm_easting_m"] = nullptr;
+            payloads["state2"]["utm_northing_m"] = nullptr;
+            payloads["state2"]["utm_zone"] = nullptr;
+        }
     }
     if (payloads.contains("state1_status") && drive_status.contains("state1_status")) {
         json state1_status = drive_status["state1_status"];
@@ -3349,11 +3436,185 @@ void gps_state_positioning_debug_callback(const std_msgs::String::ConstPtr &msg)
     latest_xbot_positioning_gps_debug_available = true;
 }
 
+static json gps_safe_fix_status_payload_locked(const ros::Time &now) {
+    const double elapsed_s = gps_safe_fix_state.active && !gps_safe_fix_state.started_at.isZero()
+        ? std::max(0.0, (now - gps_safe_fix_state.started_at).toSec()) : 0.0;
+    json root = {
+        {"schema", "gps_state.safe_fix.v1"},
+        {"status", gps_safe_fix_state.status},
+        {"active", gps_safe_fix_state.active},
+        {"reason", gps_safe_fix_state.reason.empty() ? json(nullptr) : json(gps_safe_fix_state.reason)},
+        {"required_samples", GPS_SAFE_FIX_REQUIRED_SAMPLES},
+        {"accepted_samples", gps_safe_fix_state.samples.size()},
+        {"timeout_s", GPS_SAFE_FIX_TIMEOUT_S},
+        {"elapsed_s", elapsed_s},
+        {"remaining_s", gps_safe_fix_state.active ? std::max(0.0, GPS_SAFE_FIX_TIMEOUT_S - elapsed_s) : 0.0},
+        {"max_input_accuracy_m", GPS_SAFE_FIX_MAX_INPUT_ACCURACY_M},
+        {"max_spread_m", GPS_SAFE_FIX_MAX_SPREAD_M},
+        {"max_speed_mps", GPS_SAFE_FIX_MAX_SPEED_MPS},
+        {"result", gps_safe_fix_state.last_result}
+    };
+    return root;
+}
+
+void publish_gps_safe_fix_status() {
+    json payload;
+    {
+        std::lock_guard<std::mutex> lk(gps_safe_fix_mutex);
+        payload = gps_safe_fix_status_payload_locked(ros::Time::now());
+    }
+    try_publish("gps_state/fix/status/json", payload.dump(), true);
+}
+
+void handle_gps_safe_fix_command(const std::string &payload_text) {
+    json payload = json::parse(payload_text.empty() ? "{}" : payload_text, nullptr, false);
+    std::string command;
+    if (payload.is_string()) command = payload.get<std::string>();
+    else if (payload.is_object()) command = payload.value("command", std::string());
+    command = normalize_f9p_restart_token(command);
+
+    {
+        std::lock_guard<std::mutex> lk(gps_safe_fix_mutex);
+        if (command == "start") {
+            gps_safe_fix_state.active = true;
+            gps_safe_fix_state.started_at = ros::Time::now();
+            gps_safe_fix_state.status = "waiting_for_rtk_fixed_and_stillstand";
+            gps_safe_fix_state.reason.clear();
+            gps_safe_fix_state.samples.clear();
+            gps_safe_fix_state.last_result = nullptr;
+        } else if (command == "cancel" || command == "stop") {
+            gps_safe_fix_state.active = false;
+            gps_safe_fix_state.status = "cancelled";
+            gps_safe_fix_state.reason = "cancelled_by_user";
+            gps_safe_fix_state.samples.clear();
+        } else {
+            gps_safe_fix_state.status = "rejected";
+            gps_safe_fix_state.reason = "command must be start or cancel";
+        }
+    }
+    publish_gps_safe_fix_status();
+}
+
+void update_gps_safe_fix_timeout() {
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lk(gps_safe_fix_mutex);
+        if (gps_safe_fix_state.active && !gps_safe_fix_state.started_at.isZero() &&
+            (ros::Time::now() - gps_safe_fix_state.started_at).toSec() >= GPS_SAFE_FIX_TIMEOUT_S) {
+            gps_safe_fix_state.active = false;
+            gps_safe_fix_state.status = "timeout";
+            gps_safe_fix_state.reason = "maximum duration of 90 seconds exceeded";
+            gps_safe_fix_state.samples.clear();
+            changed = true;
+        }
+    }
+    if (changed) publish_gps_safe_fix_status();
+}
+
+void process_gps_safe_fix_pose(const xbot_msgs::AbsolutePose &pose) {
+    bool publish = false;
+    {
+        std::lock_guard<std::mutex> lk(gps_safe_fix_mutex);
+        if (!gps_safe_fix_state.active) return;
+
+        const ros::Time now = ros::Time::now();
+        if ((now - gps_safe_fix_state.started_at).toSec() >= GPS_SAFE_FIX_TIMEOUT_S) {
+            gps_safe_fix_state.active = false;
+            gps_safe_fix_state.status = "timeout";
+            gps_safe_fix_state.reason = "maximum duration of 90 seconds exceeded";
+            gps_safe_fix_state.samples.clear();
+            publish = true;
+        } else {
+            const bool fixed = (pose.flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED) != 0;
+            const double speed = std::hypot(pose.motion_vector.x, pose.motion_vector.y);
+            const bool accuracy_ok = std::isfinite(pose.position_accuracy) &&
+                                     pose.position_accuracy <= GPS_SAFE_FIX_MAX_INPUT_ACCURACY_M;
+            const bool still = !pose.motion_vector_valid || speed <= GPS_SAFE_FIX_MAX_SPEED_MPS;
+
+            if (!fixed) {
+                gps_safe_fix_state.status = "waiting_for_rtk_fixed";
+                gps_safe_fix_state.reason = "rtk_fixed_required";
+                publish = true;
+            } else if (!still) {
+                gps_safe_fix_state.status = "waiting_for_stillstand";
+                gps_safe_fix_state.reason = "mower_is_moving";
+                gps_safe_fix_state.samples.clear();
+                publish = true;
+            } else if (!accuracy_ok) {
+                gps_safe_fix_state.status = "waiting_for_accuracy";
+                gps_safe_fix_state.reason = "position_accuracy_above_0.05_m";
+                publish = true;
+            } else {
+                gps_safe_fix_state.status = "collecting";
+                gps_safe_fix_state.reason.clear();
+                gps_safe_fix_state.samples.push_back({pose.pose.pose.position.x,
+                                                       pose.pose.pose.position.y,
+                                                       pose.pose.pose.position.z});
+                publish = true;
+
+                if (gps_safe_fix_state.samples.size() >= GPS_SAFE_FIX_REQUIRED_SAMPLES) {
+                    double mean_x = 0.0, mean_y = 0.0, mean_z = 0.0;
+                    for (const auto &sample : gps_safe_fix_state.samples) {
+                        mean_x += sample.x; mean_y += sample.y; mean_z += sample.z;
+                    }
+                    const double count = static_cast<double>(gps_safe_fix_state.samples.size());
+                    mean_x /= count; mean_y /= count; mean_z /= count;
+                    double max_spread = 0.0;
+                    for (const auto &sample : gps_safe_fix_state.samples) {
+                        max_spread = std::max(max_spread, std::hypot(sample.x - mean_x, sample.y - mean_y));
+                    }
+                    if (max_spread > GPS_SAFE_FIX_MAX_SPREAD_M) {
+                        gps_safe_fix_state.status = "collecting";
+                        gps_safe_fix_state.reason = "spread_above_0.10_m_restart";
+                        gps_safe_fix_state.samples.clear();
+                    } else {
+                        xbot_msgs::AbsolutePose mean_pose = pose;
+                        mean_pose.pose.pose.position.x = mean_x;
+                        mean_pose.pose.pose.position.y = mean_y;
+                        mean_pose.pose.pose.position.z = mean_z;
+                        const WorldPoseConversionResult world = convert_robot_pose_to_world_pose(mean_pose);
+                        json result = {
+                            {"local_x_m", mean_x}, {"local_y_m", mean_y}, {"local_z_m", mean_z},
+                            {"max_spread_m", max_spread}, {"samples", GPS_SAFE_FIX_REQUIRED_SAMPLES},
+                            {"completed_at", now.toSec()}
+                        };
+                        if (world.valid) {
+                            result["latitude_deg"] = world.latitude;
+                            result["longitude_deg"] = world.longitude;
+                            result["altitude_m"] = world.altitude;
+                        } else {
+                            result["latitude_deg"] = nullptr;
+                            result["longitude_deg"] = nullptr;
+                            result["altitude_m"] = nullptr;
+                        }
+                        {
+                            std::lock_guard<std::mutex> datum_lk(gps_datum_cache_mutex);
+                            if (load_gps_datum_for_world_pose(gps_datum_cache)) {
+                                result["utm_easting_m"] = gps_datum_cache.datum_easting + mean_x;
+                                result["utm_northing_m"] = gps_datum_cache.datum_northing + mean_y;
+                                result["utm_zone"] = gps_datum_cache.datum_zone;
+                            }
+                        }
+                        gps_safe_fix_state.last_result = result;
+                        gps_safe_fix_state.active = false;
+                        gps_safe_fix_state.status = "success";
+                        gps_safe_fix_state.reason.clear();
+                    }
+                }
+            }
+        }
+    }
+    if (publish) publish_gps_safe_fix_status();
+}
+
 void gps_state_ll_gps_pose_callback(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
-    std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
-    latest_ll_gps_pose = *msg;
-    latest_ll_gps_pose_received_at = ros::Time::now();
-    latest_ll_gps_pose_available = true;
+    {
+        std::lock_guard<std::mutex> lk(gps_state_pose_mutex);
+        latest_ll_gps_pose = *msg;
+        latest_ll_gps_pose_received_at = ros::Time::now();
+        latest_ll_gps_pose_available = true;
+    }
+    process_gps_safe_fix_pose(*msg);
 }
 
 void gps_state_fix_status_callback(const std_msgs::String::ConstPtr &msg) {
@@ -5337,6 +5598,7 @@ int main(int argc, char **argv) {
             );
         });
         maybe_publish_timetable(false);
+        update_gps_safe_fix_timeout();
         sensor_check_rate.sleep();
     }
     return 0;
